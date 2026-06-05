@@ -219,6 +219,109 @@ function emptyBiasInputs() {
     ibSize: '',
     vaOverlap: '',
     openDrive: '',
+    // mid-session IB breakout update
+    ibBreakDir: '',        // 'high'|'low'|'none'|''
+    ibTimeAcceptance: '',  // 'yes'|'no'|''
+    ibCVD: '',             // 'agreeing'|'flat'|'diverging'|''
+  };
+}
+
+// ─── Mid-Session Update Engine ────────────────────────────────────────────────
+function computeMidSession(bi, preBias) {
+  const { ibBreakDir, ibTimeAcceptance, ibCVD } = bi;
+
+  // Nothing entered yet
+  if (!ibBreakDir) return null;
+
+  // No clean break — original bias stands
+  if (ibBreakDir === 'none') {
+    return {
+      updatedBias: preBias.bias,
+      updatedConviction: preBias.conviction,
+      verdict: 'No clean IB break. Original bias unchanged.',
+      action: 'Continue with pre-market read. Wait for a cleaner setup.',
+      color: C.textSub,
+      effect: 'none',
+    };
+  }
+
+  // Time acceptance not confirmed — break is unresolved
+  if (ibTimeAcceptance === 'no') {
+    return {
+      updatedBias: preBias.bias,
+      updatedConviction: preBias.conviction,
+      verdict: 'IB break rejected — price returned inside within 15-30 min.',
+      action: preBias.bias === 'bullish' && ibBreakDir === 'low'
+        ? 'Failed break low with bullish bias. Potential long setup back to IB mid.'
+        : preBias.bias === 'bearish' && ibBreakDir === 'high'
+        ? 'Failed break high with bearish bias. Potential short setup back to IB mid.'
+        : 'Failed break. Original bias stands. Wait for cleaner structure.',
+      color: C.yellow,
+      effect: 'none',
+    };
+  }
+
+  // Time acceptance confirmed — now check direction vs pre-market bias
+  const breakDir = ibBreakDir === 'high' ? 'bullish' : 'bearish';
+  const agrees = breakDir === preBias.bias;
+  const priorWasNeutral = preBias.bias === 'neutral' || !preBias.bias;
+
+  // CVD weight
+  const cvdStrong = ibCVD === 'agreeing';
+  const cvdDiverging = ibCVD === 'diverging';
+
+  // ── SCENARIO 1: Neutral pre-market + clean break ──
+  if (priorWasNeutral) {
+    const newBias = breakDir;
+    const conviction = cvdStrong ? 'medium' : cvdDiverging ? 'low' : 'low';
+    return {
+      updatedBias: newBias,
+      updatedConviction: conviction,
+      verdict: `Neutral day upgraded to ${newBias} by IB break ${ibBreakDir}.`,
+      action: cvdDiverging
+        ? 'CVD diverging — be cautious. Time acceptance is there but delta is not. Reduce size.'
+        : `IB accepted ${ibBreakDir}. Look for ${newBias === 'bullish' ? 'long' : 'short'} setups on pullbacks to IB ${ibBreakDir === 'high' ? 'high' : 'low'} as support/resistance.`,
+      color: newBias === 'bullish' ? C.green : C.red,
+      effect: 'upgrade',
+    };
+  }
+
+  // ── SCENARIO 2: Bias and break agree ──
+  if (agrees) {
+    const conviction = cvdDiverging ? 'medium' : 'high';
+    return {
+      updatedBias: preBias.bias,
+      updatedConviction: conviction,
+      verdict: `IB break ${ibBreakDir} confirms ${preBias.bias} bias.`,
+      action: cvdDiverging
+        ? 'Time accepted but CVD diverging. Confirmation is partial. Standard size, not full press.'
+        : `Full confirmation. Press the ${preBias.bias === 'bullish' ? 'long' : 'short'} bias. IB ${ibBreakDir === 'high' ? 'high' : 'low'} is now your support/resistance. Hold runners.`,
+      color: preBias.bias === 'bullish' ? C.green : C.red,
+      effect: 'confirmed',
+    };
+  }
+
+  // ── SCENARIO 3: Bias and break contradict ──
+  // CVD diverging on the break = fake break, original bias still valid
+  if (cvdDiverging) {
+    return {
+      updatedBias: preBias.bias,
+      updatedConviction: 'medium',
+      verdict: `IB break ${ibBreakDir} contradicts bias but CVD is diverging — likely a trap.`,
+      action: `Price broke ${ibBreakDir} but delta didn't confirm. High probability failed break. Watch for reversal back through IB ${ibBreakDir === 'high' ? 'high' : 'low'}. Original ${preBias.bias} bias may still be valid.`,
+      color: C.yellow,
+      effect: 'caution',
+    };
+  }
+
+  // CVD agreeing on the contradicting break = go neutral, bias no longer valid today
+  return {
+    updatedBias: 'neutral',
+    updatedConviction: 'neutral',
+    verdict: `IB break ${ibBreakDir} contradicts ${preBias.bias} bias with time + CVD confirmation.`,
+    action: `Pre-market bias is wrong today. Stop looking for ${preBias.bias === 'bullish' ? 'longs' : 'shorts'}. Go neutral. Fade the range or sit on hands. Do not flip to ${preBias.bias === 'bullish' ? 'bearish' : 'bullish'} — one IB break is not a full structural reversal.`,
+    color: C.orange,
+    effect: 'neutralized',
   };
 }
 
@@ -530,48 +633,51 @@ function SectionLabel({children}){
   return <div style={{fontSize:10,color:C.textSub,marginBottom:8,letterSpacing:'0.1em',textTransform:'uppercase',fontWeight:600}}>{children}</div>;
 }
 
-function BiasEnginePanel({biasInputs, onChange, result}){
+function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
   const set = k => v => onChange({...biasInputs, [k]: v});
+  const midSession = computeMidSession(biasInputs, preBiasResult || result);
 
   const convictionColors = {
     high: C.green, medium: C.yellow, low: C.orange,
     neutral: C.yellow, fade: C.orange, override: C.yellow, '': C.textMut
   };
 
+  const displayResult = {...result, midSession};
+
   return(
     <div>
       {/* ── OUTPUT CARD ── */}
-      {result.bias && (
+      {displayResult.bias && (
         <div style={{
-          background: result.color+'12',
-          border:`1.5px solid ${result.color}44`,
+          background: displayResult.color+'12',
+          border:`1.5px solid ${displayResult.color}44`,
           borderRadius:14,padding:'18px 20px',marginBottom:28,
         }}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
             <div>
-              <div style={{fontSize:11,color:C.textMut,letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:4}}>Auto Bias</div>
-              <div style={{fontSize:26,fontWeight:800,color:result.color,textTransform:'uppercase',letterSpacing:'0.06em'}}>
-                {result.bias === 'bullish' ? '🟢' : result.bias === 'bearish' ? '🔴' : '⚪'} {result.bias}
+              <div style={{fontSize:11,color:C.textMut,letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:4}}>Pre-Market Bias</div>
+              <div style={{fontSize:26,fontWeight:800,color:displayResult.color,textTransform:'uppercase',letterSpacing:'0.06em'}}>
+                {displayResult.bias === 'bullish' ? '🟢' : displayResult.bias === 'bearish' ? '🔴' : '⚪'} {displayResult.bias}
               </div>
             </div>
-            {result.conviction && (
+            {displayResult.conviction && (
               <div style={{
                 padding:'6px 14px',borderRadius:20,
-                background:convictionColors[result.conviction]+'22',
-                border:`1px solid ${convictionColors[result.conviction]}44`,
+                background:convictionColors[displayResult.conviction]+'22',
+                border:`1px solid ${convictionColors[displayResult.conviction]}44`,
                 fontSize:12,fontWeight:700,
-                color:convictionColors[result.conviction],
+                color:convictionColors[displayResult.conviction],
                 textTransform:'uppercase',letterSpacing:'0.08em',
-              }}>{result.conviction}</div>
+              }}>{displayResult.conviction}</div>
             )}
           </div>
-          {result.sizing && (
+          {displayResult.sizing && (
             <div style={{fontSize:13,color:C.textSub,lineHeight:1.6,marginBottom:12,paddingBottom:12,borderBottom:`1px solid ${C.border}`}}>
-              {result.sizing}
+              {displayResult.sizing}
             </div>
           )}
           <div style={{display:'flex',flexDirection:'column',gap:6}}>
-            {result.signals.map((s,i)=>(
+            {displayResult.signals.map((s,i)=>(
               <div key={i} style={{fontSize:12,color:C.textMut,lineHeight:1.5}}>{s}</div>
             ))}
           </div>
@@ -734,6 +840,117 @@ function BiasEnginePanel({biasInputs, onChange, result}){
         />
         <div style={{fontSize:11,color:C.textDim,marginTop:6}}>Open drive confirmed → ~65-70% trend continuation. Press the bias.</div>
       </div>
+
+      {/* ── SECTION C: Mid-session IB breakout update ── */}
+      <div style={{height:1,background:C.surface2,margin:'28px 0 24px'}}/>
+      <div style={{fontSize:11,color:C.orange,letterSpacing:'0.1em',textTransform:'uppercase',fontWeight:700,marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
+        <div style={{width:3,height:14,background:C.orange,borderRadius:2}}/>
+        Mid-Session IB Update
+      </div>
+      <div style={{fontSize:11,color:C.textDim,marginBottom:18,lineHeight:1.6}}>
+        Fill in after IB forms and price has had 15–30 min to accept or reject a break.
+      </div>
+
+      {/* IB break direction */}
+      <div style={{marginBottom:18}}>
+        <SectionLabel>Did IB break?</SectionLabel>
+        <Pills
+          options={[
+            {label:'⬆ Broke high',value:'high'},
+            {label:'⬇ Broke low',value:'low'},
+            {label:'No clean break',value:'none'},
+          ]}
+          value={biasInputs.ibBreakDir}
+          onChange={set('ibBreakDir')}
+          colors={{high:C.green,low:C.red,none:'#aaa'}}
+        />
+      </div>
+
+      {/* Time acceptance — only show if break happened */}
+      {(biasInputs.ibBreakDir === 'high' || biasInputs.ibBreakDir === 'low') && (
+        <>
+          <div style={{marginBottom:18}}>
+            <SectionLabel>Time acceptance (15–30 min held outside IB)?</SectionLabel>
+            <Pills
+              options={[
+                {label:'✓ Yes — held outside',value:'yes'},
+                {label:'✗ No — snapped back inside',value:'no'},
+              ]}
+              value={biasInputs.ibTimeAcceptance}
+              onChange={set('ibTimeAcceptance')}
+              colors={{yes:C.green,no:C.red}}
+            />
+            <div style={{fontSize:11,color:C.textDim,marginTop:6}}>
+              Yes = new TPO letters building outside IB. No = price returned inside quickly.
+            </div>
+          </div>
+
+          {/* CVD — only show if time accepted */}
+          {biasInputs.ibTimeAcceptance === 'yes' && (
+            <div style={{marginBottom:18}}>
+              <SectionLabel>CVD agreement with break direction?</SectionLabel>
+              <Pills
+                options={[
+                  {label:'Agreeing',value:'agreeing'},
+                  {label:'Flat',value:'flat'},
+                  {label:'Diverging',value:'diverging'},
+                ]}
+                value={biasInputs.ibCVD}
+                onChange={set('ibCVD')}
+                colors={{agreeing:C.green,flat:'#aaa',diverging:C.red}}
+              />
+              <div style={{fontSize:11,color:C.textDim,marginTop:6,lineHeight:1.5}}>
+                Agreeing = delta moving with price. Flat = no delta participation. Diverging = delta opposite to price — potential trap.
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* Mid-session output card */}
+      {displayResult.midSession && (
+        <div style={{
+          background: displayResult.midSession.color+'12',
+          border:`1.5px solid ${displayResult.midSession.color}44`,
+          borderRadius:14,padding:'16px 18px',marginTop:8,
+        }}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+            <div style={{fontSize:11,color:C.textMut,letterSpacing:'0.1em',textTransform:'uppercase'}}>Updated Bias</div>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              {displayResult.midSession.effect && displayResult.midSession.effect !== 'none' && (
+                <div style={{
+                  fontSize:10,fontWeight:700,letterSpacing:'0.08em',textTransform:'uppercase',
+                  padding:'3px 10px',borderRadius:20,
+                  background: displayResult.midSession.effect === 'confirmed' ? C.green+'22'
+                    : displayResult.midSession.effect === 'upgrade' ? C.blue+'22'
+                    : displayResult.midSession.effect === 'neutralized' ? C.orange+'22'
+                    : C.yellow+'22',
+                  color: displayResult.midSession.effect === 'confirmed' ? C.green
+                    : displayResult.midSession.effect === 'upgrade' ? C.blue
+                    : displayResult.midSession.effect === 'neutralized' ? C.orange
+                    : C.yellow,
+                }}>
+                  {displayResult.midSession.effect === 'confirmed' ? '✓ Confirmed'
+                    : displayResult.midSession.effect === 'upgrade' ? '↑ Upgraded'
+                    : displayResult.midSession.effect === 'neutralized' ? '⚠ Neutralized'
+                    : displayResult.midSession.effect === 'caution' ? '⚡ Caution'
+                    : '— No change'}
+                </div>
+              )}
+              <div style={{fontSize:18,fontWeight:800,color:displayResult.midSession.color,textTransform:'uppercase'}}>
+                {displayResult.midSession.updatedBias === 'bullish' ? '🟢'
+                  : displayResult.midSession.updatedBias === 'bearish' ? '🔴' : '⚪'} {displayResult.midSession.updatedBias}
+              </div>
+            </div>
+          </div>
+          <div style={{fontSize:13,color:displayResult.midSession.color,fontWeight:600,marginBottom:8}}>
+            {displayResult.midSession.verdict}
+          </div>
+          <div style={{fontSize:12,color:C.textSub,lineHeight:1.6}}>
+            {displayResult.midSession.action}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -744,14 +961,19 @@ function PreMarketTab({data,onChange,isMobile}){
 
   const biasInputs = data.biasInputs || emptyBiasInputs();
   const biasResult = computeBias(biasInputs);
+  const midSessionResult = computeMidSession(biasInputs, biasResult);
 
   const handleBiasInputChange = (newInputs) => {
     const result = computeBias(newInputs);
+    const mid = computeMidSession(newInputs, result);
+    const effectiveBias = mid ? mid.updatedBias : result.bias;
     onChange({
       ...data,
       biasInputs: newInputs,
-      dailyBias: result.bias === 'bullish' ? 'bullish' : result.bias === 'bearish' ? 'bearish' : result.bias === 'neutral' ? 'neutral' : data.dailyBias,
+      dailyBias: effectiveBias === 'bullish' ? 'bullish' : effectiveBias === 'bearish' ? 'bearish' : effectiveBias === 'neutral' ? 'neutral' : data.dailyBias,
       computedBias: result.bias,
+      midSessionBias: mid ? mid.updatedBias : '',
+      midSessionEffect: mid ? mid.effect : '',
     });
   };
 
@@ -762,6 +984,7 @@ function PreMarketTab({data,onChange,isMobile}){
         biasInputs={biasInputs}
         onChange={handleBiasInputChange}
         result={biasResult}
+        preBiasResult={biasResult}
       />
 
       <Divider label="Big Picture"/>
@@ -930,9 +1153,10 @@ function EODTab({data,onChange,trades,date,isMobile}){
   const totalPts=trades.reduce((s,t)=>s+(parseFloat(t.points)||0),0);
   const[copied,setCopied]=useState(false);
 
-  const biasStr = data.dailyBias ? `${data.dailyBias}${data.computedBias ? ' (auto-computed)' : ''}` : '—';
+  const biasStr = data.dailyBias ? `${data.dailyBias} (pre-market)` : '—';
+  const midStr = data.midSessionBias ? `${data.midSessionBias} — ${data.midSessionEffect || 'updated'}` : 'not logged';
   const prompt=`Review my trading journal for ${date}.
-Daily Bias: ${biasStr} | Big Picture: ${data.bigPicture||'—'}
+Pre-Market Bias: ${biasStr} | Mid-Session Update: ${midStr} | Big Picture: ${data.bigPicture||'—'}
 Plan: ${data.plan||'—'}
 Pre-Market Feelings: ${data.feelings||'—'}
 Trades (${trades.length}):
@@ -942,7 +1166,7 @@ EOD Emotions: ${data.emotions||'—'}
 What I Did Well: ${data.well||'—'}
 What I Must Fix: ${data.fix||'—'}
 General Review: ${data.review||'—'}
-Please: 1. Bias accuracy. 2. Trade-by-trade breakdown. 3. What I did well (specific). 4. Top 1-2 fixes. 5. Confirm P&L math (ES=$50 NQ=$20 MES=$5 MNQ=$2). 6. Daily review. 7. Tradeable day verdict. 8. One edge to build on. Direct, no padding.`;
+Please: 1. Pre-market bias accuracy. 2. Did mid-session IB update help or hurt. 3. Trade-by-trade breakdown. 4. What I did well (specific). 5. Top 1-2 fixes. 6. Confirm P&L math (ES=$50 NQ=$20 MES=$5 MNQ=$2). 7. Daily review. 8. One edge to build on. Direct, no padding.`;
 
   const copy=()=>{navigator.clipboard.writeText(prompt);setCopied(true);setTimeout(()=>setCopied(false),2500);};
 
@@ -1098,7 +1322,9 @@ export default function App(){
   };
 
   const computedBias = dayData?.pre?.biasInputs ? computeBias(dayData.pre.biasInputs) : null;
-  const biasColor = computedBias?.color || (dayData?.pre?.dailyBias==='bullish'?C.green:dayData?.pre?.dailyBias==='bearish'?C.red:null);
+  const midSession = (computedBias && dayData?.pre?.biasInputs) ? computeMidSession(dayData.pre.biasInputs, computedBias) : null;
+  const activeBias = midSession ? midSession.updatedBias : computedBias?.bias;
+  const biasColor = activeBias === 'bullish' ? C.green : activeBias === 'bearish' ? C.red : activeBias === 'neutral' ? C.yellow : null;
   const isToday=selectedDate===today;
   const dayIdx=index[selectedDate];
   const sideW=260;
@@ -1150,13 +1376,24 @@ export default function App(){
                 ))}
               </div>
             </div>
-            {computedBias?.bias&&(
+            {activeBias&&(
               <div style={{padding:'12px 14px',borderRadius:10,border:`1px solid ${biasColor}44`,background:biasColor+'10'}}>
-                <div style={{fontSize:10,color:C.textMut,letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:4}}>Auto Bias</div>
-                <div style={{fontSize:16,color:biasColor,fontWeight:800,textTransform:'capitalize',marginBottom:4}}>
-                  {computedBias.bias==='bullish'?'🟢':computedBias.bias==='bearish'?'🔴':'⚪'} {computedBias.bias}
+                <div style={{fontSize:10,color:C.textMut,letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:4}}>
+                  {midSession && midSession.effect !== 'none' ? 'Updated Bias' : 'Pre-Market Bias'}
                 </div>
-                {computedBias.conviction&&<div style={{fontSize:11,color:biasColor,opacity:0.7,textTransform:'uppercase',letterSpacing:'0.06em'}}>{computedBias.conviction} conviction</div>}
+                <div style={{fontSize:16,color:biasColor,fontWeight:800,textTransform:'capitalize',marginBottom:4}}>
+                  {activeBias==='bullish'?'🟢':activeBias==='bearish'?'🔴':'⚪'} {activeBias}
+                </div>
+                {midSession && midSession.effect && midSession.effect !== 'none' && (
+                  <div style={{fontSize:10,color:biasColor,opacity:0.7,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:2}}>
+                    {midSession.effect === 'confirmed' ? '✓ IB confirmed'
+                      : midSession.effect === 'upgrade' ? '↑ IB upgraded'
+                      : midSession.effect === 'neutralized' ? '⚠ IB neutralized'
+                      : midSession.effect === 'caution' ? '⚡ IB caution'
+                      : ''}
+                  </div>
+                )}
+                {computedBias?.conviction&&<div style={{fontSize:11,color:biasColor,opacity:0.7,textTransform:'uppercase',letterSpacing:'0.06em'}}>{computedBias.conviction} conviction</div>}
               </div>
             )}
             {dayIdx&&(
@@ -1178,7 +1415,7 @@ export default function App(){
                 <div style={{fontSize:11,color:C.textMut,letterSpacing:'0.12em',textTransform:'uppercase'}}>Trading Journal</div>
                 <div style={{display:'flex',gap:8,alignItems:'center'}}>
                   <span style={{fontSize:11,color:saveStatus==='saving'?C.yellow:saveStatus==='saved'?C.green:'transparent'}}>{saveStatus==='saving'?'saving...':'✓ saved'}</span>
-                  {computedBias?.bias&&<div style={{padding:'4px 10px',borderRadius:20,border:`1px solid ${biasColor}44`,background:biasColor+'12',fontSize:11,color:biasColor,fontWeight:700,textTransform:'uppercase'}}>{computedBias.bias}</div>}
+                  {activeBias&&<div style={{padding:'4px 10px',borderRadius:20,border:`1px solid ${biasColor}44`,background:biasColor+'12',fontSize:11,color:biasColor,fontWeight:700,textTransform:'uppercase'}}>{activeBias}</div>}
                 </div>
               </div>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:16}}>
@@ -1214,7 +1451,7 @@ export default function App(){
             <>
               {tab===0&&<PreMarketTab data={dayData.pre} onChange={updatePre} isMobile={isMobile}/>}
               {tab===1&&<TradesTab trades={dayData.trades} onChange={updateTrades} isMobile={isMobile}/>}
-              {tab===2&&<EODTab data={{...dayData.eod,dailyBias:dayData.pre.dailyBias,computedBias:dayData.pre.computedBias,bigPicture:dayData.pre.bigPicture,plan:dayData.pre.plan,feelings:dayData.pre.feelings}} onChange={updateEod} trades={dayData.trades} date={selectedDate} isMobile={isMobile}/>}
+              {tab===2&&<EODTab data={{...dayData.eod,dailyBias:dayData.pre.dailyBias,computedBias:dayData.pre.computedBias,midSessionBias:dayData.pre.midSessionBias,midSessionEffect:dayData.pre.midSessionEffect,bigPicture:dayData.pre.bigPicture,plan:dayData.pre.plan,feelings:dayData.pre.feelings}} onChange={updateEod} trades={dayData.trades} date={selectedDate} isMobile={isMobile}/> }
             </>
           )}
         </div>
