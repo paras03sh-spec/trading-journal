@@ -30,9 +30,205 @@ function getMonthDays(year,month){
   }
   return days;
 }
+
+// ─── Bias Engine ──────────────────────────────────────────────────────────────
+function computeBias(bi) {
+  // bi = biasInputs object from pre data
+  const {
+    prevDayCandle,      // 'green' | 'red' | 'inside' | ''
+    insideDayCount,     // number (0,1,2,3+)
+    profileShape,       // 'B'|'b'|'P'|'D'|'normal'|'single_prints'|''
+    tpoDistribution,    // 'upper'|'lower'|''
+    pocMigration,       // 'rising'|'flat'|'falling'|''
+    atMultiDayEdge,     // 'yes'|'no'|''
+    // same-day inputs
+    ibSize,             // 'short'|'medium'|'large'|''
+    vaOverlap,          // 'heavy'|'none'|''
+    openDrive,          // 'yes'|'no'|''
+  } = bi;
+
+  // ── Step 0: Multi-day balance edge overrides everything ──
+  if (atMultiDayEdge === 'yes') {
+    return {
+      bias: 'neutral',
+      conviction: 'override',
+      sizing: 'No trend trades. Wait for rejection or acceptance signal at the edge.',
+      signals: ['⚠ At multi-day balance edge — daily bias suspended. Watch CVD at the extreme.'],
+      color: C.yellow,
+    };
+  }
+
+  // ── Step 1: Prior day candle (base direction) ──
+  let baseDir = null; // 'long' | 'short' | 'neutral'
+  let signals = [];
+
+  if (parseInt(insideDayCount) >= 2) {
+    baseDir = 'neutral';
+    signals.push(`⚪ ${insideDayCount}+ consecutive inside days — balance mode, fade extremes only`);
+  } else if (prevDayCandle === 'green') {
+    baseDir = 'long';
+    signals.push('🟢 Prior day green — long bias base');
+  } else if (prevDayCandle === 'red') {
+    baseDir = 'short';
+    signals.push('🔴 Prior day red — short bias base');
+  } else if (prevDayCandle === 'inside') {
+    baseDir = 'neutral';
+    signals.push('⚪ Inside day — neutral, fade extremes');
+  }
+
+  if (baseDir === null) {
+    return { bias: '', conviction: '', sizing: '', signals: [], color: C.textMut };
+  }
+
+  // ── Step 2: Profile shape (upgrades/downgrades/flips) ──
+  let profileScore = 0; // positive = bullish, negative = bearish
+  if (profileShape === 'D') {
+    if (prevDayCandle === 'green') { profileScore = 2; signals.push('📈 D-shaped trending profile — strongest continuation, full conviction'); }
+    else if (prevDayCandle === 'red') { profileScore = -2; signals.push('📉 D-shaped trending profile — strongest continuation, full conviction'); }
+  } else if (profileShape === 'B') {
+    profileScore = 2; signals.push('📈 B-shaped profile — buyers won both auctions, long reinforced');
+  } else if (profileShape === 'b') {
+    profileScore = 2; signals.push('📈 b-shaped profile — trapped shorts, long reinforced');
+  } else if (profileShape === 'P') {
+    profileScore = -2; signals.push('📉 P-shaped profile — spike rejected, value built low, short reinforced');
+  } else if (profileShape === 'normal') {
+    signals.push('⚪ Normal bell profile — no extra conviction, candle bias stands');
+  } else if (profileShape === 'single_prints') {
+    signals.push('🧲 Single prints noted — secondary magnet, not a primary signal');
+  }
+
+  // ── Step 3: TPO distribution (tiebreaker) ──
+  if (tpoDistribution === 'upper') {
+    profileScore += 1; signals.push('⬆ TPO letters upper half — buyers controlled close');
+  } else if (tpoDistribution === 'lower') {
+    profileScore -= 1; signals.push('⬇ TPO letters lower half — sellers controlled close');
+  }
+
+  // ── Step 4: POC migration (structural backing) ──
+  if (pocMigration === 'rising') {
+    profileScore += 1; signals.push('↗ Rising POC — institutional accumulation, long backing');
+  } else if (pocMigration === 'falling') {
+    profileScore -= 1; signals.push('↘ Falling POC — distribution, short backing');
+  } else if (pocMigration === 'flat') {
+    signals.push('➡ Flat POC — balanced market, reduce trend conviction');
+  }
+
+  // ── Resolve final direction ──
+  let resolvedDir = baseDir;
+  if (baseDir === 'long' && profileScore < -1) {
+    resolvedDir = 'neutral';
+    signals.push('⚡ Profile conflicts with candle — downgraded to neutral');
+  } else if (baseDir === 'short' && profileScore > 1) {
+    resolvedDir = 'neutral';
+    signals.push('⚡ Profile conflicts with candle — downgraded to neutral');
+  } else if (baseDir === 'neutral' && profileScore >= 2) {
+    resolvedDir = 'long';
+    signals.push('⚡ Profile overrides inside day — long signal from structure');
+  } else if (baseDir === 'neutral' && profileScore <= -2) {
+    resolvedDir = 'short';
+    signals.push('⚡ Profile overrides inside day — short signal from structure');
+  }
+
+  // ── Step 5: Same-day IB filter ──
+  let ibNote = '';
+  let ibBoost = 0;
+  if (ibSize === 'short') {
+    ibNote = '📐 Short IB (<50% ATR) — trending day likely, lean into bias direction';
+    ibBoost = 1;
+  } else if (ibSize === 'medium') {
+    ibNote = '📐 Medium IB — no extra info, carry bias, use VP levels for execution';
+  } else if (ibSize === 'large') {
+    ibNote = '📐 Large IB (>100% ATR) — market already moved, shift to fade posture regardless of bias';
+    ibBoost = -3; // forces neutral/fade
+  }
+  if (ibNote) signals.push(ibNote);
+
+  // Large IB overrides to fade
+  if (ibSize === 'large') {
+    return {
+      bias: 'neutral',
+      conviction: 'fade',
+      sizing: 'Fade posture only. Sell IB high, buy IB low. Prior bias secondary.',
+      signals,
+      color: C.orange,
+    };
+  }
+
+  // ── Step 6: VA overlap + open drive ──
+  if (vaOverlap === 'heavy') {
+    signals.push('🔁 Heavy VA overlap — balanced day likely (~70-80%), tighten targets');
+  } else if (vaOverlap === 'none') {
+    signals.push('↔ No VA overlap — market rejecting prior value, trend probability up');
+    ibBoost += 1;
+  }
+
+  if (openDrive === 'yes') {
+    signals.push('🚀 Open drive confirmed — ~65-70% trend continuation, press the bias');
+    ibBoost += 2;
+  }
+
+  // ── Conviction scoring ──
+  const agreedSignals = Math.abs(profileScore) + ibBoost;
+  let conviction, sizing, biasLabel, color;
+
+  if (resolvedDir === 'neutral') {
+    bias: 'neutral';
+    conviction = 'neutral';
+    sizing = 'Fade extremes only. No trend trades. Half size max.';
+    biasLabel = 'neutral';
+    color = C.yellow;
+  } else if (resolvedDir === 'long') {
+    biasLabel = 'bullish';
+    color = C.green;
+    if (agreedSignals >= 3) {
+      conviction = 'high';
+      sizing = 'Full size. Hold runners. Best trade of the week if IB also confirms.';
+    } else if (agreedSignals >= 1) {
+      conviction = 'medium';
+      sizing = 'Standard size. Normal stops. Take clean setups only.';
+    } else {
+      conviction = 'low';
+      sizing = 'Reduced size. Tighter stops. Mixed signals present.';
+    }
+  } else {
+    biasLabel = 'bearish';
+    color = C.red;
+    if (agreedSignals >= 3) {
+      conviction = 'high';
+      sizing = 'Full size. Hold runners. Best trade of the week if IB also confirms.';
+    } else if (agreedSignals >= 1) {
+      conviction = 'medium';
+      sizing = 'Standard size. Normal stops. Take clean setups only.';
+    } else {
+      conviction = 'low';
+      sizing = 'Reduced size. Tighter stops. Mixed signals present.';
+    }
+  }
+
+  return { bias: biasLabel, conviction, sizing, signals, color };
+}
+
+function emptyBiasInputs() {
+  return {
+    prevDayCandle: '',
+    insideDayCount: '0',
+    profileShape: '',
+    tpoDistribution: '',
+    pocMigration: '',
+    atMultiDayEdge: '',
+    ibSize: '',
+    vaOverlap: '',
+    openDrive: '',
+  };
+}
+
 function emptyDay(){
   return{
-    pre:{dailyBias:'',bigPicture:'',plan:'',feelings:'',
+    pre:{
+      biasInputs: emptyBiasInputs(),
+      computedBias: '',
+      dailyBias:'',
+      bigPicture:'',plan:'',feelings:'',
       esImgFractal:'',esImgTPO:'',esImg15:'',
       nqImgFractal:'',nqImgTPO:'',nqImg15:''},
     trades:[newTrade()],
@@ -66,7 +262,6 @@ function Lightbox({src,onClose}){
     return()=>{document.body.style.overflow='';window.removeEventListener('keydown',esc);};
   },[onClose]);
 
-  // scroll wheel zoom like Discord
   const onWheel=useCallback((e)=>{
     e.preventDefault();
     const delta=e.deltaY>0?-0.15:0.15;
@@ -90,7 +285,6 @@ function Lightbox({src,onClose}){
   const onMouseMove=(e)=>{if(!dragging)return;setPos({x:e.clientX-dragStart.current.mx,y:e.clientY-dragStart.current.my});};
   const onMouseUp=()=>setDragging(false);
 
-  // touch pinch zoom
   const lastTouch=useRef(null);
   const onTouchStart=(e)=>{
     if(e.touches.length===2){
@@ -111,10 +305,8 @@ function Lightbox({src,onClose}){
   };
 
   const zoomPct=Math.round(zoom*100);
-
   return(
     <div onClick={onClose} style={{position:'fixed',inset:0,background:'#000000ee',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',userSelect:'none'}}>
-      {/* top bar */}
       <div onClick={e=>e.stopPropagation()} style={{position:'fixed',top:0,left:0,right:0,height:52,background:'#111111cc',backdropFilter:'blur(12px)',display:'flex',alignItems:'center',justifyContent:'space-between',padding:'0 16px',zIndex:10000,borderBottom:`1px solid ${C.border}`}}>
         <span style={{fontSize:13,color:C.textSub,fontFamily:'inherit'}}>📷 Chart Preview</span>
         <div style={{display:'flex',alignItems:'center',gap:8}}>
@@ -126,7 +318,6 @@ function Lightbox({src,onClose}){
           <button onClick={onClose} style={{...btnStyle,color:C.red}}>✕</button>
         </div>
       </div>
-      {/* image */}
       <div
         ref={imgRef}
         onClick={e=>e.stopPropagation()}
@@ -146,7 +337,6 @@ function Lightbox({src,onClose}){
       >
         <img src={src} alt="chart" style={{maxWidth:'92vw',maxHeight:'calc(92vh - 52px)',borderRadius:6,display:'block',boxShadow:'0 8px 40px #00000088'}}/>
       </div>
-      {/* zoom hint */}
       {zoom===1&&<div style={{position:'fixed',bottom:20,left:'50%',transform:'translateX(-50%)',fontSize:11,color:C.textMut,background:'#111111cc',padding:'6px 14px',borderRadius:20,backdropFilter:'blur(8px)'}}>
         Scroll to zoom · Drag to pan · Esc to close
       </div>}
@@ -155,8 +345,7 @@ function Lightbox({src,onClose}){
 }
 const btnStyle={background:'#1e1e1e',border:`1px solid ${C.border}`,borderRadius:7,color:C.textSub,width:34,height:34,cursor:'pointer',fontSize:16,fontFamily:'inherit',fontWeight:600,display:'flex',alignItems:'center',justifyContent:'center'};
 
-// ─── Image Slot — with working Ctrl+V paste ───────────────────────────────────
-// Each slot listens on its own div for paste via a hidden textarea trick
+// ─── Image Slot ───────────────────────────────────────────────────────────────
 function ImageSlot({label,value,onChange,accent}){
   const[drag,setDrag]=useState(false);
   const[lightbox,setLightbox]=useState(false);
@@ -178,7 +367,6 @@ function ImageSlot({label,value,onChange,accent}){
     }
   },[processFile]);
 
-  // When zone is "focused" (user clicked it), listen for paste on window
   useEffect(()=>{
     if(!pasteActive)return;
     const handler=(e)=>{
@@ -188,7 +376,6 @@ function ImageSlot({label,value,onChange,accent}){
       setPasteActive(false);
     };
     window.addEventListener('paste',handler,true);
-    // click outside deactivates
     const outside=(e)=>{if(zoneRef.current&&!zoneRef.current.contains(e.target))setPasteActive(false);};
     window.addEventListener('mousedown',outside);
     return()=>{window.removeEventListener('paste',handler,true);window.removeEventListener('mousedown',outside);};
@@ -206,11 +393,7 @@ function ImageSlot({label,value,onChange,accent}){
         </div>
         <div
           ref={zoneRef}
-          onClick={()=>{
-            if(value){return;}
-            // toggle paste mode on click so user can then Ctrl+V
-            setPasteActive(true);
-          }}
+          onClick={()=>{if(value){return;}setPasteActive(true);}}
           onDragOver={(e)=>{e.preventDefault();setDrag(true);}}
           onDragLeave={()=>setDrag(false)}
           onDrop={(e)=>{e.preventDefault();setDrag(false);processFile(e.dataTransfer.files[0]);}}
@@ -330,7 +513,6 @@ function StatBox({label,val,color}){
   );
 }
 
-// ─── Instrument section label ─────────────────────────────────────────────────
 function InstrumentLabel({name,color}){
   return(
     <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14,marginTop:4}}>
@@ -339,6 +521,280 @@ function InstrumentLabel({name,color}){
         <div style={{fontSize:14,fontWeight:800,color:color}}>{name}</div>
         <div style={{fontSize:10,color:C.textMut,letterSpacing:'0.08em'}}>CHARTS</div>
       </div>
+    </div>
+  );
+}
+
+// ─── Bias Engine UI ───────────────────────────────────────────────────────────
+function SectionLabel({children}){
+  return <div style={{fontSize:10,color:C.textSub,marginBottom:8,letterSpacing:'0.1em',textTransform:'uppercase',fontWeight:600}}>{children}</div>;
+}
+
+function BiasEnginePanel({biasInputs, onChange, result}){
+  const set = k => v => onChange({...biasInputs, [k]: v});
+
+  const convictionColors = {
+    high: C.green, medium: C.yellow, low: C.orange,
+    neutral: C.yellow, fade: C.orange, override: C.yellow, '': C.textMut
+  };
+
+  return(
+    <div>
+      {/* ── OUTPUT CARD ── */}
+      {result.bias && (
+        <div style={{
+          background: result.color+'12',
+          border:`1.5px solid ${result.color}44`,
+          borderRadius:14,padding:'18px 20px',marginBottom:28,
+        }}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
+            <div>
+              <div style={{fontSize:11,color:C.textMut,letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:4}}>Auto Bias</div>
+              <div style={{fontSize:26,fontWeight:800,color:result.color,textTransform:'uppercase',letterSpacing:'0.06em'}}>
+                {result.bias === 'bullish' ? '🟢' : result.bias === 'bearish' ? '🔴' : '⚪'} {result.bias}
+              </div>
+            </div>
+            {result.conviction && (
+              <div style={{
+                padding:'6px 14px',borderRadius:20,
+                background:convictionColors[result.conviction]+'22',
+                border:`1px solid ${convictionColors[result.conviction]}44`,
+                fontSize:12,fontWeight:700,
+                color:convictionColors[result.conviction],
+                textTransform:'uppercase',letterSpacing:'0.08em',
+              }}>{result.conviction}</div>
+            )}
+          </div>
+          {result.sizing && (
+            <div style={{fontSize:13,color:C.textSub,lineHeight:1.6,marginBottom:12,paddingBottom:12,borderBottom:`1px solid ${C.border}`}}>
+              {result.sizing}
+            </div>
+          )}
+          <div style={{display:'flex',flexDirection:'column',gap:6}}>
+            {result.signals.map((s,i)=>(
+              <div key={i} style={{fontSize:12,color:C.textMut,lineHeight:1.5}}>{s}</div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── SECTION A: Pre-market inputs ── */}
+      <div style={{fontSize:11,color:C.blue,letterSpacing:'0.1em',textTransform:'uppercase',fontWeight:700,marginBottom:16,display:'flex',alignItems:'center',gap:8}}>
+        <div style={{width:3,height:14,background:C.blue,borderRadius:2}}/>
+        Pre-Market Inputs
+      </div>
+
+      {/* Prior day candle */}
+      <div style={{marginBottom:18}}>
+        <SectionLabel>Prior day body (close vs open, no wicks)</SectionLabel>
+        <Pills
+          options={[
+            {label:'🟢 Green close',value:'green'},
+            {label:'🔴 Red close',value:'red'},
+            {label:'⚪ Inside day',value:'inside'},
+          ]}
+          value={biasInputs.prevDayCandle}
+          onChange={set('prevDayCandle')}
+          colors={{green:C.green,red:C.red,inside:'#aaa'}}
+        />
+      </div>
+
+      {/* Inside day count — only show if inside or if count > 0 */}
+      {(biasInputs.prevDayCandle === 'inside' || parseInt(biasInputs.insideDayCount) > 0) && (
+        <div style={{marginBottom:18}}>
+          <SectionLabel>Consecutive inside days</SectionLabel>
+          <Pills
+            options={[{label:'1',value:'1'},{label:'2',value:'2'},{label:'3+',value:'3'}]}
+            value={biasInputs.insideDayCount}
+            onChange={set('insideDayCount')}
+            colors={{1:C.yellow,2:C.orange,3:C.red}}
+          />
+        </div>
+      )}
+
+      {/* Profile shape */}
+      <div style={{marginBottom:18}}>
+        <SectionLabel>Prior day profile shape</SectionLabel>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          {[
+            {label:'D — Trend',value:'D',col:C.purple},
+            {label:'B — Double dist. long',value:'B',col:C.green},
+            {label:'b — Trapped shorts',value:'b',col:C.teal},
+            {label:'P — Spike rejected',value:'P',col:C.red},
+            {label:'Normal bell',value:'normal',col:'#aaa'},
+            {label:'Single prints',value:'single_prints',col:C.yellow},
+          ].map(o=>{
+            const active=biasInputs.profileShape===o.value;
+            return(
+              <button key={o.value} onClick={()=>set('profileShape')(active?'':o.value)} style={{
+                padding:'7px 14px',borderRadius:20,
+                border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
+                background:active?o.col+'22':'transparent',
+                color:active?o.col:C.textMut,fontSize:12,fontFamily:'inherit',
+                cursor:'pointer',fontWeight:active?700:400,transition:'all 0.15s',
+              }}>{o.label}</button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* TPO distribution */}
+      <div style={{marginBottom:18}}>
+        <SectionLabel>TPO letter distribution (where did most letters print?)</SectionLabel>
+        <Pills
+          options={[
+            {label:'⬆ Upper half',value:'upper'},
+            {label:'⬇ Lower half',value:'lower'},
+          ]}
+          value={biasInputs.tpoDistribution}
+          onChange={set('tpoDistribution')}
+          colors={{upper:C.green,lower:C.red}}
+        />
+      </div>
+
+      {/* POC migration */}
+      <div style={{marginBottom:18}}>
+        <SectionLabel>POC migration (last 3–5 sessions)</SectionLabel>
+        <Pills
+          options={[
+            {label:'↗ Rising',value:'rising'},
+            {label:'➡ Flat',value:'flat'},
+            {label:'↘ Falling',value:'falling'},
+          ]}
+          value={biasInputs.pocMigration}
+          onChange={set('pocMigration')}
+          colors={{rising:C.green,flat:'#aaa',falling:C.red}}
+        />
+      </div>
+
+      {/* Multi-day balance edge */}
+      <div style={{marginBottom:24}}>
+        <SectionLabel>At multi-day balance edge?</SectionLabel>
+        <Pills
+          options={[
+            {label:'✓ Yes — at edge',value:'yes'},
+            {label:'✗ No — open space',value:'no'},
+          ]}
+          value={biasInputs.atMultiDayEdge}
+          onChange={set('atMultiDayEdge')}
+          colors={{yes:C.orange,no:C.teal}}
+        />
+      </div>
+
+      {/* ── SECTION B: Same-day inputs (10:30 check) ── */}
+      <div style={{fontSize:11,color:C.purple,letterSpacing:'0.1em',textTransform:'uppercase',fontWeight:700,marginBottom:16,display:'flex',alignItems:'center',gap:8}}>
+        <div style={{width:3,height:14,background:C.purple,borderRadius:2}}/>
+        Same-Day Inputs (10:30 EST)
+      </div>
+
+      {/* IB size */}
+      <div style={{marginBottom:18}}>
+        <SectionLabel>IB size vs prior day ATR</SectionLabel>
+        <Pills
+          options={[
+            {label:'Short &lt;50%',value:'short'},
+            {label:'Medium 50–100%',value:'medium'},
+            {label:'Large &gt;100%',value:'large'},
+          ]}
+          value={biasInputs.ibSize}
+          onChange={set('ibSize')}
+          colors={{short:C.teal,medium:'#aaa',large:C.orange}}
+        />
+        <div style={{fontSize:11,color:C.textDim,marginTop:6,lineHeight:1.5}}>
+          Short → trending day. Medium → carry bias. Large → fade posture regardless of bias.
+        </div>
+      </div>
+
+      {/* VA overlap */}
+      <div style={{marginBottom:18}}>
+        <SectionLabel>Value area overlap with prior session</SectionLabel>
+        <Pills
+          options={[
+            {label:'Heavy overlap',value:'heavy'},
+            {label:'No overlap / gap',value:'none'},
+          ]}
+          value={biasInputs.vaOverlap}
+          onChange={set('vaOverlap')}
+          colors={{heavy:C.yellow,none:C.blue}}
+        />
+        <div style={{fontSize:11,color:C.textDim,marginTop:6}}>Heavy → balanced day likely. No overlap → trend day probability up.</div>
+      </div>
+
+      {/* Open drive */}
+      <div style={{marginBottom:8}}>
+        <SectionLabel>Open drive? (Opened outside VA, no return in first hour)</SectionLabel>
+        <Pills
+          options={[
+            {label:'✓ Yes',value:'yes'},
+            {label:'✗ No',value:'no'},
+          ]}
+          value={biasInputs.openDrive}
+          onChange={set('openDrive')}
+          colors={{yes:C.green,no:'#aaa'}}
+        />
+        <div style={{fontSize:11,color:C.textDim,marginTop:6}}>Open drive confirmed → ~65-70% trend continuation. Press the bias.</div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Pre-Market Tab ───────────────────────────────────────────────────────────
+function PreMarketTab({data,onChange,isMobile}){
+  const set=k=>v=>onChange({...data,[k]:v});
+
+  const biasInputs = data.biasInputs || emptyBiasInputs();
+  const biasResult = computeBias(biasInputs);
+
+  const handleBiasInputChange = (newInputs) => {
+    const result = computeBias(newInputs);
+    onChange({
+      ...data,
+      biasInputs: newInputs,
+      dailyBias: result.bias === 'bullish' ? 'bullish' : result.bias === 'bearish' ? 'bearish' : result.bias === 'neutral' ? 'neutral' : data.dailyBias,
+      computedBias: result.bias,
+    });
+  };
+
+  return(
+    <div>
+      {/* Bias Engine */}
+      <BiasEnginePanel
+        biasInputs={biasInputs}
+        onChange={handleBiasInputChange}
+        result={biasResult}
+      />
+
+      <Divider label="Big Picture"/>
+
+      {/* Big picture — weekly/macro context */}
+      <div style={{marginBottom:24}}>
+        <div style={{fontSize:11,color:C.textSub,marginBottom:10,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Big Picture (weekly/macro)</div>
+        <Pills options={[{label:'🐂 Bull',value:'bull'},{label:'⚪ Neutral',value:'neutral'},{label:'🐻 Bear',value:'bear'}]}
+          value={data.bigPicture} onChange={set('bigPicture')}
+          colors={{bull:C.green,neutral:'#aaa',bear:C.red}}/>
+      </div>
+
+      <Divider label="Charts"/>
+
+      {/* ES Section */}
+      <InstrumentLabel name="ES" color={C.blue}/>
+      <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:20}}>
+        <ImageSlot label="Fractal" value={data.esImgFractal} onChange={set('esImgFractal')} accent={C.blue}/>
+        <ImageSlot label="TPO" value={data.esImgTPO} onChange={set('esImgTPO')} accent={C.blue}/>
+        <ImageSlot label="15min" value={data.esImg15} onChange={set('esImg15')} accent={C.blue}/>
+      </div>
+
+      {/* NQ Section */}
+      <InstrumentLabel name="NQ" color={C.purple}/>
+      <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:8}}>
+        <ImageSlot label="Fractal" value={data.nqImgFractal} onChange={set('nqImgFractal')} accent={C.purple}/>
+        <ImageSlot label="TPO" value={data.nqImgTPO} onChange={set('nqImgTPO')} accent={C.purple}/>
+        <ImageSlot label="15min" value={data.nqImg15} onChange={set('nqImg15')} accent={C.purple}/>
+      </div>
+
+      <Divider label="Plan"/>
+      <Field label="Daily Operating Plan" placeholder="Key levels · VAH/VAL/POC · Setups · Max loss · Risk rules..." value={data.plan} onChange={set('plan')} rows={4}/>
+      <Field label="Pre-Market Feelings" placeholder="Mindset · Sleep · Confidence · Anything affecting edge..." value={data.feelings} onChange={set('feelings')} rows={3}/>
     </div>
   );
 }
@@ -393,10 +849,7 @@ function TradeCard({index,trade,onChange,onRemove,isMobile}){
               {label:'Balance Reclaim',value:'reclaim'},
               {label:'Balance Breakout',value:'breakout'},
             ]} value={trade.plan} onChange={set('plan')} colors={{
-              balance:C.blue,
-              failedexp:C.orange,
-              reclaim:C.teal,
-              breakout:C.yellow,
+              balance:C.blue,failedexp:C.orange,reclaim:C.teal,breakout:C.yellow,
             }}/>
           </div>
           <div style={{marginBottom:16}}>
@@ -443,6 +896,99 @@ function SummaryBar({trades}){
       <StatBox label="Points" val={`${totalPts>=0?'+':''}${totalPts.toFixed(1)}`} color={totalPts>=0?C.green:C.red}/>
       <StatBox label="W Rate" val={`${wr}%`} color={C.yellow}/>
       <StatBox label="Trades" val={`${wins}W ${losses}L`} color={C.textSub}/>
+    </div>
+  );
+}
+
+function TradesTab({trades,onChange,isMobile}){
+  const update=(i,t)=>onChange(trades.map((x,j)=>j===i?t:x));
+  const remove=(i)=>onChange(trades.filter((_,j)=>j!==i));
+  const add=()=>onChange([...trades,newTrade()]);
+  return(
+    <div>
+      <SummaryBar trades={trades}/>
+      {trades.map((t,i)=>(
+        <TradeCard key={i} index={i} trade={t} onChange={nt=>update(i,nt)} onRemove={()=>remove(i)} isMobile={isMobile}/>
+      ))}
+      <button onClick={add} style={{
+        width:'100%',padding:'13px',marginTop:8,
+        background:'transparent',border:`1.5px dashed ${C.border}`,
+        borderRadius:12,color:C.textMut,fontSize:13,
+        fontFamily:'inherit',cursor:'pointer',letterSpacing:'0.04em',transition:'all 0.15s',
+      }}
+        onMouseEnter={e=>{e.target.style.borderColor=C.border2;e.target.style.color=C.textSub;}}
+        onMouseLeave={e=>{e.target.style.borderColor=C.border;e.target.style.color=C.textMut;}}
+      >+ Add Trade</button>
+    </div>
+  );
+}
+
+// ─── EOD Tab ─────────────────────────────────────────────────────────────────
+function EODTab({data,onChange,trades,date,isMobile}){
+  const set=k=>v=>onChange({...data,[k]:v});
+  const total=trades.reduce((s,t)=>s+calcPnL(t.ticker,t.contracts,t.points),0);
+  const totalPts=trades.reduce((s,t)=>s+(parseFloat(t.points)||0),0);
+  const[copied,setCopied]=useState(false);
+
+  const biasStr = data.dailyBias ? `${data.dailyBias}${data.computedBias ? ' (auto-computed)' : ''}` : '—';
+  const prompt=`Review my trading journal for ${date}.
+Daily Bias: ${biasStr} | Big Picture: ${data.bigPicture||'—'}
+Plan: ${data.plan||'—'}
+Pre-Market Feelings: ${data.feelings||'—'}
+Trades (${trades.length}):
+${trades.map((t,i)=>`Trade ${i+1}: ${t.ticker}|${t.direction||'—'}|${t.contracts}c|SL ${t.sl}pts|Setup:${t.plan}|Candle:${t.candle}|Result:${t.result}|Points:${t.points}|P&L:$${calcPnL(t.ticker,t.contracts,t.points).toFixed(0)}|Notes:${t.notes}`).join('\n')}
+Total P&L: $${total.toFixed(0)} | Total Points: ${totalPts.toFixed(1)}
+EOD Emotions: ${data.emotions||'—'}
+What I Did Well: ${data.well||'—'}
+What I Must Fix: ${data.fix||'—'}
+General Review: ${data.review||'—'}
+Please: 1. Bias accuracy. 2. Trade-by-trade breakdown. 3. What I did well (specific). 4. Top 1-2 fixes. 5. Confirm P&L math (ES=$50 NQ=$20 MES=$5 MNQ=$2). 6. Daily review. 7. Tradeable day verdict. 8. One edge to build on. Direct, no padding.`;
+
+  const copy=()=>{navigator.clipboard.writeText(prompt);setCopied(true);setTimeout(()=>setCopied(false),2500);};
+
+  return(
+    <div>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:24}}>
+        {[
+          {label:'Day P&L',val:`${total>=0?'+':''}$${total.toFixed(0)}`,col:total>=0?C.green:C.red},
+          {label:'Total Points',val:`${totalPts>=0?'+':''}${totalPts.toFixed(1)}`,col:totalPts>=0?C.green:C.red},
+        ].map(s=>(
+          <div key={s.label} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:'16px'}}>
+            <div style={{fontSize:11,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:8}}>{s.label}</div>
+            <div style={{fontSize:30,fontWeight:800,color:s.col,fontVariantNumeric:'tabular-nums'}}>{s.val}</div>
+          </div>
+        ))}
+      </div>
+
+      <Divider label="End of Day Charts"/>
+
+      <InstrumentLabel name="ES" color={C.blue}/>
+      <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:20}}>
+        <ImageSlot label="15min — Full Day" value={data.img15ES} onChange={set('img15ES')} accent={C.blue}/>
+        <ImageSlot label="TPO — Full Day" value={data.imgTPOES} onChange={set('imgTPOES')} accent={C.blue}/>
+      </div>
+
+      <InstrumentLabel name="NQ" color={C.purple}/>
+      <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:8}}>
+        <ImageSlot label="15min — Full Day" value={data.img15NQ} onChange={set('img15NQ')} accent={C.purple}/>
+        <ImageSlot label="TPO — Full Day" value={data.imgTPONQ} onChange={set('imgTPONQ')} accent={C.purple}/>
+      </div>
+
+      <Divider label="Review"/>
+      <Field label="Overall Emotions & Summary" placeholder="In control? Reactive? Overtraded?" value={data.emotions} onChange={set('emotions')} rows={3}/>
+      <Field label="✅ What I Did Well" placeholder="Specific — clean executions, rules, reads..." value={data.well} onChange={set('well')} rows={2}/>
+      <Field label="❌ What I Must Fix" placeholder="Honest — rules broken, bad entries, oversized..." value={data.fix} onChange={set('fix')} rows={2}/>
+      <Field label="General Review" placeholder="Market narrative, levels, notes for tomorrow..." value={data.review} onChange={set('review')} rows={3}/>
+
+      <Divider label="Claude Analysis Prompt"/>
+      <div style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:10,padding:'14px 16px',fontSize:11,color:C.textMut,lineHeight:1.8,fontFamily:'monospace',marginBottom:12,whiteSpace:'pre-wrap',maxHeight:140,overflowY:'auto'}}>{prompt}</div>
+      <button onClick={copy} style={{
+        width:'100%',padding:'13px',
+        background:copied?C.green+'18':'transparent',
+        border:`1.5px solid ${copied?C.green:C.border}`,
+        borderRadius:12,color:copied?C.green:C.textSub,
+        fontSize:13,fontFamily:'inherit',cursor:'pointer',fontWeight:700,transition:'all 0.2s',
+      }}>{copied?'✓ Copied — paste into Claude':'Copy Claude Prompt'}</button>
     </div>
   );
 }
@@ -502,143 +1048,6 @@ function CalendarModal({selectedDate,onSelect,onClose,index}){
   );
 }
 
-// ─── Pre-Market Tab — 6 images: ES (Fractal, TPO, 15min) + NQ (Fractal, TPO, 15min) ──
-function PreMarketTab({data,onChange,isMobile}){
-  const set=k=>v=>onChange({...data,[k]:v});
-  return(
-    <div>
-      <div style={{marginBottom:20}}>
-        <div style={{fontSize:11,color:C.textSub,marginBottom:10,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Daily Bias</div>
-        <Pills options={[{label:'🟢 Bullish',value:'bullish'},{label:'⚪ Neutral',value:'neutral'},{label:'🔴 Bearish',value:'bearish'}]}
-          value={data.dailyBias} onChange={set('dailyBias')}
-          colors={{bullish:C.green,neutral:'#aaa',bearish:C.red}}/>
-      </div>
-      <div style={{marginBottom:24}}>
-        <div style={{fontSize:11,color:C.textSub,marginBottom:10,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Big Picture</div>
-        <Pills options={[{label:'🐂 Bull',value:'bull'},{label:'⚪ Neutral',value:'neutral'},{label:'🐻 Bear',value:'bear'}]}
-          value={data.bigPicture} onChange={set('bigPicture')}
-          colors={{bull:C.green,neutral:'#aaa',bear:C.red}}/>
-      </div>
-
-      <Divider label="Charts"/>
-
-      {/* ES Section */}
-      <InstrumentLabel name="ES" color={C.blue}/>
-      <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:20}}>
-        <ImageSlot label="Fractal" value={data.esImgFractal} onChange={set('esImgFractal')} accent={C.blue}/>
-        <ImageSlot label="TPO" value={data.esImgTPO} onChange={set('esImgTPO')} accent={C.blue}/>
-        <ImageSlot label="15min" value={data.esImg15} onChange={set('esImg15')} accent={C.blue}/>
-      </div>
-
-      {/* NQ Section */}
-      <InstrumentLabel name="NQ" color={C.purple}/>
-      <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:8}}>
-        <ImageSlot label="Fractal" value={data.nqImgFractal} onChange={set('nqImgFractal')} accent={C.purple}/>
-        <ImageSlot label="TPO" value={data.nqImgTPO} onChange={set('nqImgTPO')} accent={C.purple}/>
-        <ImageSlot label="15min" value={data.nqImg15} onChange={set('nqImg15')} accent={C.purple}/>
-      </div>
-
-      <Divider label="Plan"/>
-      <Field label="Daily Operating Plan" placeholder="Key levels · VAH/VAL/POC · Setups · Max loss · Risk rules..." value={data.plan} onChange={set('plan')} rows={4}/>
-      <Field label="Pre-Market Feelings" placeholder="Mindset · Sleep · Confidence · Anything affecting edge..." value={data.feelings} onChange={set('feelings')} rows={3}/>
-    </div>
-  );
-}
-
-function TradesTab({trades,onChange,isMobile}){
-  const update=(i,t)=>onChange(trades.map((x,j)=>j===i?t:x));
-  const remove=(i)=>onChange(trades.filter((_,j)=>j!==i));
-  const add=()=>onChange([...trades,newTrade()]);
-  return(
-    <div>
-      <SummaryBar trades={trades}/>
-      {trades.map((t,i)=>(
-        <TradeCard key={i} index={i} trade={t} onChange={nt=>update(i,nt)} onRemove={()=>remove(i)} isMobile={isMobile}/>
-      ))}
-      <button onClick={add} style={{
-        width:'100%',padding:'13px',marginTop:8,
-        background:'transparent',border:`1.5px dashed ${C.border}`,
-        borderRadius:12,color:C.textMut,fontSize:13,
-        fontFamily:'inherit',cursor:'pointer',letterSpacing:'0.04em',transition:'all 0.15s',
-      }}
-        onMouseEnter={e=>{e.target.style.borderColor=C.border2;e.target.style.color=C.textSub;}}
-        onMouseLeave={e=>{e.target.style.borderColor=C.border;e.target.style.color=C.textMut;}}
-      >+ Add Trade</button>
-    </div>
-  );
-}
-
-// ─── EOD Tab — 4 images: ES 15min, ES TPO, NQ 15min, NQ TPO ─────────────────
-function EODTab({data,onChange,trades,date,isMobile}){
-  const set=k=>v=>onChange({...data,[k]:v});
-  const total=trades.reduce((s,t)=>s+calcPnL(t.ticker,t.contracts,t.points),0);
-  const totalPts=trades.reduce((s,t)=>s+(parseFloat(t.points)||0),0);
-  const[copied,setCopied]=useState(false);
-
-  const prompt=`Review my trading journal for ${date}.
-Daily Bias: ${data.dailyBias||'—'} | Big Picture: ${data.bigPicture||'—'}
-Plan: ${data.plan||'—'}
-Pre-Market Feelings: ${data.feelings||'—'}
-Trades (${trades.length}):
-${trades.map((t,i)=>`Trade ${i+1}: ${t.ticker}|${t.direction||'—'}|${t.contracts}c|SL ${t.sl}pts|Setup:${t.plan}|Candle:${t.candle}|Result:${t.result}|Points:${t.points}|P&L:$${calcPnL(t.ticker,t.contracts,t.points).toFixed(0)}|Notes:${t.notes}`).join('\n')}
-Total P&L: $${total.toFixed(0)} | Total Points: ${totalPts.toFixed(1)}
-EOD Emotions: ${data.emotions||'—'}
-What I Did Well: ${data.well||'—'}
-What I Must Fix: ${data.fix||'—'}
-General Review: ${data.review||'—'}
-Please: 1. Bias accuracy. 2. Trade-by-trade breakdown. 3. What I did well (specific). 4. Top 1-2 fixes. 5. Confirm P&L math (ES=$50 NQ=$20 MES=$5 MNQ=$2). 6. Daily review. 7. Tradeable day verdict. 8. One edge to build on. Direct, no padding.`;
-
-  const copy=()=>{navigator.clipboard.writeText(prompt);setCopied(true);setTimeout(()=>setCopied(false),2500);};
-
-  return(
-    <div>
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:24}}>
-        {[
-          {label:'Day P&L',val:`${total>=0?'+':''}$${total.toFixed(0)}`,col:total>=0?C.green:C.red},
-          {label:'Total Points',val:`${totalPts>=0?'+':''}${totalPts.toFixed(1)}`,col:totalPts>=0?C.green:C.red},
-        ].map(s=>(
-          <div key={s.label} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:'16px'}}>
-            <div style={{fontSize:11,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:8}}>{s.label}</div>
-            <div style={{fontSize:30,fontWeight:800,color:s.col,fontVariantNumeric:'tabular-nums'}}>{s.val}</div>
-          </div>
-        ))}
-      </div>
-
-      <Divider label="End of Day Charts"/>
-
-      {/* ES EOD charts */}
-      <InstrumentLabel name="ES" color={C.blue}/>
-      <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:20}}>
-        <ImageSlot label="15min — Full Day" value={data.img15ES} onChange={set('img15ES')} accent={C.blue}/>
-        <ImageSlot label="TPO — Full Day" value={data.imgTPOES} onChange={set('imgTPOES')} accent={C.blue}/>
-      </div>
-
-      {/* NQ EOD charts */}
-      <InstrumentLabel name="NQ" color={C.purple}/>
-      <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:8}}>
-        <ImageSlot label="15min — Full Day" value={data.img15NQ} onChange={set('img15NQ')} accent={C.purple}/>
-        <ImageSlot label="TPO — Full Day" value={data.imgTPONQ} onChange={set('imgTPONQ')} accent={C.purple}/>
-      </div>
-
-      <Divider label="Review"/>
-      <Field label="Overall Emotions & Summary" placeholder="In control? Reactive? Overtraded?" value={data.emotions} onChange={set('emotions')} rows={3}/>
-      <Field label="✅ What I Did Well" placeholder="Specific — clean executions, rules, reads..." value={data.well} onChange={set('well')} rows={2}/>
-      <Field label="❌ What I Must Fix" placeholder="Honest — rules broken, bad entries, oversized..." value={data.fix} onChange={set('fix')} rows={2}/>
-      <Field label="General Review" placeholder="Market narrative, levels, notes for tomorrow..." value={data.review} onChange={set('review')} rows={3}/>
-
-      <Divider label="Claude Analysis Prompt"/>
-      <div style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:10,padding:'14px 16px',fontSize:11,color:C.textMut,lineHeight:1.8,fontFamily:'monospace',marginBottom:12,whiteSpace:'pre-wrap',maxHeight:140,overflowY:'auto'}}>{prompt}</div>
-      <button onClick={copy} style={{
-        width:'100%',padding:'13px',
-        background:copied?C.green+'18':'transparent',
-        border:`1.5px solid ${copied?C.green:C.border}`,
-        borderRadius:12,color:copied?C.green:C.textSub,
-        fontSize:13,fontFamily:'inherit',cursor:'pointer',fontWeight:700,transition:'all 0.2s',
-      }}>{copied?'✓ Copied — paste into Claude':'Copy Claude Prompt'}</button>
-    </div>
-  );
-}
-
 // ─── Root ─────────────────────────────────────────────────────────────────────
 export default function App(){
   const today=todayStr();
@@ -688,7 +1097,8 @@ export default function App(){
     setTab(0);
   };
 
-  const biasColor=dayData?.pre?.dailyBias==='bullish'?C.green:dayData?.pre?.dailyBias==='bearish'?C.red:null;
+  const computedBias = dayData?.pre?.biasInputs ? computeBias(dayData.pre.biasInputs) : null;
+  const biasColor = computedBias?.color || (dayData?.pre?.dailyBias==='bullish'?C.green:dayData?.pre?.dailyBias==='bearish'?C.red:null);
   const isToday=selectedDate===today;
   const dayIdx=index[selectedDate];
   const sideW=260;
@@ -740,9 +1150,13 @@ export default function App(){
                 ))}
               </div>
             </div>
-            {biasColor&&(
-              <div style={{padding:'10px 14px',borderRadius:10,border:`1px solid ${biasColor}44`,background:biasColor+'10',fontSize:13,color:biasColor,fontWeight:700,textTransform:'capitalize'}}>
-                {dayData?.pre?.dailyBias==='bullish'?'🟢':'🔴'} {dayData?.pre?.dailyBias}
+            {computedBias?.bias&&(
+              <div style={{padding:'12px 14px',borderRadius:10,border:`1px solid ${biasColor}44`,background:biasColor+'10'}}>
+                <div style={{fontSize:10,color:C.textMut,letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:4}}>Auto Bias</div>
+                <div style={{fontSize:16,color:biasColor,fontWeight:800,textTransform:'capitalize',marginBottom:4}}>
+                  {computedBias.bias==='bullish'?'🟢':computedBias.bias==='bearish'?'🔴':'⚪'} {computedBias.bias}
+                </div>
+                {computedBias.conviction&&<div style={{fontSize:11,color:biasColor,opacity:0.7,textTransform:'uppercase',letterSpacing:'0.06em'}}>{computedBias.conviction} conviction</div>}
               </div>
             )}
             {dayIdx&&(
@@ -764,7 +1178,7 @@ export default function App(){
                 <div style={{fontSize:11,color:C.textMut,letterSpacing:'0.12em',textTransform:'uppercase'}}>Trading Journal</div>
                 <div style={{display:'flex',gap:8,alignItems:'center'}}>
                   <span style={{fontSize:11,color:saveStatus==='saving'?C.yellow:saveStatus==='saved'?C.green:'transparent'}}>{saveStatus==='saving'?'saving...':'✓ saved'}</span>
-                  {biasColor&&<div style={{padding:'4px 10px',borderRadius:20,border:`1px solid ${biasColor}44`,background:biasColor+'12',fontSize:11,color:biasColor,fontWeight:700,textTransform:'uppercase'}}>{dayData?.pre?.dailyBias}</div>}
+                  {computedBias?.bias&&<div style={{padding:'4px 10px',borderRadius:20,border:`1px solid ${biasColor}44`,background:biasColor+'12',fontSize:11,color:biasColor,fontWeight:700,textTransform:'uppercase'}}>{computedBias.bias}</div>}
                 </div>
               </div>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:16}}>
@@ -800,7 +1214,7 @@ export default function App(){
             <>
               {tab===0&&<PreMarketTab data={dayData.pre} onChange={updatePre} isMobile={isMobile}/>}
               {tab===1&&<TradesTab trades={dayData.trades} onChange={updateTrades} isMobile={isMobile}/>}
-              {tab===2&&<EODTab data={{...dayData.eod,dailyBias:dayData.pre.dailyBias,bigPicture:dayData.pre.bigPicture,plan:dayData.pre.plan,feelings:dayData.pre.feelings}} onChange={updateEod} trades={dayData.trades} date={selectedDate} isMobile={isMobile}/>}
+              {tab===2&&<EODTab data={{...dayData.eod,dailyBias:dayData.pre.dailyBias,computedBias:dayData.pre.computedBias,bigPicture:dayData.pre.bigPicture,plan:dayData.pre.plan,feelings:dayData.pre.feelings}} onChange={updateEod} trades={dayData.trades} date={selectedDate} isMobile={isMobile}/>}
             </>
           )}
         </div>
