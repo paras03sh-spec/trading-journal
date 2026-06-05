@@ -40,23 +40,12 @@ function computeBias(bi) {
     profileShape,       // 'B'|'b'|'P'|'D'|'normal'|'single_prints'|''
     tpoDistribution,    // 'upper'|'lower'|''
     pocMigration,       // 'rising'|'flat'|'falling'|''
-    atMultiDayEdge,     // 'yes'|'no'|''
+    edgeContext,        // ''|'none'|'high_from_inside'|'low_from_inside'|'high_from_above'|'low_from_below'
     // same-day inputs
     ibSize,             // 'short'|'medium'|'large'|''
     vaOverlap,          // 'heavy'|'none'|''
     openDrive,          // 'yes'|'no'|''
   } = bi;
-
-  // ── Step 0: Multi-day balance edge overrides everything ──
-  if (atMultiDayEdge === 'yes') {
-    return {
-      bias: 'neutral',
-      conviction: 'override',
-      sizing: 'No trend trades. Wait for rejection or acceptance signal at the edge.',
-      signals: ['⚠ At multi-day balance edge — daily bias suspended. Watch CVD at the extreme.'],
-      color: C.yellow,
-    };
-  }
 
   // ── Step 1: Prior day candle (base direction) ──
   let baseDir = null; // 'long' | 'short' | 'neutral'
@@ -67,10 +56,10 @@ function computeBias(bi) {
     signals.push(`⚪ ${insideDayCount}+ consecutive inside days — balance mode, fade extremes only`);
   } else if (prevDayCandle === 'green') {
     baseDir = 'long';
-    signals.push('🟢 Prior day green — long bias base');
+    signals.push('🟢 Prior day green — long bias base (~55-58% base rate)');
   } else if (prevDayCandle === 'red') {
     baseDir = 'short';
-    signals.push('🔴 Prior day red — short bias base');
+    signals.push('🔴 Prior day red — short bias base (~58-62%, down clusters harder)');
   } else if (prevDayCandle === 'inside') {
     baseDir = 'neutral';
     signals.push('⚪ Inside day — neutral, fade extremes');
@@ -80,70 +69,108 @@ function computeBias(bi) {
     return { bias: '', conviction: '', sizing: '', signals: [], color: C.textMut };
   }
 
-  // ── Step 2: Profile shape (upgrades/downgrades/flips) ──
-  let profileScore = 0; // positive = bullish, negative = bearish
+  // ── Step 2: Profile shape ──
+  // profileScore: positive = bullish weight, negative = bearish weight.
+  // ±2 = primary structural signal, ±1 = secondary.
+  let profileScore = 0;
   if (profileShape === 'D') {
-    if (prevDayCandle === 'green') { profileScore = 2; signals.push('📈 D-shaped trending profile — strongest continuation, full conviction'); }
-    else if (prevDayCandle === 'red') { profileScore = -2; signals.push('📉 D-shaped trending profile — strongest continuation, full conviction'); }
+    if (prevDayCandle === 'green') { profileScore = 2; signals.push('📈 D-shape trend up — strongest continuation signal'); }
+    else if (prevDayCandle === 'red') { profileScore = -2; signals.push('📉 D-shape trend down — strongest continuation signal'); }
+    else { signals.push('📊 D-shape noted — needs a directional candle to confirm'); }
   } else if (profileShape === 'B') {
-    profileScore = 2; signals.push('📈 B-shaped profile — buyers won both auctions, long reinforced');
+    profileScore = 2; signals.push('📈 B-shape — buyers won both auctions, long reinforced');
   } else if (profileShape === 'b') {
-    profileScore = 2; signals.push('📈 b-shaped profile — trapped shorts, long reinforced');
+    profileScore = 2; signals.push('📈 b-shape — trapped shorts below, long reinforced');
   } else if (profileShape === 'P') {
-    profileScore = -2; signals.push('📉 P-shaped profile — spike rejected, value built low, short reinforced');
+    profileScore = -2; signals.push('📉 P-shape — spike rejected, value built low, short reinforced');
   } else if (profileShape === 'normal') {
-    signals.push('⚪ Normal bell profile — no extra conviction, candle bias stands');
+    signals.push('⚪ Normal bell — no extra conviction, candle bias stands');
   } else if (profileShape === 'single_prints') {
-    signals.push('🧲 Single prints noted — secondary magnet, not a primary signal');
+    signals.push('🧲 Single prints — secondary magnet, not a primary signal');
   }
 
-  // ── Step 3: TPO distribution (tiebreaker) ──
+  // ── Step 3: TPO distribution (secondary, ±1) ──
   if (tpoDistribution === 'upper') {
-    profileScore += 1; signals.push('⬆ TPO letters upper half — buyers controlled close');
+    profileScore += 1; signals.push('⬆ TPO upper half — buyers controlled close');
   } else if (tpoDistribution === 'lower') {
-    profileScore -= 1; signals.push('⬇ TPO letters lower half — sellers controlled close');
+    profileScore -= 1; signals.push('⬇ TPO lower half — sellers controlled close');
   }
 
-  // ── Step 4: POC migration (structural backing) ──
+  // ── Step 4: POC migration (secondary, ±1) ──
   if (pocMigration === 'rising') {
-    profileScore += 1; signals.push('↗ Rising POC — institutional accumulation, long backing');
+    profileScore += 1; signals.push('↗ Rising POC — accumulation, long backing');
   } else if (pocMigration === 'falling') {
     profileScore -= 1; signals.push('↘ Falling POC — distribution, short backing');
   } else if (pocMigration === 'flat') {
-    signals.push('➡ Flat POC — balanced market, reduce trend conviction');
+    signals.push('➡ Flat POC — balanced, reduce trend conviction');
   }
 
-  // ── Resolve final direction ──
+  // ── Resolve structural direction (candle + profile + tpo + poc) ──
   let resolvedDir = baseDir;
-  if (baseDir === 'long' && profileScore < -1) {
+  if (baseDir === 'long' && profileScore <= -2) {
     resolvedDir = 'neutral';
-    signals.push('⚡ Profile conflicts with candle — downgraded to neutral');
-  } else if (baseDir === 'short' && profileScore > 1) {
+    signals.push('⚡ Structure conflicts with green candle — downgraded to neutral');
+  } else if (baseDir === 'short' && profileScore >= 2) {
     resolvedDir = 'neutral';
-    signals.push('⚡ Profile conflicts with candle — downgraded to neutral');
+    signals.push('⚡ Structure conflicts with red candle — downgraded to neutral');
   } else if (baseDir === 'neutral' && profileScore >= 2) {
     resolvedDir = 'long';
-    signals.push('⚡ Profile overrides inside day — long signal from structure');
+    signals.push('⚡ Structure overrides inside day — long from profile');
   } else if (baseDir === 'neutral' && profileScore <= -2) {
     resolvedDir = 'short';
-    signals.push('⚡ Profile overrides inside day — short signal from structure');
+    signals.push('⚡ Structure overrides inside day — short from profile');
   }
 
-  // ── Step 5: Same-day IB filter ──
-  let ibNote = '';
+  // structuralAgreement = how strongly the structure agrees with resolvedDir
+  let structuralAgreement = 0;
+  if (resolvedDir === 'long') structuralAgreement = Math.max(0, profileScore);
+  else if (resolvedDir === 'short') structuralAgreement = Math.max(0, -profileScore);
+
+  // ── Step 5: Multi-day balance edge (longest-timeframe override) ──
+  if (edgeContext && edgeContext !== 'none') {
+    let edgeBias, edgeColor, edgeConv, edgeSizing, edgeSignal;
+
+    if (edgeContext === 'high_from_inside') {
+      edgeBias = 'neutral'; edgeColor = C.yellow; edgeConv = 'edge-watch';
+      edgeSignal = '⬆ At HIGH edge from inside — long-into-edge done. Neutral at the line.';
+      edgeSizing = 'Two-sided: failed expansion = short back into range. Acceptance + hold above = breakout long. Do not press until it resolves.';
+    } else if (edgeContext === 'low_from_inside') {
+      edgeBias = 'neutral'; edgeColor = C.yellow; edgeConv = 'edge-watch';
+      edgeSignal = '⬇ At LOW edge from inside — short-into-edge done. Neutral at the line.';
+      edgeSizing = 'Two-sided: failed expansion = long back into range. Acceptance + hold below = breakout short. Do not press until it resolves.';
+    } else if (edgeContext === 'high_from_above') {
+      edgeBias = 'bullish'; edgeColor = C.green; edgeConv = 'reclaim';
+      edgeSignal = '↩ Returning to HIGH edge from above — edge is now support, reclaim attempt.';
+      edgeSizing = 'Lean long while edge holds as support. Long on a hold/bounce. If price slices back inside with acceptance, bias dead → neutral range-fade.';
+    } else if (edgeContext === 'low_from_below') {
+      edgeBias = 'bearish'; edgeColor = C.red; edgeConv = 'reclaim';
+      edgeSignal = '↪ Returning to LOW edge from below — edge is now resistance, reclaim attempt.';
+      edgeSizing = 'Lean short while edge holds as resistance. Short on a rejection. If price pushes back inside with acceptance, bias dead → neutral range-fade.';
+    }
+
+    signals.push(edgeSignal);
+    if (ibSize === 'large') {
+      signals.push('📐 Large IB at the edge — extension already spent, favor the fade/rejection side.');
+    } else if (ibSize === 'short') {
+      signals.push('📐 Short IB at the edge — coiled, if it breaks/holds the move can run.');
+    } else if (ibSize === 'medium') {
+      signals.push('📐 Medium IB — let price tell you, no forced read.');
+    }
+
+    return { bias: edgeBias, conviction: edgeConv, sizing: edgeSizing, signals, color: edgeColor };
+  }
+
+  // ── Step 6: Same-day IB filter ──
   let ibBoost = 0;
   if (ibSize === 'short') {
-    ibNote = '📐 Short IB (<50% ATR) — trending day likely, lean into bias direction';
+    signals.push('📐 Short IB (<50% ATR) — trending day likely (~75-80% after a confirmed break), lean into bias');
     ibBoost = 1;
   } else if (ibSize === 'medium') {
-    ibNote = '📐 Medium IB — no extra info, carry bias, use VP levels for execution';
+    signals.push('📐 Medium IB — no extra info, carry bias, use VP levels for execution');
   } else if (ibSize === 'large') {
-    ibNote = '📐 Large IB (>100% ATR) — market already moved, shift to fade posture regardless of bias';
-    ibBoost = -3; // forces neutral/fade
+    signals.push('📐 Large IB (>100% ATR) — market already moved, shift to fade posture regardless of bias');
   }
-  if (ibNote) signals.push(ibNote);
 
-  // Large IB overrides to fade
   if (ibSize === 'large') {
     return {
       bias: 'neutral',
@@ -154,54 +181,45 @@ function computeBias(bi) {
     };
   }
 
-  // ── Step 6: VA overlap + open drive ──
+  // ── Step 7: VA overlap + open drive ──
   if (vaOverlap === 'heavy') {
     signals.push('🔁 Heavy VA overlap — balanced day likely (~70-80%), tighten targets');
+    if (resolvedDir !== 'neutral') ibBoost -= 1;
   } else if (vaOverlap === 'none') {
     signals.push('↔ No VA overlap — market rejecting prior value, trend probability up');
     ibBoost += 1;
   }
 
   if (openDrive === 'yes') {
-    signals.push('🚀 Open drive confirmed — ~65-70% trend continuation, press the bias');
+    signals.push('🚀 Open drive — ~65-70% trend continuation, press the bias');
     ibBoost += 2;
+  } else if (openDrive === 'no') {
+    signals.push('• No open drive — normal rotational open');
   }
 
   // ── Conviction scoring ──
-  const agreedSignals = Math.abs(profileScore) + ibBoost;
+  // score = structural agreement (0-4) + same-day boost.
+  //   >=4 → high (~68-75%), 2-3 → medium (~60-65%), <2 → low (~55-58%)
+  const score = structuralAgreement + ibBoost;
   let conviction, sizing, biasLabel, color;
 
   if (resolvedDir === 'neutral') {
-    bias: 'neutral';
     conviction = 'neutral';
     sizing = 'Fade extremes only. No trend trades. Half size max.';
     biasLabel = 'neutral';
     color = C.yellow;
-  } else if (resolvedDir === 'long') {
-    biasLabel = 'bullish';
-    color = C.green;
-    if (agreedSignals >= 3) {
-      conviction = 'high';
-      sizing = 'Full size. Hold runners. Best trade of the week if IB also confirms.';
-    } else if (agreedSignals >= 1) {
-      conviction = 'medium';
-      sizing = 'Standard size. Normal stops. Take clean setups only.';
-    } else {
-      conviction = 'low';
-      sizing = 'Reduced size. Tighter stops. Mixed signals present.';
-    }
   } else {
-    biasLabel = 'bearish';
-    color = C.red;
-    if (agreedSignals >= 3) {
+    biasLabel = resolvedDir === 'long' ? 'bullish' : 'bearish';
+    color = resolvedDir === 'long' ? C.green : C.red;
+    if (score >= 4) {
       conviction = 'high';
-      sizing = 'Full size. Hold runners. Best trade of the week if IB also confirms.';
-    } else if (agreedSignals >= 1) {
+      sizing = 'Full size. Hold runners. Highest-probability day when IB also confirms (~68-75%).';
+    } else if (score >= 2) {
       conviction = 'medium';
-      sizing = 'Standard size. Normal stops. Take clean setups only.';
+      sizing = 'Standard size. Normal stops. Take clean setups only (~60-65%).';
     } else {
       conviction = 'low';
-      sizing = 'Reduced size. Tighter stops. Mixed signals present.';
+      sizing = 'Reduced size. Tighter stops. Base-rate edge only (~55-58%).';
     }
   }
 
@@ -215,7 +233,7 @@ function emptyBiasInputs() {
     profileShape: '',
     tpoDistribution: '',
     pocMigration: '',
-    atMultiDayEdge: '',
+    edgeContext: '',
     ibSize: '',
     vaOverlap: '',
     openDrive: '',
@@ -639,7 +657,8 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
 
   const convictionColors = {
     high: C.green, medium: C.yellow, low: C.orange,
-    neutral: C.yellow, fade: C.orange, override: C.yellow, '': C.textMut
+    neutral: C.yellow, fade: C.orange, override: C.yellow,
+    'edge-watch': C.yellow, reclaim: C.blue, '': C.textMut
   };
 
   const displayResult = {...result, midSession};
@@ -775,16 +794,33 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
 
       {/* Multi-day balance edge */}
       <div style={{marginBottom:24}}>
-        <SectionLabel>At multi-day balance edge?</SectionLabel>
-        <Pills
-          options={[
-            {label:'✓ Yes — at edge',value:'yes'},
-            {label:'✗ No — open space',value:'no'},
-          ]}
-          value={biasInputs.atMultiDayEdge}
-          onChange={set('atMultiDayEdge')}
-          colors={{yes:C.orange,no:C.teal}}
-        />
+        <SectionLabel>Multi-day balance edge context</SectionLabel>
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          {[
+            {label:'Not at an edge — open space',value:'none',col:C.teal,sub:'Bias runs normally'},
+            {label:'⬆ At HIGH edge, from inside',value:'high_from_inside',col:C.yellow,sub:'Failed exp short / breakout long'},
+            {label:'⬇ At LOW edge, from inside',value:'low_from_inside',col:C.yellow,sub:'Failed exp long / breakout short'},
+            {label:'↩ Returning to HIGH edge from above',value:'high_from_above',col:C.green,sub:'Edge = support, reclaim, lean long'},
+            {label:'↪ Returning to LOW edge from below',value:'low_from_below',col:C.red,sub:'Edge = resistance, reclaim, lean short'},
+          ].map(o=>{
+            const active=biasInputs.edgeContext===o.value;
+            return(
+              <button key={o.value} onClick={()=>set('edgeContext')(active?'':o.value)} style={{
+                padding:'10px 14px',borderRadius:10,textAlign:'left',
+                border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
+                background:active?o.col+'18':'transparent',
+                cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
+                display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,
+              }}>
+                <span style={{color:active?o.col:C.textSub,fontSize:13,fontWeight:active?700:400}}>{o.label}</span>
+                <span style={{color:active?o.col:C.textDim,fontSize:11,opacity:0.8,flexShrink:0}}>{o.sub}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div style={{fontSize:11,color:C.textDim,marginTop:8,lineHeight:1.5}}>
+          Balance is fractal — applies to whatever range governs price on your timeframe. The edge overrides the daily bias: from inside = neutral two-sided watch, returning to an edge = directional reclaim lean.
+        </div>
       </div>
 
       {/* ── SECTION B: Same-day inputs (10:30 check) ── */}
