@@ -44,7 +44,7 @@ function computeBias(bi) {
     // same-day inputs
     ibSize,             // 'short'|'medium'|'large'|''
     vaOverlap,          // 'heavy'|'none'|''
-    openDrive,          // 'yes'|'no'|''
+    ibLocation,         // 'upper'|'middle'|'lower'|''  — where is price in IB at 10:30
   } = bi;
 
   // ── Step 1: Prior day candle (base direction) ──
@@ -181,7 +181,7 @@ function computeBias(bi) {
     };
   }
 
-  // ── Step 7: VA overlap + open drive ──
+  // ── Step 7: VA overlap + IB location at 10:30 ──
   if (vaOverlap === 'heavy') {
     signals.push('🔁 Heavy VA overlap — balanced day likely (~70-80%), tighten targets');
     if (resolvedDir !== 'neutral') ibBoost -= 1;
@@ -190,11 +190,35 @@ function computeBias(bi) {
     ibBoost += 1;
   }
 
-  if (openDrive === 'yes') {
-    signals.push('🚀 Open drive — ~65-70% trend continuation, press the bias');
-    ibBoost += 2;
-  } else if (openDrive === 'no') {
-    signals.push('• No open drive — normal rotational open');
+  // IB location at 10:30 — where price is sitting within the completed IB.
+  // Upper quarter = buyers held high ground through the IB (~62-68% bullish continuation).
+  // Lower quarter = sellers held low ground (~62-68% bearish continuation).
+  // Middle = rotational, balanced day likely (~70-75%), no directional lean.
+  if (ibLocation === 'upper') {
+    if (resolvedDir === 'long') {
+      signals.push('📍 Price in upper IB quarter at 10:30 — buyers held high ground, confirms long bias (~62-68%)');
+      ibBoost += 2;
+    } else if (resolvedDir === 'short') {
+      signals.push('📍 Price in upper IB quarter — conflicts with short bias. Buyers held the IB. Reduce conviction.');
+      ibBoost -= 1;
+    } else {
+      signals.push('📍 Price in upper IB quarter — mild long lean on a neutral day, watch for IB high break');
+      ibBoost += 1;
+    }
+  } else if (ibLocation === 'lower') {
+    if (resolvedDir === 'short') {
+      signals.push('📍 Price in lower IB quarter at 10:30 — sellers held low ground, confirms short bias (~62-68%)');
+      ibBoost += 2;
+    } else if (resolvedDir === 'long') {
+      signals.push('📍 Price in lower IB quarter — conflicts with long bias. Sellers held the IB. Reduce conviction.');
+      ibBoost -= 1;
+    } else {
+      signals.push('📍 Price in lower IB quarter — mild short lean on a neutral day, watch for IB low break');
+      ibBoost += 1;
+    }
+  } else if (ibLocation === 'middle') {
+    signals.push('📍 Price in IB middle at 10:30 — rotational open, balanced day likely (~70-75%), fade extremes');
+    if (resolvedDir !== 'neutral') ibBoost -= 1;
   }
 
   // ── Conviction scoring ──
@@ -236,7 +260,7 @@ function emptyBiasInputs() {
     edgeContext: '',
     ibSize: '',
     vaOverlap: '',
-    openDrive: '',
+    ibLocation: '',     // 'upper'|'middle'|'lower'|''
     // mid-session IB breakout update
     ibBreakDir: '',        // 'high'|'low'|'none'|''
     ibTimeAcceptance: '',  // 'yes'|'no'|''
@@ -862,19 +886,33 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
         <div style={{fontSize:11,color:C.textDim,marginTop:6}}>Heavy → balanced day likely. No overlap → trend day probability up.</div>
       </div>
 
-      {/* Open drive */}
+      {/* IB location at 10:30 */}
       <div style={{marginBottom:8}}>
-        <SectionLabel>Open drive? (Opened outside VA, no return in first hour)</SectionLabel>
-        <Pills
-          options={[
-            {label:'✓ Yes',value:'yes'},
-            {label:'✗ No',value:'no'},
-          ]}
-          value={biasInputs.openDrive}
-          onChange={set('openDrive')}
-          colors={{yes:C.green,no:'#aaa'}}
-        />
-        <div style={{fontSize:11,color:C.textDim,marginTop:6}}>Open drive confirmed → ~65-70% trend continuation. Press the bias.</div>
+        <SectionLabel>Where is price in the IB at 10:30? (same-day read)</SectionLabel>
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          {[
+            {label:'⬆ Upper quarter',value:'upper',col:C.green,sub:'Buyers held high ground (~62-68% bullish cont.)'},
+            {label:'↔ Middle',value:'middle',col:C.yellow,sub:'Rotational, balanced day likely (~70-75%)'},
+            {label:'⬇ Lower quarter',value:'lower',col:C.red,sub:'Sellers held low ground (~62-68% bearish cont.)'},
+          ].map(o=>{
+            const active=biasInputs.ibLocation===o.value;
+            return(
+              <button key={o.value} onClick={()=>set('ibLocation')(active?'':o.value)} style={{
+                padding:'10px 14px',borderRadius:10,textAlign:'left',
+                border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
+                background:active?o.col+'18':'transparent',
+                cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
+                display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,
+              }}>
+                <span style={{color:active?o.col:C.textSub,fontSize:13,fontWeight:active?700:400}}>{o.label}</span>
+                <span style={{color:active?o.col:C.textDim,fontSize:11,flexShrink:0}}>{o.sub}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div style={{fontSize:11,color:C.textDim,marginTop:8,lineHeight:1.5}}>
+          Upper or lower quarter confirms or conflicts with your bias. Middle = balanced, fade extremes, tighten targets. Direction matters — upper quarter on a short bias day reduces conviction, not adds.
+        </div>
       </div>
 
       {/* ── SECTION C: Mid-session IB breakout update ── */}
