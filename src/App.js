@@ -45,6 +45,7 @@ function computeBias(bi) {
     ibSize,             // 'short'|'medium'|'large'|''
     vaOverlap,          // 'heavy'|'none'|''
     ibLocation,         // 'upper'|'middle'|'lower'|''  — where is price in IB at 10:30
+    vwapRelation,       // 'above'|'at'|'below'|''  — price vs VWAP at 10:30
   } = bi;
 
   // ── Step 1: Prior day candle (base direction) ──
@@ -233,6 +234,36 @@ function computeBias(bi) {
     if (resolvedDir !== 'neutral') ibBoost -= 1;
   }
 
+  // ── Step 8: VWAP relationship at 10:30 ──
+  // VWAP is the most widely used institutional intraday reference.
+  // By 10:30 it has 2 hours of data and is a meaningful read.
+  // Agreement with bias = confirms direction, improves entry quality.
+  // Conflict with bias = caution, wait for VWAP flip before committing.
+  // At VWAP = neutral, wait for separation.
+  if (vwapRelation === 'above') {
+    if (resolvedDir === 'long') {
+      signals.push('📊 Price above VWAP — confirms long bias. Look for longs on VWAP retest, not extended above it.');
+      ibBoost += 1;
+    } else if (resolvedDir === 'short') {
+      signals.push('📊 Price above VWAP — conflicts with short bias. Wait for price to break and accept below VWAP before shorting.');
+      ibBoost -= 1;
+    } else {
+      signals.push('📊 Price above VWAP — mild long lean on neutral day. Long setups above VWAP only.');
+    }
+  } else if (vwapRelation === 'below') {
+    if (resolvedDir === 'short') {
+      signals.push('📊 Price below VWAP — confirms short bias. Look for shorts on VWAP retest, not extended below it.');
+      ibBoost += 1;
+    } else if (resolvedDir === 'long') {
+      signals.push('📊 Price below VWAP — conflicts with long bias. Same-day auction not confirming. Wait for VWAP reclaim before pressing longs.');
+      ibBoost -= 1;
+    } else {
+      signals.push('📊 Price below VWAP — mild short lean on neutral day. Short setups below VWAP only.');
+    }
+  } else if (vwapRelation === 'at') {
+    signals.push('📊 Price at VWAP — institutional pivot point. Wait for separation. Direction of break from VWAP sets intraday tone.');
+  }
+
   // ── Conviction scoring ──
   // score = structural agreement (0-4) + same-day boost.
   //   >=4 → high (~68-75%), 2-3 → medium (~60-65%), <2 → low (~55-58%)
@@ -273,6 +304,7 @@ function emptyBiasInputs() {
     ibSize: '',
     vaOverlap: '',
     ibLocation: '',     // 'upper'|'middle'|'lower'|''
+    vwapRelation: '',   // 'above'|'at'|'below'|''
     // mid-session IB breakout update
     ibBreakDir: '',        // 'high'|'low'|'none'|''
     ibTimeAcceptance: '',  // 'yes'|'no'|''
@@ -929,7 +961,34 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
         </div>
       </div>
 
-      {/* ── SECTION C: Mid-session IB breakout update ── */}
+      {/* VWAP relationship at 10:30 */}
+      <div style={{marginBottom:8}}>
+        <SectionLabel>Price vs VWAP at 10:30</SectionLabel>
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          {[
+            {label:'⬆ Above VWAP',value:'above',col:C.green,sub:'Confirms long bias / conflicts with short'},
+            {label:'↔ At VWAP',value:'at',col:C.yellow,sub:'Pivot point — wait for separation'},
+            {label:'⬇ Below VWAP',value:'below',col:C.red,sub:'Confirms short bias / conflicts with long'},
+          ].map(o=>{
+            const active=biasInputs.vwapRelation===o.value;
+            return(
+              <button key={o.value} onClick={()=>set('vwapRelation')(active?'':o.value)} style={{
+                padding:'10px 14px',borderRadius:10,textAlign:'left',
+                border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
+                background:active?o.col+'18':'transparent',
+                cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
+                display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,
+              }}>
+                <span style={{color:active?o.col:C.textSub,fontSize:13,fontWeight:active?700:400}}>{o.label}</span>
+                <span style={{color:active?o.col:C.textDim,fontSize:11,flexShrink:0}}>{o.sub}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div style={{fontSize:11,color:C.textDim,marginTop:8,lineHeight:1.5}}>
+          VWAP is the institutional intraday reference. Bias + VWAP agreement = highest quality entry zone. Conflict = wait for VWAP flip before pressing. Never enter long extended far above VWAP or short extended far below it — enter on the retest.
+        </div>
+      </div>
       <div style={{height:1,background:C.surface2,margin:'28px 0 24px'}}/>
       <div style={{fontSize:11,color:C.orange,letterSpacing:'0.1em',textTransform:'uppercase',fontWeight:700,marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
         <div style={{width:3,height:14,background:C.orange,borderRadius:2}}/>
@@ -939,7 +998,7 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
         Fill in after IB forms and price has had 15–30 min to accept or reject a break.
       </div>
 
-      {/* IB break direction */}
+      {/* ── SECTION C: Mid-session IB breakout update ── */}
       <div style={{marginBottom:18}}>
         <SectionLabel>Did IB break?</SectionLabel>
         <Pills
