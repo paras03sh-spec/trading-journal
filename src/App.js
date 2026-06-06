@@ -47,7 +47,6 @@ function computeBias(bi) {
     ibLocation,         // 'upper'|'middle'|'lower'|''  — where is price in IB at 10:30
     vwapRelation,       // 'above'|'at'|'below'|''  — price vs VWAP at 10:30
     ethOvernight,       // 'broke_high_held'|'broke_high_rejected'|'broke_low_held'|'broke_low_rejected'|'inside'|''
-    nqEsAlign,          // 'both_bullish'|'both_bearish'|'both_neutral'|'conflict'|''
   } = bi;
 
   // ── Step 1: Prior day candle (base direction) ──
@@ -301,34 +300,6 @@ function computeBias(bi) {
     signals.push('🌙 RTH opened inside overnight range — no ETH breakout signal. Overnight H/L are live targets for RTH session.');
   }
 
-  // ── Step 10: NQ + ES alignment ──
-  // When both instruments confirm the same directional read, conviction increases.
-  // NQ tends to lead — NQ bullish + ES confirming is stronger than ES leading alone.
-  // Conflict between NQ and ES is a significant red flag — reduce size or wait.
-  if (nqEsAlign === 'both_bullish') {
-    if (resolvedDir === 'long') {
-      signals.push('⚡ NQ + ES both bullish — cross-instrument confirmation. Strongest same-day confluence. Full size justified.');
-      ibBoost += 2;
-    } else {
-      signals.push('⚡ NQ + ES both bullish — conflicts with bearish/neutral pre-market read. High risk. Reconsider bias.');
-      ibBoost -= 1;
-    }
-  } else if (nqEsAlign === 'both_bearish') {
-    if (resolvedDir === 'short') {
-      signals.push('⚡ NQ + ES both bearish — cross-instrument confirmation. Strongest same-day confluence. Full size justified.');
-      ibBoost += 2;
-    } else {
-      signals.push('⚡ NQ + ES both bearish — conflicts with bullish/neutral pre-market read. High risk. Reconsider bias.');
-      ibBoost -= 1;
-    }
-  } else if (nqEsAlign === 'both_neutral') {
-    signals.push('⚡ NQ + ES both neutral — cross-instrument balance. Fade extremes on both. No trend trades.');
-    if (resolvedDir !== 'neutral') ibBoost -= 1;
-  } else if (nqEsAlign === 'conflict') {
-    signals.push('⚡ NQ + ES conflict — instruments diverging. Significant red flag. Reduce size to minimum or sit on hands until they align.');
-    ibBoost -= 2;
-  }
-
   // ── Conviction scoring ──
   // score = structural agreement (0-4) + same-day boost.
   //   >=4 → high (~68-75%), 2-3 → medium (~60-65%), <2 → low (~55-58%)
@@ -370,8 +341,7 @@ function emptyBiasInputs() {
     vaOverlap: '',
     ibLocation: '',     // 'upper'|'middle'|'lower'|''
     vwapRelation: '',   // 'above'|'at'|'below'|''
-    ethOvernight: '',   // 'broke_high_held'|'broke_high_rejected'|'broke_low_held'|'broke_low_rejected'|'inside'|''
-    nqEsAlign: '',      // 'both_bullish'|'both_bearish'|'both_neutral'|'conflict'|''
+    ethOvernight: '',   // overnight level interaction
     // mid-session IB breakout update
     ibBreakDir: '',        // 'high'|'low'|'none'|''
     ibTimeAcceptance: '',  // 'yes'|'no'|''
@@ -1206,36 +1176,6 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
         </div>
       </div>
 
-      {/* NQ + ES alignment */}
-      <div style={{marginBottom:8}}>
-        <SectionLabel>NQ + ES alignment</SectionLabel>
-        <div style={{display:'flex',flexDirection:'column',gap:8}}>
-          {[
-            {label:'🟢 Both bullish',value:'both_bullish',col:C.green,sub:'Cross-instrument confirmation +2 conviction'},
-            {label:'🔴 Both bearish',value:'both_bearish',col:C.red,sub:'Cross-instrument confirmation +2 conviction'},
-            {label:'⚪ Both neutral',value:'both_neutral',col:C.yellow,sub:'Balance confirmed on both — fade only'},
-            {label:'⚡ Conflict — diverging',value:'conflict',col:C.orange,sub:'Reduce size or sit out until aligned'},
-          ].map(o=>{
-            const active=biasInputs.nqEsAlign===o.value;
-            return(
-              <button key={o.value} onClick={()=>set('nqEsAlign')(active?'':o.value)} style={{
-                padding:'9px 14px',borderRadius:10,textAlign:'left',
-                border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
-                background:active?o.col+'18':'transparent',
-                cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
-                display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,
-              }}>
-                <span style={{color:active?o.col:C.textSub,fontSize:13,fontWeight:active?700:400}}>{o.label}</span>
-                <span style={{color:active?o.col:C.textDim,fontSize:11,flexShrink:0}}>{o.sub}</span>
-              </button>
-            );
-          })}
-        </div>
-        <div style={{fontSize:11,color:C.textDim,marginTop:8,lineHeight:1.5}}>
-          NQ leads ES. When both instruments confirm the same read it's the strongest same-day confluence available. Conflict between NQ and ES is a red flag — the market is sending mixed signals. Minimum size or no trade until they agree.
-        </div>
-      </div>
-
       <div style={{height:1,background:C.surface2,margin:'28px 0 24px'}}/>
       <div style={{fontSize:11,color:C.orange,letterSpacing:'0.1em',textTransform:'uppercase',fontWeight:700,marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
         <div style={{width:3,height:14,background:C.orange,borderRadius:2}}/>
@@ -1452,126 +1392,179 @@ function PreMarketTab({data,onChange,isMobile}){
     mentalExterior: data.mentalExterior||'',
   };
 
-  return(
-    <div>
-      {/* ── ES BIAS ── */}
-      <div style={{marginBottom:8}}>
-        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:16}}>
-          <div style={{width:4,height:36,background:C.blue,borderRadius:2}}/>
+  // Instrument column component
+  const InstrumentColumn = ({instrument, inputs, result, onInputChange, accentColor, imgTPO, imgTPOKey, img15, img15Key, planValue, planKey}) => (
+    <div style={{flex:1,minWidth:0}}>
+      {/* Header */}
+      <div style={{
+        display:'flex',alignItems:'center',justifyContent:'space-between',
+        marginBottom:16,padding:'14px 16px',
+        background:accentColor+'10',
+        border:`1px solid ${accentColor}33`,
+        borderRadius:12,
+      }}>
+        <div style={{display:'flex',alignItems:'center',gap:10}}>
+          <div style={{width:4,height:40,background:accentColor,borderRadius:2}}/>
           <div>
-            <div style={{fontSize:16,fontWeight:800,color:C.blue}}>ES</div>
-            <div style={{fontSize:10,color:C.textMut,letterSpacing:'0.08em'}}>S&P 500 BIAS</div>
+            <div style={{fontSize:20,fontWeight:800,color:accentColor}}>{instrument}</div>
+            <div style={{fontSize:10,color:C.textMut,letterSpacing:'0.08em'}}>{instrument==='ES'?'S&P 500':'NASDAQ 100'} BIAS</div>
           </div>
-          {esResult.bias && (
-            <div style={{marginLeft:'auto',padding:'5px 14px',borderRadius:20,
-              background:esResult.color+'20',border:`1px solid ${esResult.color}44`,
-              fontSize:13,fontWeight:700,color:esResult.color,textTransform:'uppercase'}}>
-              {esResult.bias === 'bullish' ? '🟢' : esResult.bias === 'bearish' ? '🔴' : '⚪'} {esResult.bias}
-              {esResult.conviction && <span style={{fontSize:10,opacity:0.7,marginLeft:6}}>{esResult.conviction}</span>}
-            </div>
-          )}
         </div>
-        <BiasEnginePanel biasInputs={esInputs} onChange={handleESChange} result={esResult} preBiasResult={esResult}/>
-      </div>
-
-      <div style={{height:2,background:C.surface2,margin:'32px 0'}}/>
-
-      {/* ── NQ BIAS ── */}
-      <div style={{marginBottom:8}}>
-        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:16}}>
-          <div style={{width:4,height:36,background:C.purple,borderRadius:2}}/>
-          <div>
-            <div style={{fontSize:16,fontWeight:800,color:C.purple}}>NQ</div>
-            <div style={{fontSize:10,color:C.textMut,letterSpacing:'0.08em'}}>NASDAQ 100 BIAS</div>
-          </div>
-          {nqResult.bias && (
-            <div style={{marginLeft:'auto',padding:'5px 14px',borderRadius:20,
-              background:nqResult.color+'20',border:`1px solid ${nqResult.color}44`,
-              fontSize:13,fontWeight:700,color:nqResult.color,textTransform:'uppercase'}}>
-              {nqResult.bias === 'bullish' ? '🟢' : nqResult.bias === 'bearish' ? '🔴' : '⚪'} {nqResult.bias}
-              {nqResult.conviction && <span style={{fontSize:10,opacity:0.7,marginLeft:6}}>{nqResult.conviction}</span>}
+        {result.bias && (
+          <div style={{textAlign:'right'}}>
+            <div style={{fontSize:20,fontWeight:800,color:result.color,textTransform:'uppercase'}}>
+              {result.bias==='bullish'?'🟢':result.bias==='bearish'?'🔴':'⚪'} {result.bias}
             </div>
-          )}
-        </div>
-        <BiasEnginePanel biasInputs={nqInputs} onChange={handleNQChange} result={nqResult} preBiasResult={nqResult}/>
-      </div>
-
-      <div style={{height:2,background:C.surface2,margin:'32px 0'}}/>
-
-      {/* ── NQ + ES ALIGNMENT OUTPUT ── */}
-      {alignment ? (
-        <div style={{background:alignment.color+'12',border:`1.5px solid ${alignment.color}44`,borderRadius:14,padding:'20px',marginBottom:28}}>
-          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}>
-            <div>
-              <div style={{fontSize:11,color:C.textMut,letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:4}}>NQ + ES Alignment</div>
-              <div style={{fontSize:22,fontWeight:800,color:alignment.color,textTransform:'uppercase'}}>
-                {alignment.combined === 'bullish' ? '🟢' : alignment.combined === 'bearish' ? '🔴' : alignment.combined === 'conflict' ? '⚡' : '⚪'} {alignment.combined || alignment.alignment}
-              </div>
-            </div>
-            <div style={{textAlign:'right'}}>
+            {result.conviction && (
               <div style={{
-                padding:'6px 14px',borderRadius:20,
-                background:(alignment.convColor||alignment.color)+'22',
-                border:`1px solid ${(alignment.convColor||alignment.color)}44`,
-                fontSize:12,fontWeight:700,color:alignment.convColor||alignment.color,
-                textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:6,
-              }}>{alignment.badge}</div>
-              {alignment.esConvLabel && (
-                <div style={{fontSize:10,color:C.textMut}}>
-                  ES: {alignment.esConvLabel} · NQ: {alignment.nqConvLabel}
-                </div>
-              )}
-            </div>
+                fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',
+                color:result.conviction==='high'?C.green:result.conviction==='medium'?C.yellow:result.conviction==='low'?C.orange:C.textMut,
+                marginTop:2,
+              }}>{result.conviction} conviction</div>
+            )}
           </div>
-          <div style={{fontSize:13,color:alignment.color,fontWeight:600,marginBottom:8}}>{alignment.verdict}</div>
-          <div style={{fontSize:12,color:C.textSub,lineHeight:1.7,marginBottom:10}}>{alignment.action}</div>
-          <div style={{padding:'8px 12px',borderRadius:8,background:C.surface,border:`1px solid ${C.border}`,fontSize:12,color:C.textMut}}>
-            <span style={{fontWeight:700,color:C.text}}>Sizing: </span>{alignment.sizing}
-          </div>
-        </div>
-      ) : (
-        <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:'20px',marginBottom:28,textAlign:'center'}}>
-          <div style={{fontSize:13,color:C.textMut}}>Fill in ES and NQ bias inputs to see alignment assessment</div>
+        )}
+      </div>
+
+      {/* Sizing instruction when bias exists */}
+      {result.sizing && (
+        <div style={{
+          padding:'10px 14px',borderRadius:10,marginBottom:16,
+          background:C.surface,border:`1px solid ${C.border}`,
+          fontSize:12,color:C.textSub,lineHeight:1.5,
+        }}>
+          {result.sizing}
         </div>
       )}
 
-      {/* ── CHARTS ── */}
-      <Divider label="Charts"/>
+      {/* Signal log */}
+      {result.signals && result.signals.length > 0 && (
+        <div style={{
+          padding:'12px 14px',borderRadius:10,marginBottom:16,
+          background:result.color+'08',border:`1px solid ${result.color}22`,
+        }}>
+          {result.signals.map((s,i)=>(
+            <div key={i} style={{fontSize:11,color:C.textMut,lineHeight:1.6,paddingBottom:i<result.signals.length-1?4:0}}>{s}</div>
+          ))}
+        </div>
+      )}
 
-      <InstrumentLabel name="ES" color={C.blue}/>
-      <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:20}}>
-        <ImageSlot label="TPO" value={data.esImgTPO} onChange={set('esImgTPO')} accent={C.blue}/>
-        <ImageSlot label="15min" value={data.esImg15} onChange={set('esImg15')} accent={C.blue}/>
+      {/* Bias inputs */}
+      <BiasEnginePanel biasInputs={inputs} onChange={onInputChange} result={result} preBiasResult={result}/>
+
+      {/* Charts */}
+      <div style={{marginTop:20}}>
+        <div style={{fontSize:10,color:C.textSub,marginBottom:10,letterSpacing:'0.1em',textTransform:'uppercase',fontWeight:600}}>Charts</div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:16}}>
+          <ImageSlot label="TPO" value={imgTPO} onChange={set(imgTPOKey)} accent={accentColor}/>
+          <ImageSlot label="15min" value={img15} onChange={set(img15Key)} accent={accentColor}/>
+        </div>
       </div>
 
-      <InstrumentLabel name="NQ" color={C.purple}/>
-      <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:20}}>
-        <ImageSlot label="TPO" value={data.nqImgTPO} onChange={set('nqImgTPO')} accent={C.purple}/>
-        <ImageSlot label="15min" value={data.nqImg15} onChange={set('nqImg15')} accent={C.purple}/>
+      {/* Execution plan */}
+      <Field
+        label={`${instrument} Plan — VAH / VAL / POC · Entries · Targets · Invalidation`}
+        placeholder={`VAH:  VAL:  POC:\nLong entry zone:\nShort entry zone:\nTarget 1:  Target 2:\nInvalidation:`}
+        value={planValue||''}
+        onChange={set(planKey)}
+        rows={5}
+      />
+    </div>
+  );
+
+  return(
+    <div>
+      {/* ── TWO COLUMN LAYOUT ── */}
+      <div style={{
+        display: isMobile ? 'block' : 'grid',
+        gridTemplateColumns: isMobile ? undefined : '1fr 1fr',
+        gap: isMobile ? 0 : 24,
+        alignItems: 'start',
+      }}>
+        <InstrumentColumn
+          instrument="ES"
+          inputs={esInputs}
+          result={esResult}
+          onInputChange={handleESChange}
+          accentColor={C.blue}
+          imgTPO={data.esImgTPO||''} imgTPOKey="esImgTPO"
+          img15={data.esImg15||''} img15Key="esImg15"
+          planValue={data.esPlan} planKey="esPlan"
+        />
+
+        {isMobile && <div style={{height:2,background:C.surface2,margin:'28px 0'}}/>}
+
+        <InstrumentColumn
+          instrument="NQ"
+          inputs={nqInputs}
+          result={nqResult}
+          onInputChange={handleNQChange}
+          accentColor={C.purple}
+          imgTPO={data.nqImgTPO||''} imgTPOKey="nqImgTPO"
+          img15={data.nqImg15||''} img15Key="nqImg15"
+          planValue={data.nqPlan} planKey="nqPlan"
+        />
+      </div>
+
+      {/* ── ALIGNMENT OUTPUT ── */}
+      <div style={{height:2,background:C.surface2,margin:'32px 0'}}/>
+      <div style={{marginBottom:28}}>
+        <div style={{fontSize:11,color:C.textMut,letterSpacing:'0.12em',textTransform:'uppercase',fontWeight:600,marginBottom:14,display:'flex',alignItems:'center',gap:8}}>
+          <div style={{width:3,height:14,background:C.textMut,borderRadius:2}}/>
+          NQ + ES Alignment
+        </div>
+        {alignment ? (
+          <div style={{
+            background:alignment.color+'10',
+            border:`2px solid ${alignment.color}55`,
+            borderRadius:16,padding:'22px 24px',
+          }}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16,flexWrap:'wrap',gap:12}}>
+              <div>
+                <div style={{fontSize:28,fontWeight:800,color:alignment.color,textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:4}}>
+                  {alignment.combined==='bullish'?'🟢':alignment.combined==='bearish'?'🔴':alignment.combined==='conflict'?'⚡':'⚪'} {alignment.combined||alignment.alignment}
+                </div>
+                <div style={{fontSize:13,color:alignment.color,fontWeight:600}}>{alignment.verdict}</div>
+              </div>
+              <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:8}}>
+                <div style={{
+                  padding:'7px 18px',borderRadius:20,
+                  background:(alignment.convColor||alignment.color)+'22',
+                  border:`1.5px solid ${(alignment.convColor||alignment.color)}55`,
+                  fontSize:13,fontWeight:800,
+                  color:alignment.convColor||alignment.color,
+                  textTransform:'uppercase',letterSpacing:'0.08em',
+                }}>{alignment.badge}</div>
+                {alignment.esConvLabel && (
+                  <div style={{display:'flex',gap:8}}>
+                    <div style={{fontSize:11,padding:'3px 10px',borderRadius:12,background:esResult.color+'20',color:esResult.color,fontWeight:600}}>ES {alignment.esConvLabel}</div>
+                    <div style={{fontSize:11,padding:'3px 10px',borderRadius:12,background:nqResult.color+'20',color:nqResult.color,fontWeight:600}}>NQ {alignment.nqConvLabel}</div>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div style={{height:1,background:alignment.color+'22',marginBottom:14}}/>
+            <div style={{fontSize:13,color:C.textSub,lineHeight:1.8,marginBottom:14}}>{alignment.action}</div>
+            <div style={{
+              padding:'10px 14px',borderRadius:10,
+              background:C.surface,border:`1px solid ${C.border}`,
+              display:'flex',alignItems:'center',gap:10,
+            }}>
+              <div style={{fontSize:11,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:600,flexShrink:0}}>Sizing</div>
+              <div style={{fontSize:13,color:C.text,fontWeight:600}}>{alignment.sizing}</div>
+            </div>
+          </div>
+        ) : (
+          <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:'24px',textAlign:'center'}}>
+            <div style={{fontSize:22,marginBottom:8}}>📊</div>
+            <div style={{fontSize:14,color:C.textMut}}>Fill in ES and NQ bias inputs above to see the alignment assessment</div>
+          </div>
+        )}
       </div>
 
       {/* ── KEY LEVELS ── */}
       <Divider label="Key Levels"/>
-      <ImageSlot label="Key Levels Chart (upload screenshot with levels marked)" value={data.keyLevelsImg} onChange={set('keyLevelsImg')} accent={C.teal}/>
-
-      {/* ── EXECUTION PLANS ── */}
-      <Divider label="Execution Plan"/>
-
-      <Field
-        label="ES Plan — VAH / VAL / POC · Entry zones · Targets · Invalidation"
-        placeholder={`VAH:  VAL:  POC:\nLong entry zone:\nShort entry zone:\nTarget 1:  Target 2:\nInvalidation:`}
-        value={data.esPlan||''}
-        onChange={set('esPlan')}
-        rows={5}
-      />
-
-      <Field
-        label="NQ Plan — VAH / VAL / POC · Entry zones · Targets · Invalidation"
-        placeholder={`VAH:  VAL:  POC:\nLong entry zone:\nShort entry zone:\nTarget 1:  Target 2:\nInvalidation:`}
-        value={data.nqPlan||''}
-        onChange={set('nqPlan')}
-        rows={5}
-      />
+      <ImageSlot label="Key Levels Chart — upload your screenshot with levels marked" value={data.keyLevelsImg||''} onChange={set('keyLevelsImg')} accent={C.teal}/>
 
       {/* ── MENTAL STATE ── */}
       <Divider label="Mental State"/>
@@ -1901,7 +1894,7 @@ export default function App(){
         textarea,input{transition:border-color 0.15s;}
       `}</style>
 
-      <div style={{maxWidth:isMobile?'100%':940,margin:'0 auto',display:isMobile?'block':'flex',minHeight:'100vh'}}>
+      <div style={{maxWidth:isMobile?'100%':1280,margin:'0 auto',display:isMobile?'block':'flex',minHeight:'100vh'}}>
 
         {/* Desktop Sidebar */}
         {!isMobile&&(
