@@ -40,7 +40,7 @@ function computeBias(bi) {
     profileShape,       // 'B'|'b'|'P'|'D'|'normal'|'single_prints'|''
     tpoDistribution,    // 'upper'|'lower'|''
     pocMigration,       // 'rising'|'flat'|'falling'|''
-    edgeContext,        // ''|'none'|'high_from_inside'|'low_from_inside'|'high_from_above'|'low_from_below'
+    edgeContext,        // ''|'none'|'high_from_inside'|'low_from_inside'|'high_from_above'|'low_from_below'|'failed_break_high'|'failed_break_low'
     // same-day inputs
     ibSize,             // 'short'|'medium'|'large'|''
     vaOverlap,          // 'heavy'|'none'|''
@@ -146,6 +146,18 @@ function computeBias(bi) {
       edgeBias = 'bearish'; edgeColor = C.red; edgeConv = 'reclaim';
       edgeSignal = '↪ Returning to LOW edge from below — edge is now resistance, reclaim attempt.';
       edgeSizing = 'Lean short while edge holds as resistance. Short on a rejection. If price pushes back inside with acceptance, bias dead → neutral range-fade.';
+    } else if (edgeContext === 'failed_break_high') {
+      // Strongest balance edge signal — breakout confirmed failed overnight.
+      // Trapped longs above the edge + stops below it = mechanical selling pressure.
+      // ~68-72% resolution toward opposite balance edge.
+      edgeBias = 'bearish'; edgeColor = C.red; edgeConv = 'high';
+      edgeSignal = '❌ Failed breakout HIGH — expanded above balance last session, overnight returned inside. Trapped longs above edge.';
+      edgeSizing = 'Strong short lean. Prior expansion high is resistance — sell against it. Target opposite balance edge (low). Confirm: price must be clearly inside the balance at 10:30, not hovering at the edge.';
+    } else if (edgeContext === 'failed_break_low') {
+      // Mirror — trapped shorts below the edge = mechanical buying pressure.
+      edgeBias = 'bullish'; edgeColor = C.green; edgeConv = 'high';
+      edgeSignal = '❌ Failed breakout LOW — expanded below balance last session, overnight returned inside. Trapped shorts below edge.';
+      edgeSizing = 'Strong long lean. Prior expansion low is support — buy against it. Target opposite balance edge (high). Confirm: price must be clearly inside the balance at 10:30, not hovering at the edge.';
     }
 
     signals.push(edgeSignal);
@@ -826,6 +838,8 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
             {label:'⬇ At LOW edge, from inside',value:'low_from_inside',col:C.yellow,sub:'Failed exp long / breakout short'},
             {label:'↩ Returning to HIGH edge from above',value:'high_from_above',col:C.green,sub:'Edge = support, reclaim, lean long'},
             {label:'↪ Returning to LOW edge from below',value:'low_from_below',col:C.red,sub:'Edge = resistance, reclaim, lean short'},
+            {label:'❌ Failed breakout HIGH — back inside overnight',value:'failed_break_high',col:C.red,sub:'Trapped longs above, lean short (~68-72%)'},
+            {label:'❌ Failed breakout LOW — back inside overnight',value:'failed_break_low',col:C.green,sub:'Trapped shorts below, lean long (~68-72%)'},
           ].map(o=>{
             const active=biasInputs.edgeContext===o.value;
             return(
@@ -843,7 +857,7 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
           })}
         </div>
         <div style={{fontSize:11,color:C.textDim,marginTop:8,lineHeight:1.5}}>
-          Balance is fractal — applies to whatever range governs price on your timeframe. The edge overrides the daily bias: from inside = neutral two-sided watch, returning to an edge = directional reclaim lean.
+          Balance is fractal — applies to whatever range governs price on your timeframe. From inside = neutral two-sided watch. Returning to edge = directional reclaim lean. Failed breakout overnight = strongest signal, confirmed before session starts — price must be clearly inside the balance at 10:30, not hovering at the edge.
         </div>
       </div>
 
