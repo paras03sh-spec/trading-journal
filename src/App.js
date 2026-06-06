@@ -478,22 +478,132 @@ function computeMidSession(bi, preBias) {
   };
 }
 
+// ─── NQ + ES Alignment Engine ─────────────────────────────────────────────────
+function computeAlignment(esResult, nqResult) {
+  if (!esResult?.bias || !nqResult?.bias) return null;
+
+  const esBias = esResult.bias;   // 'bullish'|'bearish'|'neutral'|''
+  const nqBias = nqResult.bias;
+  const esConv = esResult.conviction; // 'high'|'medium'|'low'|'neutral'|'fade'|'reclaim'|'edge-watch'
+  const nqConv = nqResult.conviction;
+
+  const convRank = { high:3, medium:2, low:1, neutral:0, fade:0, reclaim:1, 'edge-watch':0 };
+  const esRank = convRank[esConv] || 0;
+  const nqRank = convRank[nqConv] || 0;
+
+  // ── Conflict ──
+  if ((esBias === 'bullish' && nqBias === 'bearish') ||
+      (esBias === 'bearish' && nqBias === 'bullish')) {
+    return {
+      alignment: 'conflict',
+      color: C.orange,
+      badge: 'CONFLICT',
+      verdict: 'NQ and ES are pointing opposite directions.',
+      action: 'Do not trade directionally. Sit on hands or take minimum size only. Wait for both instruments to agree before committing.',
+      sizing: 'Minimum size or no trade.',
+      combined: 'conflict',
+    };
+  }
+
+  // ── Both neutral ──
+  if (esBias === 'neutral' && nqBias === 'neutral') {
+    return {
+      alignment: 'both_neutral',
+      color: C.yellow,
+      badge: 'BOTH NEUTRAL',
+      verdict: 'Both NQ and ES are in balance or at an edge. No directional trade.',
+      action: 'Fade extremes only on both instruments. No trend trades. Half size max.',
+      sizing: 'Fade extremes only. Half size max.',
+      combined: 'neutral',
+    };
+  }
+
+  // ── One neutral, one directional ──
+  if (esBias === 'neutral' || nqBias === 'neutral') {
+    const dirResult = esBias !== 'neutral' ? esResult : nqResult;
+    const leadInstrument = esBias !== 'neutral' ? 'ES' : 'NQ';
+    return {
+      alignment: 'partial',
+      color: C.yellow,
+      badge: 'PARTIAL',
+      verdict: `${leadInstrument} has a directional read but the other instrument is neutral.`,
+      action: `Wait for the neutral instrument to confirm. If it does, conviction upgrades. Until then — reduced size, tighter stops, only the clearest setups.`,
+      sizing: 'Reduced size. Wait for both to align.',
+      combined: dirResult.bias,
+    };
+  }
+
+  // ── Both neutral ──
+  if (esBias === 'neutral' && nqBias === 'neutral') {
+    return {
+      alignment: 'both_neutral',
+      color: C.yellow,
+      badge: 'BOTH NEUTRAL',
+      verdict: 'Both NQ and ES are in balance or at an edge. No directional trade.',
+      action: 'Fade extremes only on both instruments. No trend trades. Half size max.',
+      sizing: 'Fade extremes only. Half size max.',
+      combined: 'neutral',
+    };
+  }
+
+  // ── Both same direction ──
+  const direction = esBias; // both equal at this point
+  const totalRank = esRank + nqRank;
+  let conv, action, sizing;
+
+  if (totalRank >= 5) {
+    conv = 'strong';
+    action = `Both NQ and ES high conviction ${direction}. This is your best trade of the week. Full size. Hold runners to the next structural target. NQ will lead — use NQ breaks as entry trigger, ES confirmation as add.`;
+    sizing = 'Full size. Hold runners.';
+  } else if (totalRank >= 3) {
+    conv = 'confirmed';
+    action = `Both instruments confirm ${direction} bias. Take clean setups in bias direction on both. Standard size. NQ likely leads the move — watch NQ IB for the first break signal.`;
+    sizing = 'Standard size. Take clean setups.';
+  } else if (totalRank >= 2) {
+    conv = 'moderate';
+    action = `Both ${direction} but conviction is moderate on at least one. Trade the instrument with higher conviction first. Reduced size until the move confirms and both are pressing.`;
+    sizing = 'Reduced size. Trade higher conviction instrument first.';
+  } else {
+    conv = 'weak';
+    action = `Both lean ${direction} but conviction is low on both. Base rate edge only. Minimal size or sit out and wait for a cleaner structure session.`;
+    sizing = 'Minimal size or sit out.';
+  }
+
+  const convColor = conv === 'strong' ? C.green : conv === 'confirmed' ? C.teal : conv === 'moderate' ? C.yellow : C.textMut;
+  const dirColor = direction === 'bullish' ? C.green : direction === 'bearish' ? C.red : C.yellow;
+
+  return {
+    alignment: 'confirmed',
+    color: dirColor,
+    convColor,
+    badge: conv.toUpperCase(),
+    verdict: `NQ and ES both ${direction.toUpperCase()} — cross-instrument confirmation.`,
+    action,
+    sizing,
+    combined: direction,
+    esConvLabel: esConv,
+    nqConvLabel: nqConv,
+  };
+}
+
 function emptyDay(){
   return{
     pre:{
-      biasInputs: emptyBiasInputs(),
-      computedBias: '',
-      dailyBias:'',
-      bigPicture:'',
-      esImgTPO:'',esImg15:'',
-      nqImgTPO:'',nqImg15:'',
-      // structured execution plan
-      keyLevels:'',        // weekly POC, overnight H/L, excess, multi-day edges
-      esPlan:'',           // ES specific: VAH/VAL/POC, profile read, targets
-      nqPlan:'',           // NQ specific: VAH/VAL/POC, profile read, targets
-      nqEsNote:'',         // alignment note + confluence read
-      tradeRules:'',       // max loss, max trades, rules for the day
-      feelings:'',         // mental state
+      esInputs: emptyBiasInputs(),
+      esComputedBias: '',
+      nqInputs: emptyBiasInputs(),
+      nqComputedBias: '',
+      dailyBias: '',
+      alignmentBias: '',
+      esImgTPO:'', esImg15:'',
+      nqImgTPO:'', nqImg15:'',
+      keyLevelsImg:'',
+      esPlan:'',
+      nqPlan:'',
+      mentalSleep:'',
+      mentalStress:'',
+      mentalConfidence:'',
+      mentalExterior:'',
     },
     trades:[newTrade()],
     eod:{emotions:'',well:'',fix:'',review:'',
@@ -1240,126 +1350,232 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
 }
 
 // ─── Pre-Market Tab ───────────────────────────────────────────────────────────
+function MentalStatePanel({data, onChange}){
+  const set = k => v => onChange({...data, [k]: v === data[k] ? '' : v});
+
+  const mentalWarnings = [];
+  if (data.mentalSleep === 'poor' || data.mentalSleep === 'terrible') mentalWarnings.push('poor sleep');
+  if (data.mentalStress === 'elevated' || data.mentalStress === 'high') mentalWarnings.push('elevated stress');
+  if (data.mentalConfidence === 'shaky') mentalWarnings.push('shaky confidence');
+  if (data.mentalExterior === 'personal' || data.mentalExterior === 'distracted') mentalWarnings.push('external distractions');
+  const hasWarning = mentalWarnings.length >= 2;
+  const hasSevere = data.mentalSleep === 'terrible' || data.mentalStress === 'high' || data.mentalConfidence === 'shaky';
+
+  return(
+    <div>
+      {/* Sleep */}
+      <div style={{marginBottom:14}}>
+        <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Sleep</div>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+          {[{v:'great',l:'Great 7-8h',c:C.green},{v:'ok',l:'OK 5-6h',c:C.teal},{v:'poor',l:'Poor 3-4h',c:C.orange},{v:'terrible',l:'Terrible <3h',c:C.red}].map(o=>{
+            const active=data.mentalSleep===o.v;
+            return <button key={o.v} onClick={()=>set('mentalSleep')(o.v)} style={{padding:'6px 14px',borderRadius:20,border:active?`1.5px solid ${o.c}`:`1.5px solid ${C.border}`,background:active?o.c+'22':'transparent',color:active?o.c:C.textMut,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:active?700:400,transition:'all 0.15s'}}>{o.l}</button>;
+          })}
+        </div>
+      </div>
+      {/* Stress */}
+      <div style={{marginBottom:14}}>
+        <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Stress</div>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+          {[{v:'calm',l:'Calm',c:C.green},{v:'mild',l:'Mild',c:C.teal},{v:'elevated',l:'Elevated',c:C.orange},{v:'high',l:'High',c:C.red}].map(o=>{
+            const active=data.mentalStress===o.v;
+            return <button key={o.v} onClick={()=>set('mentalStress')(o.v)} style={{padding:'6px 14px',borderRadius:20,border:active?`1.5px solid ${o.c}`:`1.5px solid ${C.border}`,background:active?o.c+'22':'transparent',color:active?o.c:C.textMut,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:active?700:400,transition:'all 0.15s'}}>{o.l}</button>;
+          })}
+        </div>
+      </div>
+      {/* Confidence */}
+      <div style={{marginBottom:14}}>
+        <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Confidence</div>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+          {[{v:'sharp',l:'Sharp',c:C.green},{v:'normal',l:'Normal',c:C.teal},{v:'cautious',l:'Cautious',c:C.yellow},{v:'shaky',l:'Shaky',c:C.red}].map(o=>{
+            const active=data.mentalConfidence===o.v;
+            return <button key={o.v} onClick={()=>set('mentalConfidence')(o.v)} style={{padding:'6px 14px',borderRadius:20,border:active?`1.5px solid ${o.c}`:`1.5px solid ${C.border}`,background:active?o.c+'22':'transparent',color:active?o.c:C.textMut,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:active?700:400,transition:'all 0.15s'}}>{o.l}</button>;
+          })}
+        </div>
+      </div>
+      {/* Exterior */}
+      <div style={{marginBottom:14}}>
+        <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>External Factors</div>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+          {[{v:'clear',l:'All clear',c:C.green},{v:'news_day',l:'Major news day',c:C.yellow},{v:'personal',l:'Personal stuff',c:C.orange},{v:'distracted',l:'Distracted',c:C.red}].map(o=>{
+            const active=data.mentalExterior===o.v;
+            return <button key={o.v} onClick={()=>set('mentalExterior')(o.v)} style={{padding:'6px 14px',borderRadius:20,border:active?`1.5px solid ${o.c}`:`1.5px solid ${C.border}`,background:active?o.c+'22':'transparent',color:active?o.c:C.textMut,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:active?700:400,transition:'all 0.15s'}}>{o.l}</button>;
+          })}
+        </div>
+      </div>
+      {/* Warning */}
+      {(hasWarning || hasSevere) && (
+        <div style={{background:C.red+'12',border:`1px solid ${C.red}44`,borderRadius:10,padding:'12px 14px',marginTop:4}}>
+          <div style={{fontSize:12,color:C.red,fontWeight:700,marginBottom:4}}>
+            ⚠ {hasSevere ? 'Severe impairment detected' : 'Multiple risk factors'}
+          </div>
+          <div style={{fontSize:11,color:C.textSub,lineHeight:1.6}}>
+            {hasSevere
+              ? 'Consider not trading today. If you do trade — minimum size, maximum 2 trades, stop at first loss.'
+              : `${mentalWarnings.join(' + ')} detected. Reduce size by 50%. Tighter daily max loss. Take only A+ setups.`}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PreMarketTab({data,onChange,isMobile}){
   const set=k=>v=>onChange({...data,[k]:v});
 
-  const biasInputs = data.biasInputs || emptyBiasInputs();
-  const biasResult = computeBias(biasInputs);
-  const midSessionResult = computeMidSession(biasInputs, biasResult);
+  const esInputs = data.esInputs || emptyBiasInputs();
+  const nqInputs = data.nqInputs || emptyBiasInputs();
+  const esResult = computeBias(esInputs);
+  const nqResult = computeBias(nqInputs);
+  const alignment = computeAlignment(esResult, nqResult);
 
-  const handleBiasInputChange = (newInputs) => {
+  const handleESChange = (newInputs) => {
     const result = computeBias(newInputs);
-    const mid = computeMidSession(newInputs, result);
-    const effectiveBias = mid ? mid.updatedBias : result.bias;
-    onChange({
-      ...data,
-      biasInputs: newInputs,
-      dailyBias: effectiveBias === 'bullish' ? 'bullish' : effectiveBias === 'bearish' ? 'bearish' : effectiveBias === 'neutral' ? 'neutral' : data.dailyBias,
-      computedBias: result.bias,
-      midSessionBias: mid ? mid.updatedBias : '',
-      midSessionEffect: mid ? mid.effect : '',
-    });
+    const newNqResult = computeBias(data.nqInputs || emptyBiasInputs());
+    const align = computeAlignment(result, newNqResult);
+    onChange({...data, esInputs: newInputs, esComputedBias: result.bias,
+      dailyBias: align?.combined || result.bias, alignmentBias: align?.combined || ''});
+  };
+
+  const handleNQChange = (newInputs) => {
+    const result = computeBias(newInputs);
+    const newEsResult = computeBias(data.esInputs || emptyBiasInputs());
+    const align = computeAlignment(newEsResult, result);
+    onChange({...data, nqInputs: newInputs, nqComputedBias: result.bias,
+      dailyBias: align?.combined || result.bias, alignmentBias: align?.combined || ''});
+  };
+
+  const mentalData = {
+    mentalSleep: data.mentalSleep||'',
+    mentalStress: data.mentalStress||'',
+    mentalConfidence: data.mentalConfidence||'',
+    mentalExterior: data.mentalExterior||'',
   };
 
   return(
     <div>
-      {/* Bias Engine */}
-      <BiasEnginePanel
-        biasInputs={biasInputs}
-        onChange={handleBiasInputChange}
-        result={biasResult}
-        preBiasResult={biasResult}
-      />
+      {/* ── ES BIAS ── */}
+      <div style={{marginBottom:8}}>
+        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:16}}>
+          <div style={{width:4,height:36,background:C.blue,borderRadius:2}}/>
+          <div>
+            <div style={{fontSize:16,fontWeight:800,color:C.blue}}>ES</div>
+            <div style={{fontSize:10,color:C.textMut,letterSpacing:'0.08em'}}>S&P 500 BIAS</div>
+          </div>
+          {esResult.bias && (
+            <div style={{marginLeft:'auto',padding:'5px 14px',borderRadius:20,
+              background:esResult.color+'20',border:`1px solid ${esResult.color}44`,
+              fontSize:13,fontWeight:700,color:esResult.color,textTransform:'uppercase'}}>
+              {esResult.bias === 'bullish' ? '🟢' : esResult.bias === 'bearish' ? '🔴' : '⚪'} {esResult.bias}
+              {esResult.conviction && <span style={{fontSize:10,opacity:0.7,marginLeft:6}}>{esResult.conviction}</span>}
+            </div>
+          )}
+        </div>
+        <BiasEnginePanel biasInputs={esInputs} onChange={handleESChange} result={esResult} preBiasResult={esResult}/>
+      </div>
 
+      <div style={{height:2,background:C.surface2,margin:'32px 0'}}/>
+
+      {/* ── NQ BIAS ── */}
+      <div style={{marginBottom:8}}>
+        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:16}}>
+          <div style={{width:4,height:36,background:C.purple,borderRadius:2}}/>
+          <div>
+            <div style={{fontSize:16,fontWeight:800,color:C.purple}}>NQ</div>
+            <div style={{fontSize:10,color:C.textMut,letterSpacing:'0.08em'}}>NASDAQ 100 BIAS</div>
+          </div>
+          {nqResult.bias && (
+            <div style={{marginLeft:'auto',padding:'5px 14px',borderRadius:20,
+              background:nqResult.color+'20',border:`1px solid ${nqResult.color}44`,
+              fontSize:13,fontWeight:700,color:nqResult.color,textTransform:'uppercase'}}>
+              {nqResult.bias === 'bullish' ? '🟢' : nqResult.bias === 'bearish' ? '🔴' : '⚪'} {nqResult.bias}
+              {nqResult.conviction && <span style={{fontSize:10,opacity:0.7,marginLeft:6}}>{nqResult.conviction}</span>}
+            </div>
+          )}
+        </div>
+        <BiasEnginePanel biasInputs={nqInputs} onChange={handleNQChange} result={nqResult} preBiasResult={nqResult}/>
+      </div>
+
+      <div style={{height:2,background:C.surface2,margin:'32px 0'}}/>
+
+      {/* ── NQ + ES ALIGNMENT OUTPUT ── */}
+      {alignment ? (
+        <div style={{background:alignment.color+'12',border:`1.5px solid ${alignment.color}44`,borderRadius:14,padding:'20px',marginBottom:28}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}>
+            <div>
+              <div style={{fontSize:11,color:C.textMut,letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:4}}>NQ + ES Alignment</div>
+              <div style={{fontSize:22,fontWeight:800,color:alignment.color,textTransform:'uppercase'}}>
+                {alignment.combined === 'bullish' ? '🟢' : alignment.combined === 'bearish' ? '🔴' : alignment.combined === 'conflict' ? '⚡' : '⚪'} {alignment.combined || alignment.alignment}
+              </div>
+            </div>
+            <div style={{textAlign:'right'}}>
+              <div style={{
+                padding:'6px 14px',borderRadius:20,
+                background:(alignment.convColor||alignment.color)+'22',
+                border:`1px solid ${(alignment.convColor||alignment.color)}44`,
+                fontSize:12,fontWeight:700,color:alignment.convColor||alignment.color,
+                textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:6,
+              }}>{alignment.badge}</div>
+              {alignment.esConvLabel && (
+                <div style={{fontSize:10,color:C.textMut}}>
+                  ES: {alignment.esConvLabel} · NQ: {alignment.nqConvLabel}
+                </div>
+              )}
+            </div>
+          </div>
+          <div style={{fontSize:13,color:alignment.color,fontWeight:600,marginBottom:8}}>{alignment.verdict}</div>
+          <div style={{fontSize:12,color:C.textSub,lineHeight:1.7,marginBottom:10}}>{alignment.action}</div>
+          <div style={{padding:'8px 12px',borderRadius:8,background:C.surface,border:`1px solid ${C.border}`,fontSize:12,color:C.textMut}}>
+            <span style={{fontWeight:700,color:C.text}}>Sizing: </span>{alignment.sizing}
+          </div>
+        </div>
+      ) : (
+        <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:'20px',marginBottom:28,textAlign:'center'}}>
+          <div style={{fontSize:13,color:C.textMut}}>Fill in ES and NQ bias inputs to see alignment assessment</div>
+        </div>
+      )}
+
+      {/* ── CHARTS ── */}
       <Divider label="Charts"/>
 
-      {/* ES Section */}
       <InstrumentLabel name="ES" color={C.blue}/>
       <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:20}}>
         <ImageSlot label="TPO" value={data.esImgTPO} onChange={set('esImgTPO')} accent={C.blue}/>
         <ImageSlot label="15min" value={data.esImg15} onChange={set('esImg15')} accent={C.blue}/>
       </div>
 
-      {/* NQ Section */}
       <InstrumentLabel name="NQ" color={C.purple}/>
-      <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:8}}>
+      <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:20}}>
         <ImageSlot label="TPO" value={data.nqImgTPO} onChange={set('nqImgTPO')} accent={C.purple}/>
         <ImageSlot label="15min" value={data.nqImg15} onChange={set('nqImg15')} accent={C.purple}/>
       </div>
 
+      {/* ── KEY LEVELS ── */}
+      <Divider label="Key Levels"/>
+      <ImageSlot label="Key Levels Chart (upload screenshot with levels marked)" value={data.keyLevelsImg} onChange={set('keyLevelsImg')} accent={C.teal}/>
+
+      {/* ── EXECUTION PLANS ── */}
       <Divider label="Execution Plan"/>
 
-      {/* Key levels */}
       <Field
-        label="Key Levels"
-        placeholder={`Weekly POC: \nOvernight high: \nOvernight low: \nExcess high/low: \nMulti-day balance edges: \nPrior day VAH / VAL / POC:`}
-        value={data.keyLevels}
-        onChange={set('keyLevels')}
-        rows={6}
-      />
-
-      {/* ES plan */}
-      <Field
-        label="ES Plan"
-        placeholder={`Profile shape: \nVAH: VAL: POC: \nBias read: \nLong entry zone: \nShort entry zone: \nTarget 1: Target 2: \nInvalidation:`}
-        value={data.esPlan}
+        label="ES Plan — VAH / VAL / POC · Entry zones · Targets · Invalidation"
+        placeholder={`VAH:  VAL:  POC:\nLong entry zone:\nShort entry zone:\nTarget 1:  Target 2:\nInvalidation:`}
+        value={data.esPlan||''}
         onChange={set('esPlan')}
         rows={5}
       />
 
-      {/* NQ plan */}
       <Field
-        label="NQ Plan"
-        placeholder={`Profile shape: \nVAH: VAL: POC: \nBias read: \nLong entry zone: \nShort entry zone: \nTarget 1: Target 2: \nInvalidation:`}
-        value={data.nqPlan}
+        label="NQ Plan — VAH / VAL / POC · Entry zones · Targets · Invalidation"
+        placeholder={`VAH:  VAL:  POC:\nLong entry zone:\nShort entry zone:\nTarget 1:  Target 2:\nInvalidation:`}
+        value={data.nqPlan||''}
         onChange={set('nqPlan')}
         rows={5}
       />
 
-      {/* NQ + ES alignment */}
-      <div style={{
-        background: data.nqEsNote ? C.surface2 : 'transparent',
-        border:`1px solid ${C.border}`,
-        borderRadius:10,padding:'12px 14px',marginBottom:20,
-      }}>
-        <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
-          <span style={{width:6,height:6,borderRadius:'50%',background:
-            biasInputs.nqEsAlign==='both_bullish'?C.green:
-            biasInputs.nqEsAlign==='both_bearish'?C.red:
-            biasInputs.nqEsAlign==='conflict'?C.orange:
-            biasInputs.nqEsAlign==='both_neutral'?C.yellow:C.textDim,
-            display:'inline-block'}}/>
-          NQ + ES Alignment
-          {biasInputs.nqEsAlign==='both_bullish'&&<span style={{color:C.green,fontSize:10,fontWeight:700}}>BOTH BULLISH — extra edge</span>}
-          {biasInputs.nqEsAlign==='both_bearish'&&<span style={{color:C.red,fontSize:10,fontWeight:700}}>BOTH BEARISH — extra edge</span>}
-          {biasInputs.nqEsAlign==='conflict'&&<span style={{color:C.orange,fontSize:10,fontWeight:700}}>CONFLICT — reduce size</span>}
-        </div>
-        <Field
-          label=""
-          placeholder={`Do NQ and ES agree? Note where they differ — levels, profile shape, IB location. If they both confirm: press full size. If they conflict: wait or sit out.`}
-          value={data.nqEsNote}
-          onChange={set('nqEsNote')}
-          rows={3}
-        />
-      </div>
-
-      {/* Trade rules */}
-      <Field
-        label="Rules for Today"
-        placeholder={`Max loss: \nMax trades: \nOnly take setups with: \nDo NOT trade if: \nStop after:`}
-        value={data.tradeRules}
-        onChange={set('tradeRules')}
-        rows={4}
-      />
-
-      {/* Mental state */}
-      <Field
-        label="Mental State"
-        placeholder="Sleep quality · Stress level · Confidence · Anything affecting your edge today..."
-        value={data.feelings}
-        onChange={set('feelings')}
-        rows={2}
-      />
+      {/* ── MENTAL STATE ── */}
+      <Divider label="Mental State"/>
+      <MentalStatePanel data={mentalData} onChange={d=>onChange({...data,...d})}/>
     </div>
   );
 }
@@ -1495,16 +1711,13 @@ function EODTab({data,onChange,trades,date,isMobile}){
   const totalPts=trades.reduce((s,t)=>s+(parseFloat(t.points)||0),0);
   const[copied,setCopied]=useState(false);
 
-  const biasStr = data.dailyBias ? `${data.dailyBias} (pre-market)` : '—';
-  const midStr = data.midSessionBias ? `${data.midSessionBias} — ${data.midSessionEffect || 'updated'}` : 'not logged';
+  const biasStr = `ES: ${data.esComputedBias||'—'} | NQ: ${data.nqComputedBias||'—'} | Alignment: ${data.alignmentBias||data.dailyBias||'—'}`;
+  const mentalStr = [data.mentalSleep&&`Sleep: ${data.mentalSleep}`,data.mentalStress&&`Stress: ${data.mentalStress}`,data.mentalConfidence&&`Confidence: ${data.mentalConfidence}`,data.mentalExterior&&`External: ${data.mentalExterior}`].filter(Boolean).join(' · ')||'—';
   const prompt=`Review my trading journal for ${date}.
-Pre-Market Bias: ${biasStr} | Mid-Session Update: ${midStr}
-Key Levels: ${data.keyLevels||'—'}
+Bias — ${biasStr}
+Mental State: ${mentalStr}
 ES Plan: ${data.esPlan||'—'}
 NQ Plan: ${data.nqPlan||'—'}
-NQ+ES Alignment: ${data.nqEsNote||'—'}
-Rules for Today: ${data.tradeRules||'—'}
-Mental State: ${data.feelings||'—'}
 Trades (${trades.length}):
 ${trades.map((t,i)=>`Trade ${i+1}: ${t.ticker}|${t.direction||'—'}|${t.contracts}c|SL ${t.sl}pts|Setup:${t.plan}|Candle:${t.candle}|Result:${t.result}|Points:${t.points}|P&L:$${calcPnL(t.ticker,t.contracts,t.points).toFixed(0)}|Notes:${t.notes}`).join('\n')}
 Total P&L: $${total.toFixed(0)} | Total Points: ${totalPts.toFixed(1)}
@@ -1512,7 +1725,7 @@ EOD Emotions: ${data.emotions||'—'}
 What I Did Well: ${data.well||'—'}
 What I Must Fix: ${data.fix||'—'}
 General Review: ${data.review||'—'}
-Please: 1. Pre-market bias accuracy. 2. Did mid-session IB update help or hurt. 3. Did NQ+ES alignment match what happened. 4. Trade-by-trade breakdown vs plan. 5. What I did well (specific). 6. Top 1-2 fixes. 7. Confirm P&L math (ES=$50 NQ=$20 MES=$5 MNQ=$2). 8. One edge to build on. Direct, no padding.`;
+Please: 1. ES vs NQ bias accuracy — did they align or diverge. 2. Did the alignment call match what happened. 3. Trade-by-trade breakdown vs plan. 4. Mental state impact on trading. 5. What I did well (specific). 6. Top 1-2 fixes. 7. Confirm P&L math (ES=$50 NQ=$20 MES=$5 MNQ=$2). 8. One edge to build on. Direct, no padding.`;
 
   const copy=()=>{navigator.clipboard.writeText(prompt);setCopied(true);setTimeout(()=>setCopied(false),2500);};
 
@@ -1667,10 +1880,11 @@ export default function App(){
     setTab(0);
   };
 
-  const computedBias = dayData?.pre?.biasInputs ? computeBias(dayData.pre.biasInputs) : null;
-  const midSession = (computedBias && dayData?.pre?.biasInputs) ? computeMidSession(dayData.pre.biasInputs, computedBias) : null;
-  const activeBias = midSession ? midSession.updatedBias : computedBias?.bias;
-  const biasColor = activeBias === 'bullish' ? C.green : activeBias === 'bearish' ? C.red : activeBias === 'neutral' ? C.yellow : null;
+  const esResult = dayData?.pre?.esInputs ? computeBias(dayData.pre.esInputs) : null;
+  const nqResult = dayData?.pre?.nqInputs ? computeBias(dayData.pre.nqInputs) : null;
+  const alignment = (esResult && nqResult) ? computeAlignment(esResult, nqResult) : null;
+  const activeBias = alignment?.combined || dayData?.pre?.dailyBias || '';
+  const biasColor = activeBias === 'bullish' ? C.green : activeBias === 'bearish' ? C.red : activeBias === 'neutral' ? C.yellow : activeBias === 'conflict' ? C.orange : null;
   const isToday=selectedDate===today;
   const dayIdx=index[selectedDate];
   const sideW=260;
@@ -1724,22 +1938,14 @@ export default function App(){
             </div>
             {activeBias&&(
               <div style={{padding:'12px 14px',borderRadius:10,border:`1px solid ${biasColor}44`,background:biasColor+'10'}}>
-                <div style={{fontSize:10,color:C.textMut,letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:4}}>
-                  {midSession && midSession.effect !== 'none' ? 'Updated Bias' : 'Pre-Market Bias'}
+                <div style={{fontSize:10,color:C.textMut,letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:6}}>Alignment</div>
+                <div style={{fontSize:16,color:biasColor,fontWeight:800,textTransform:'capitalize',marginBottom:6}}>
+                  {activeBias==='bullish'?'🟢':activeBias==='bearish'?'🔴':activeBias==='conflict'?'⚡':'⚪'} {activeBias}
                 </div>
-                <div style={{fontSize:16,color:biasColor,fontWeight:800,textTransform:'capitalize',marginBottom:4}}>
-                  {activeBias==='bullish'?'🟢':activeBias==='bearish'?'🔴':'⚪'} {activeBias}
+                <div style={{display:'flex',gap:6}}>
+                  {esResult?.bias&&<div style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:esResult.color+'22',color:esResult.color,fontWeight:600}}>ES {esResult.bias}</div>}
+                  {nqResult?.bias&&<div style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:nqResult.color+'22',color:nqResult.color,fontWeight:600}}>NQ {nqResult.bias}</div>}
                 </div>
-                {midSession && midSession.effect && midSession.effect !== 'none' && (
-                  <div style={{fontSize:10,color:biasColor,opacity:0.7,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:2}}>
-                    {midSession.effect === 'confirmed' ? '✓ IB confirmed'
-                      : midSession.effect === 'upgrade' ? '↑ IB upgraded'
-                      : midSession.effect === 'neutralized' ? '⚠ IB neutralized'
-                      : midSession.effect === 'caution' ? '⚡ IB caution'
-                      : ''}
-                  </div>
-                )}
-                {computedBias?.conviction&&<div style={{fontSize:11,color:biasColor,opacity:0.7,textTransform:'uppercase',letterSpacing:'0.06em'}}>{computedBias.conviction} conviction</div>}
               </div>
             )}
             {dayIdx&&(
@@ -1761,7 +1967,7 @@ export default function App(){
                 <div style={{fontSize:11,color:C.textMut,letterSpacing:'0.12em',textTransform:'uppercase'}}>Trading Journal</div>
                 <div style={{display:'flex',gap:8,alignItems:'center'}}>
                   <span style={{fontSize:11,color:saveStatus==='saving'?C.yellow:saveStatus==='saved'?C.green:'transparent'}}>{saveStatus==='saving'?'saving...':'✓ saved'}</span>
-                  {activeBias&&<div style={{padding:'4px 10px',borderRadius:20,border:`1px solid ${biasColor}44`,background:biasColor+'12',fontSize:11,color:biasColor,fontWeight:700,textTransform:'uppercase'}}>{activeBias}</div>}
+                  {activeBias&&<div style={{padding:'4px 10px',borderRadius:20,border:`1px solid ${biasColor}44`,background:biasColor+'12',fontSize:11,color:biasColor,fontWeight:700,textTransform:'uppercase'}}>{activeBias==='conflict'?'⚡':activeBias==='bullish'?'🟢':activeBias==='bearish'?'🔴':'⚪'} {activeBias}</div>}
                 </div>
               </div>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:16}}>
@@ -1797,7 +2003,18 @@ export default function App(){
             <>
               {tab===0&&<PreMarketTab data={dayData.pre} onChange={updatePre} isMobile={isMobile}/>}
               {tab===1&&<TradesTab trades={dayData.trades} onChange={updateTrades} isMobile={isMobile}/>}
-              {tab===2&&<EODTab data={{...dayData.eod,dailyBias:dayData.pre.dailyBias,computedBias:dayData.pre.computedBias,midSessionBias:dayData.pre.midSessionBias,midSessionEffect:dayData.pre.midSessionEffect,keyLevels:dayData.pre.keyLevels,esPlan:dayData.pre.esPlan,nqPlan:dayData.pre.nqPlan,nqEsNote:dayData.pre.nqEsNote,tradeRules:dayData.pre.tradeRules,feelings:dayData.pre.feelings}} onChange={updateEod} trades={dayData.trades} date={selectedDate} isMobile={isMobile}/> }
+              {tab===2&&<EODTab data={{...dayData.eod,
+                dailyBias:dayData.pre.dailyBias,
+                alignmentBias:dayData.pre.alignmentBias,
+                esComputedBias:dayData.pre.esComputedBias,
+                nqComputedBias:dayData.pre.nqComputedBias,
+                esPlan:dayData.pre.esPlan,
+                nqPlan:dayData.pre.nqPlan,
+                mentalSleep:dayData.pre.mentalSleep,
+                mentalStress:dayData.pre.mentalStress,
+                mentalConfidence:dayData.pre.mentalConfidence,
+                mentalExterior:dayData.pre.mentalExterior,
+              }} onChange={updateEod} trades={dayData.trades} date={selectedDate} isMobile={isMobile}/> }
             </>
           )}
         </div>
