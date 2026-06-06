@@ -46,6 +46,8 @@ function computeBias(bi) {
     vaOverlap,          // 'heavy'|'none'|''
     ibLocation,         // 'upper'|'middle'|'lower'|''  — where is price in IB at 10:30
     vwapRelation,       // 'above'|'at'|'below'|''  — price vs VWAP at 10:30
+    ethOvernight,       // 'broke_high_held'|'broke_high_rejected'|'broke_low_held'|'broke_low_rejected'|'inside'|''
+    nqEsAlign,          // 'both_bullish'|'both_bearish'|'both_neutral'|'conflict'|''
   } = bi;
 
   // ── Step 1: Prior day candle (base direction) ──
@@ -264,6 +266,69 @@ function computeBias(bi) {
     signals.push('📊 Price at VWAP — institutional pivot point. Wait for separation. Direction of break from VWAP sets intraday tone.');
   }
 
+  // ── Step 9: ETH overnight level interaction ──
+  // Overnight H/L are liquidity pools. Market sweeps them before moving.
+  // Broke and HELD = directional confirmation, ~68-72% continuation.
+  // Broke and REJECTED = failed sweep, likely reversal back inside overnight range.
+  // Inside overnight range = no information from ETH yet.
+  if (ethOvernight === 'broke_high_held') {
+    if (resolvedDir === 'long') {
+      signals.push('🌙 ETH broke overnight high + held — confirms long bias. Overnight level is now support (~68-72%).');
+      ibBoost += 1;
+    } else if (resolvedDir === 'short') {
+      signals.push('🌙 ETH broke overnight high + held — conflicts with short bias. Wait for RTH to reject and close back below overnight high.');
+      ibBoost -= 1;
+    } else {
+      signals.push('🌙 ETH broke overnight high + held — mild long lean. Overnight level is support.');
+    }
+  } else if (ethOvernight === 'broke_low_held') {
+    if (resolvedDir === 'short') {
+      signals.push('🌙 ETH broke overnight low + held — confirms short bias. Overnight level is now resistance (~68-72%).');
+      ibBoost += 1;
+    } else if (resolvedDir === 'long') {
+      signals.push('🌙 ETH broke overnight low + held — conflicts with long bias. Wait for RTH to reject and close back above overnight low.');
+      ibBoost -= 1;
+    } else {
+      signals.push('🌙 ETH broke overnight low + held — mild short lean. Overnight level is resistance.');
+    }
+  } else if (ethOvernight === 'broke_high_rejected') {
+    signals.push('🌙 ETH swept overnight high but rejected — failed sweep. Bearish lean at that level. Stop hunt done, watch for RTH fade.');
+    if (resolvedDir === 'short') ibBoost += 1;
+  } else if (ethOvernight === 'broke_low_rejected') {
+    signals.push('🌙 ETH swept overnight low but rejected — failed sweep. Bullish lean at that level. Stop hunt done, watch for RTH bounce.');
+    if (resolvedDir === 'long') ibBoost += 1;
+  } else if (ethOvernight === 'inside') {
+    signals.push('🌙 RTH opened inside overnight range — no ETH breakout signal. Overnight H/L are live targets for RTH session.');
+  }
+
+  // ── Step 10: NQ + ES alignment ──
+  // When both instruments confirm the same directional read, conviction increases.
+  // NQ tends to lead — NQ bullish + ES confirming is stronger than ES leading alone.
+  // Conflict between NQ and ES is a significant red flag — reduce size or wait.
+  if (nqEsAlign === 'both_bullish') {
+    if (resolvedDir === 'long') {
+      signals.push('⚡ NQ + ES both bullish — cross-instrument confirmation. Strongest same-day confluence. Full size justified.');
+      ibBoost += 2;
+    } else {
+      signals.push('⚡ NQ + ES both bullish — conflicts with bearish/neutral pre-market read. High risk. Reconsider bias.');
+      ibBoost -= 1;
+    }
+  } else if (nqEsAlign === 'both_bearish') {
+    if (resolvedDir === 'short') {
+      signals.push('⚡ NQ + ES both bearish — cross-instrument confirmation. Strongest same-day confluence. Full size justified.');
+      ibBoost += 2;
+    } else {
+      signals.push('⚡ NQ + ES both bearish — conflicts with bullish/neutral pre-market read. High risk. Reconsider bias.');
+      ibBoost -= 1;
+    }
+  } else if (nqEsAlign === 'both_neutral') {
+    signals.push('⚡ NQ + ES both neutral — cross-instrument balance. Fade extremes on both. No trend trades.');
+    if (resolvedDir !== 'neutral') ibBoost -= 1;
+  } else if (nqEsAlign === 'conflict') {
+    signals.push('⚡ NQ + ES conflict — instruments diverging. Significant red flag. Reduce size to minimum or sit on hands until they align.');
+    ibBoost -= 2;
+  }
+
   // ── Conviction scoring ──
   // score = structural agreement (0-4) + same-day boost.
   //   >=4 → high (~68-75%), 2-3 → medium (~60-65%), <2 → low (~55-58%)
@@ -305,6 +370,8 @@ function emptyBiasInputs() {
     vaOverlap: '',
     ibLocation: '',     // 'upper'|'middle'|'lower'|''
     vwapRelation: '',   // 'above'|'at'|'below'|''
+    ethOvernight: '',   // 'broke_high_held'|'broke_high_rejected'|'broke_low_held'|'broke_low_rejected'|'inside'|''
+    nqEsAlign: '',      // 'both_bullish'|'both_bearish'|'both_neutral'|'conflict'|''
     // mid-session IB breakout update
     ibBreakDir: '',        // 'high'|'low'|'none'|''
     ibTimeAcceptance: '',  // 'yes'|'no'|''
@@ -417,9 +484,17 @@ function emptyDay(){
       biasInputs: emptyBiasInputs(),
       computedBias: '',
       dailyBias:'',
-      bigPicture:'',plan:'',feelings:'',
-      esImgFractal:'',esImgTPO:'',esImg15:'',
-      nqImgFractal:'',nqImgTPO:'',nqImg15:''},
+      bigPicture:'',
+      esImgTPO:'',esImg15:'',
+      nqImgTPO:'',nqImg15:'',
+      // structured execution plan
+      keyLevels:'',        // weekly POC, overnight H/L, excess, multi-day edges
+      esPlan:'',           // ES specific: VAH/VAL/POC, profile read, targets
+      nqPlan:'',           // NQ specific: VAH/VAL/POC, profile read, targets
+      nqEsNote:'',         // alignment note + confluence read
+      tradeRules:'',       // max loss, max trades, rules for the day
+      feelings:'',         // mental state
+    },
     trades:[newTrade()],
     eod:{emotions:'',well:'',fix:'',review:'',
       img15ES:'',imgTPOES:'',img15NQ:'',imgTPONQ:''},
@@ -989,6 +1064,68 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
           VWAP is the institutional intraday reference. Bias + VWAP agreement = highest quality entry zone. Conflict = wait for VWAP flip before pressing. Never enter long extended far above VWAP or short extended far below it — enter on the retest.
         </div>
       </div>
+
+      {/* ETH overnight level */}
+      <div style={{marginBottom:18}}>
+        <SectionLabel>ETH overnight level interaction</SectionLabel>
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          {[
+            {label:'Inside overnight range',value:'inside',col:'#aaa',sub:'Overnight H/L are live RTH targets'},
+            {label:'⬆ Broke overnight HIGH + held',value:'broke_high_held',col:C.green,sub:'Level is support (~68-72% cont.)'},
+            {label:'⬆ Swept overnight HIGH + rejected',value:'broke_high_rejected',col:C.orange,sub:'Stop hunt done — watch RTH fade'},
+            {label:'⬇ Broke overnight LOW + held',value:'broke_low_held',col:C.red,sub:'Level is resistance (~68-72% cont.)'},
+            {label:'⬇ Swept overnight LOW + rejected',value:'broke_low_rejected',col:C.orange,sub:'Stop hunt done — watch RTH bounce'},
+          ].map(o=>{
+            const active=biasInputs.ethOvernight===o.value;
+            return(
+              <button key={o.value} onClick={()=>set('ethOvernight')(active?'':o.value)} style={{
+                padding:'9px 14px',borderRadius:10,textAlign:'left',
+                border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
+                background:active?o.col+'18':'transparent',
+                cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
+                display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,
+              }}>
+                <span style={{color:active?o.col:C.textSub,fontSize:12,fontWeight:active?700:400}}>{o.label}</span>
+                <span style={{color:active?o.col:C.textDim,fontSize:11,flexShrink:0}}>{o.sub}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div style={{fontSize:11,color:C.textDim,marginTop:8,lineHeight:1.5}}>
+          Never take your first trade before the overnight H/L has been swept or clearly respected. Wait for the sweep — then enter on the rejection.
+        </div>
+      </div>
+
+      {/* NQ + ES alignment */}
+      <div style={{marginBottom:8}}>
+        <SectionLabel>NQ + ES alignment</SectionLabel>
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          {[
+            {label:'🟢 Both bullish',value:'both_bullish',col:C.green,sub:'Cross-instrument confirmation +2 conviction'},
+            {label:'🔴 Both bearish',value:'both_bearish',col:C.red,sub:'Cross-instrument confirmation +2 conviction'},
+            {label:'⚪ Both neutral',value:'both_neutral',col:C.yellow,sub:'Balance confirmed on both — fade only'},
+            {label:'⚡ Conflict — diverging',value:'conflict',col:C.orange,sub:'Reduce size or sit out until aligned'},
+          ].map(o=>{
+            const active=biasInputs.nqEsAlign===o.value;
+            return(
+              <button key={o.value} onClick={()=>set('nqEsAlign')(active?'':o.value)} style={{
+                padding:'9px 14px',borderRadius:10,textAlign:'left',
+                border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
+                background:active?o.col+'18':'transparent',
+                cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
+                display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,
+              }}>
+                <span style={{color:active?o.col:C.textSub,fontSize:13,fontWeight:active?700:400}}>{o.label}</span>
+                <span style={{color:active?o.col:C.textDim,fontSize:11,flexShrink:0}}>{o.sub}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div style={{fontSize:11,color:C.textDim,marginTop:8,lineHeight:1.5}}>
+          NQ leads ES. When both instruments confirm the same read it's the strongest same-day confluence available. Conflict between NQ and ES is a red flag — the market is sending mixed signals. Minimum size or no trade until they agree.
+        </div>
+      </div>
+
       <div style={{height:1,background:C.surface2,margin:'28px 0 24px'}}/>
       <div style={{fontSize:11,color:C.orange,letterSpacing:'0.1em',textTransform:'uppercase',fontWeight:700,marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
         <div style={{width:3,height:14,background:C.orange,borderRadius:2}}/>
@@ -1134,37 +1271,95 @@ function PreMarketTab({data,onChange,isMobile}){
         preBiasResult={biasResult}
       />
 
-      <Divider label="Big Picture"/>
-
-      {/* Big picture — weekly/macro context */}
-      <div style={{marginBottom:24}}>
-        <div style={{fontSize:11,color:C.textSub,marginBottom:10,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Big Picture (weekly/macro)</div>
-        <Pills options={[{label:'🐂 Bull',value:'bull'},{label:'⚪ Neutral',value:'neutral'},{label:'🐻 Bear',value:'bear'}]}
-          value={data.bigPicture} onChange={set('bigPicture')}
-          colors={{bull:C.green,neutral:'#aaa',bear:C.red}}/>
-      </div>
-
       <Divider label="Charts"/>
 
       {/* ES Section */}
       <InstrumentLabel name="ES" color={C.blue}/>
-      <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:20}}>
-        <ImageSlot label="Fractal" value={data.esImgFractal} onChange={set('esImgFractal')} accent={C.blue}/>
+      <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:20}}>
         <ImageSlot label="TPO" value={data.esImgTPO} onChange={set('esImgTPO')} accent={C.blue}/>
         <ImageSlot label="15min" value={data.esImg15} onChange={set('esImg15')} accent={C.blue}/>
       </div>
 
       {/* NQ Section */}
       <InstrumentLabel name="NQ" color={C.purple}/>
-      <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:8}}>
-        <ImageSlot label="Fractal" value={data.nqImgFractal} onChange={set('nqImgFractal')} accent={C.purple}/>
+      <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:8}}>
         <ImageSlot label="TPO" value={data.nqImgTPO} onChange={set('nqImgTPO')} accent={C.purple}/>
         <ImageSlot label="15min" value={data.nqImg15} onChange={set('nqImg15')} accent={C.purple}/>
       </div>
 
-      <Divider label="Plan"/>
-      <Field label="Daily Operating Plan" placeholder="Key levels · VAH/VAL/POC · Setups · Max loss · Risk rules..." value={data.plan} onChange={set('plan')} rows={4}/>
-      <Field label="Pre-Market Feelings" placeholder="Mindset · Sleep · Confidence · Anything affecting edge..." value={data.feelings} onChange={set('feelings')} rows={3}/>
+      <Divider label="Execution Plan"/>
+
+      {/* Key levels */}
+      <Field
+        label="Key Levels"
+        placeholder={`Weekly POC: \nOvernight high: \nOvernight low: \nExcess high/low: \nMulti-day balance edges: \nPrior day VAH / VAL / POC:`}
+        value={data.keyLevels}
+        onChange={set('keyLevels')}
+        rows={6}
+      />
+
+      {/* ES plan */}
+      <Field
+        label="ES Plan"
+        placeholder={`Profile shape: \nVAH: VAL: POC: \nBias read: \nLong entry zone: \nShort entry zone: \nTarget 1: Target 2: \nInvalidation:`}
+        value={data.esPlan}
+        onChange={set('esPlan')}
+        rows={5}
+      />
+
+      {/* NQ plan */}
+      <Field
+        label="NQ Plan"
+        placeholder={`Profile shape: \nVAH: VAL: POC: \nBias read: \nLong entry zone: \nShort entry zone: \nTarget 1: Target 2: \nInvalidation:`}
+        value={data.nqPlan}
+        onChange={set('nqPlan')}
+        rows={5}
+      />
+
+      {/* NQ + ES alignment */}
+      <div style={{
+        background: data.nqEsNote ? C.surface2 : 'transparent',
+        border:`1px solid ${C.border}`,
+        borderRadius:10,padding:'12px 14px',marginBottom:20,
+      }}>
+        <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600,display:'flex',alignItems:'center',gap:8}}>
+          <span style={{width:6,height:6,borderRadius:'50%',background:
+            biasInputs.nqEsAlign==='both_bullish'?C.green:
+            biasInputs.nqEsAlign==='both_bearish'?C.red:
+            biasInputs.nqEsAlign==='conflict'?C.orange:
+            biasInputs.nqEsAlign==='both_neutral'?C.yellow:C.textDim,
+            display:'inline-block'}}/>
+          NQ + ES Alignment
+          {biasInputs.nqEsAlign==='both_bullish'&&<span style={{color:C.green,fontSize:10,fontWeight:700}}>BOTH BULLISH — extra edge</span>}
+          {biasInputs.nqEsAlign==='both_bearish'&&<span style={{color:C.red,fontSize:10,fontWeight:700}}>BOTH BEARISH — extra edge</span>}
+          {biasInputs.nqEsAlign==='conflict'&&<span style={{color:C.orange,fontSize:10,fontWeight:700}}>CONFLICT — reduce size</span>}
+        </div>
+        <Field
+          label=""
+          placeholder={`Do NQ and ES agree? Note where they differ — levels, profile shape, IB location. If they both confirm: press full size. If they conflict: wait or sit out.`}
+          value={data.nqEsNote}
+          onChange={set('nqEsNote')}
+          rows={3}
+        />
+      </div>
+
+      {/* Trade rules */}
+      <Field
+        label="Rules for Today"
+        placeholder={`Max loss: \nMax trades: \nOnly take setups with: \nDo NOT trade if: \nStop after:`}
+        value={data.tradeRules}
+        onChange={set('tradeRules')}
+        rows={4}
+      />
+
+      {/* Mental state */}
+      <Field
+        label="Mental State"
+        placeholder="Sleep quality · Stress level · Confidence · Anything affecting your edge today..."
+        value={data.feelings}
+        onChange={set('feelings')}
+        rows={2}
+      />
     </div>
   );
 }
@@ -1303,9 +1498,13 @@ function EODTab({data,onChange,trades,date,isMobile}){
   const biasStr = data.dailyBias ? `${data.dailyBias} (pre-market)` : '—';
   const midStr = data.midSessionBias ? `${data.midSessionBias} — ${data.midSessionEffect || 'updated'}` : 'not logged';
   const prompt=`Review my trading journal for ${date}.
-Pre-Market Bias: ${biasStr} | Mid-Session Update: ${midStr} | Big Picture: ${data.bigPicture||'—'}
-Plan: ${data.plan||'—'}
-Pre-Market Feelings: ${data.feelings||'—'}
+Pre-Market Bias: ${biasStr} | Mid-Session Update: ${midStr}
+Key Levels: ${data.keyLevels||'—'}
+ES Plan: ${data.esPlan||'—'}
+NQ Plan: ${data.nqPlan||'—'}
+NQ+ES Alignment: ${data.nqEsNote||'—'}
+Rules for Today: ${data.tradeRules||'—'}
+Mental State: ${data.feelings||'—'}
 Trades (${trades.length}):
 ${trades.map((t,i)=>`Trade ${i+1}: ${t.ticker}|${t.direction||'—'}|${t.contracts}c|SL ${t.sl}pts|Setup:${t.plan}|Candle:${t.candle}|Result:${t.result}|Points:${t.points}|P&L:$${calcPnL(t.ticker,t.contracts,t.points).toFixed(0)}|Notes:${t.notes}`).join('\n')}
 Total P&L: $${total.toFixed(0)} | Total Points: ${totalPts.toFixed(1)}
@@ -1313,7 +1512,7 @@ EOD Emotions: ${data.emotions||'—'}
 What I Did Well: ${data.well||'—'}
 What I Must Fix: ${data.fix||'—'}
 General Review: ${data.review||'—'}
-Please: 1. Pre-market bias accuracy. 2. Did mid-session IB update help or hurt. 3. Trade-by-trade breakdown. 4. What I did well (specific). 5. Top 1-2 fixes. 6. Confirm P&L math (ES=$50 NQ=$20 MES=$5 MNQ=$2). 7. Daily review. 8. One edge to build on. Direct, no padding.`;
+Please: 1. Pre-market bias accuracy. 2. Did mid-session IB update help or hurt. 3. Did NQ+ES alignment match what happened. 4. Trade-by-trade breakdown vs plan. 5. What I did well (specific). 6. Top 1-2 fixes. 7. Confirm P&L math (ES=$50 NQ=$20 MES=$5 MNQ=$2). 8. One edge to build on. Direct, no padding.`;
 
   const copy=()=>{navigator.clipboard.writeText(prompt);setCopied(true);setTimeout(()=>setCopied(false),2500);};
 
@@ -1598,7 +1797,7 @@ export default function App(){
             <>
               {tab===0&&<PreMarketTab data={dayData.pre} onChange={updatePre} isMobile={isMobile}/>}
               {tab===1&&<TradesTab trades={dayData.trades} onChange={updateTrades} isMobile={isMobile}/>}
-              {tab===2&&<EODTab data={{...dayData.eod,dailyBias:dayData.pre.dailyBias,computedBias:dayData.pre.computedBias,midSessionBias:dayData.pre.midSessionBias,midSessionEffect:dayData.pre.midSessionEffect,bigPicture:dayData.pre.bigPicture,plan:dayData.pre.plan,feelings:dayData.pre.feelings}} onChange={updateEod} trades={dayData.trades} date={selectedDate} isMobile={isMobile}/> }
+              {tab===2&&<EODTab data={{...dayData.eod,dailyBias:dayData.pre.dailyBias,computedBias:dayData.pre.computedBias,midSessionBias:dayData.pre.midSessionBias,midSessionEffect:dayData.pre.midSessionEffect,keyLevels:dayData.pre.keyLevels,esPlan:dayData.pre.esPlan,nqPlan:dayData.pre.nqPlan,nqEsNote:dayData.pre.nqEsNote,tradeRules:dayData.pre.tradeRules,feelings:dayData.pre.feelings}} onChange={updateEod} trades={dayData.trades} date={selectedDate} isMobile={isMobile}/> }
             </>
           )}
         </div>
