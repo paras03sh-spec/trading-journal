@@ -1393,7 +1393,7 @@ function PreMarketTab({data,onChange,isMobile}){
   };
 
   // Instrument column component
-  const InstrumentColumn = ({instrument, inputs, result, onInputChange, accentColor, imgTPO, imgTPOKey, img15, img15Key, planValue, planKey}) => (
+  const InstrumentColumn = ({instrument, inputs, result, onInputChange, accentColor, imgTPO, imgTPOKey, img15, img15Key}) => (
     <div style={{flex:1,minWidth:0}}>
       {/* Header */}
       <div style={{
@@ -1460,15 +1460,6 @@ function PreMarketTab({data,onChange,isMobile}){
           <ImageSlot label="15min" value={img15} onChange={set(img15Key)} accent={accentColor}/>
         </div>
       </div>
-
-      {/* Execution plan */}
-      <Field
-        label={`${instrument} Plan — VAH / VAL / POC · Entries · Targets · Invalidation`}
-        placeholder={`VAH:  VAL:  POC:\nLong entry zone:\nShort entry zone:\nTarget 1:  Target 2:\nInvalidation:`}
-        value={planValue||''}
-        onChange={set(planKey)}
-        rows={5}
-      />
     </div>
   );
 
@@ -1489,7 +1480,6 @@ function PreMarketTab({data,onChange,isMobile}){
           accentColor={C.blue}
           imgTPO={data.esImgTPO||''} imgTPOKey="esImgTPO"
           img15={data.esImg15||''} img15Key="esImg15"
-          planValue={data.esPlan} planKey="esPlan"
         />
 
         {isMobile && <div style={{height:2,background:C.surface2,margin:'28px 0'}}/>}
@@ -1502,7 +1492,6 @@ function PreMarketTab({data,onChange,isMobile}){
           accentColor={C.purple}
           imgTPO={data.nqImgTPO||''} imgTPOKey="nqImgTPO"
           img15={data.nqImg15||''} img15Key="nqImg15"
-          planValue={data.nqPlan} planKey="nqPlan"
         />
       </div>
 
@@ -1709,8 +1698,6 @@ function EODTab({data,onChange,trades,date,isMobile}){
   const prompt=`Review my trading journal for ${date}.
 Bias — ${biasStr}
 Mental State: ${mentalStr}
-ES Plan: ${data.esPlan||'—'}
-NQ Plan: ${data.nqPlan||'—'}
 Trades (${trades.length}):
 ${trades.map((t,i)=>`Trade ${i+1}: ${t.ticker}|${t.direction||'—'}|${t.contracts}c|SL ${t.sl}pts|Setup:${t.plan}|Candle:${t.candle}|Result:${t.result}|Points:${t.points}|P&L:$${calcPnL(t.ticker,t.contracts,t.points).toFixed(0)}|Notes:${t.notes}`).join('\n')}
 Total P&L: $${total.toFixed(0)} | Total Points: ${totalPts.toFixed(1)}
@@ -1718,7 +1705,7 @@ EOD Emotions: ${data.emotions||'—'}
 What I Did Well: ${data.well||'—'}
 What I Must Fix: ${data.fix||'—'}
 General Review: ${data.review||'—'}
-Please: 1. ES vs NQ bias accuracy — did they align or diverge. 2. Did the alignment call match what happened. 3. Trade-by-trade breakdown vs plan. 4. Mental state impact on trading. 5. What I did well (specific). 6. Top 1-2 fixes. 7. Confirm P&L math (ES=$50 NQ=$20 MES=$5 MNQ=$2). 8. One edge to build on. Direct, no padding.`;
+Please: 1. ES vs NQ bias accuracy — did they align or diverge. 2. Did alignment call match what happened. 3. Trade-by-trade breakdown. 4. Mental state impact. 5. What I did well (specific). 6. Top 1-2 fixes. 7. Confirm P&L math (ES=$50 NQ=$20 MES=$5 MNQ=$2). 8. One edge to build on. Direct, no padding.`;
 
   const copy=()=>{navigator.clipboard.writeText(prompt);setCopied(true);setTimeout(()=>setCopied(false),2500);};
 
@@ -2001,8 +1988,6 @@ export default function App(){
                 alignmentBias:dayData.pre.alignmentBias,
                 esComputedBias:dayData.pre.esComputedBias,
                 nqComputedBias:dayData.pre.nqComputedBias,
-                esPlan:dayData.pre.esPlan,
-                nqPlan:dayData.pre.nqPlan,
                 mentalSleep:dayData.pre.mentalSleep,
                 mentalStress:dayData.pre.mentalStress,
                 mentalConfidence:dayData.pre.mentalConfidence,
