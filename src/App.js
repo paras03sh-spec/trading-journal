@@ -38,6 +38,8 @@ function computeBias(bi) {
     prevDayCandle,      // 'green' | 'red' | 'inside' | ''
     insideDayCount,     // number (0,1,2,3+)
     profileShape,       // 'B'|'b'|'P'|'D'|'normal'|'single_prints'|''
+    prevHighQuality,    // 'excess'|'poor'|'normal'|''
+    prevLowQuality,     // 'excess'|'poor'|'normal'|''
     tpoDistribution,    // 'upper'|'lower'|''
     pocMigration,       // 'rising'|'flat'|'falling'|''
     edgeContext,        // ''|'none'|'high_from_inside'|'low_from_inside'|'high_from_above'|'low_from_below'|'failed_break_high'|'failed_break_low'
@@ -91,7 +93,27 @@ function computeBias(bi) {
     signals.push('🧲 Single prints — secondary magnet, not a primary signal');
   }
 
-  // ── Step 3: TPO distribution (secondary, ±1) ──
+  // ── Step 3: Prior day extreme quality (excess / poor) ──
+  // Excess = clean single/two letter rejection at extreme. Level defended (~65-70%).
+  // Poor = overlapping letters at extreme. Unfinished auction, magnetic pull back.
+  // Excess at LOW = bullish +1 (buyers defended). Excess at HIGH = bearish -1 (sellers defended).
+  // Poor LOW = bearish -1 (unfinished auction below, downside pull). Poor HIGH = bullish +1 (upside target magnetic).
+  if (prevLowQuality === 'excess') {
+    profileScore += 1;
+    signals.push('✅ Excess at prior day LOW — clean buyer rejection, low defended (~65-70% holds). Structural support.');
+  } else if (prevLowQuality === 'poor') {
+    profileScore -= 1;
+    signals.push('⚠ Poor LOW on prior day — unfinished auction below, downside magnetic pull. That low is a target.');
+  }
+  if (prevHighQuality === 'excess') {
+    profileScore -= 1;
+    signals.push('✅ Excess at prior day HIGH — clean seller rejection, high defended (~65-70% holds). Structural resistance.');
+  } else if (prevHighQuality === 'poor') {
+    profileScore += 1;
+    signals.push('⚠ Poor HIGH on prior day — unfinished auction above, upside magnetic pull. That high is a target.');
+  }
+
+  // ── Step 4: TPO distribution (secondary, ±1) ──
   if (tpoDistribution === 'upper') {
     profileScore += 1; signals.push('⬆ TPO upper half — buyers controlled close');
   } else if (tpoDistribution === 'lower') {
@@ -360,24 +382,26 @@ function emptyBiasInputs() {
     prevDayCandle: '',
     insideDayCount: '0',
     profileShape: '',
+    prevHighQuality: '', // 'excess'|'poor'|'normal'|''
+    prevLowQuality: '',  // 'excess'|'poor'|'normal'|''
     tpoDistribution: '',
     pocMigration: '',
     edgeContext: '',
     ibSize: '',
     vaOverlap: '',
-    ibLocation: '',     // 'upper'|'middle'|'lower'|''
-    vwapRelation: '',   // 'above'|'at'|'below'|''
-    ethOvernight: '',   // overnight level interaction
-    // mid-session IB breakout update
-    ibBreakDir: '',        // 'high'|'low'|'none'|''
-    ibTimeAcceptance: '',  // 'yes'|'no'|''
-    ibCVD: '',             // 'agreeing'|'flat'|'diverging'|''
+    ibLocation: '',
+    vwapRelation: '',
+    ethOvernight: '',
+    ibBreakDir: '',
+    ibTimeAcceptance: '',
+    ibCVD: '',
+    ibOppositeBreak: '', // 'no'|'yes_no_accept'|'yes_accepted'|''
   };
 }
 
 // ─── Mid-Session Update Engine ────────────────────────────────────────────────
 function computeMidSession(bi, preBias) {
-  const { ibBreakDir, ibTimeAcceptance, ibCVD } = bi;
+  const { ibBreakDir, ibTimeAcceptance, ibCVD, ibOppositeBreak } = bi;
 
   // Nothing entered yet
   if (!ibBreakDir) return null;
@@ -407,6 +431,37 @@ function computeMidSession(bi, preBias) {
         : 'Failed break. Original bias stands. Wait for cleaner structure.',
       color: C.yellow,
       effect: 'none',
+    };
+  }
+
+  // ── OPPOSITE IB EXTREME ALSO BROKEN ──
+  // Check this before anything else once time acceptance is confirmed.
+  if (ibOppositeBreak === 'yes_no_accept') {
+    // Both sides broke but neither held with acceptance = pure chop.
+    // Market explored both directions and found responsive activity on both sides.
+    // ~70-75% probability of closing near middle or inside IB. No directional trade.
+    return {
+      updatedBias: 'neutral',
+      updatedConviction: 'neutral',
+      verdict: 'Both IB extremes broken — neither accepted. Double-sided chop.',
+      action: 'Market explored both directions and rejected both. This is a choppy neutral day. Do not trade directionally. Fade both extremes if anything — minimum size only. Best move is to sit on hands.',
+      color: C.yellow,
+      effect: 'neutralized',
+    };
+  }
+
+  if (ibOppositeBreak === 'yes_accepted') {
+    // Both sides broke and the opposite side accepted = double distribution developing
+    // OR structural reversal. Either way the original directional bias is dead.
+    // The second break with acceptance is the dominant signal now.
+    const secondDir = ibBreakDir === 'high' ? 'bearish' : 'bullish'; // opposite accepted = new direction
+    return {
+      updatedBias: 'neutral',
+      updatedConviction: 'neutral',
+      verdict: `Both IB extremes broken — opposite side accepted. Original bias neutralized.`,
+      action: `Price broke ${ibBreakDir} first then reversed and accepted the ${ibBreakDir === 'high' ? 'low' : 'high'}. This is a structural reversal or double distribution day. Original ${preBias.bias} bias is dead. Do not fade the second break — go neutral. Wait for clear structure to emerge before re-engaging. If a second separate value area builds, trade the gap between them.`,
+      color: C.orange,
+      effect: 'neutralized',
     };
   }
 
@@ -451,7 +506,6 @@ function computeMidSession(bi, preBias) {
   }
 
   // ── SCENARIO 3: Bias and break contradict ──
-  // CVD diverging on the break = fake break, original bias still valid
   if (cvdDiverging) {
     return {
       updatedBias: preBias.bias,
@@ -463,7 +517,6 @@ function computeMidSession(bi, preBias) {
     };
   }
 
-  // CVD agreeing on the contradicting break = go neutral, bias no longer valid today
   return {
     updatedBias: 'neutral',
     updatedConviction: 'neutral',
@@ -1012,6 +1065,60 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
         </div>
       </div>
 
+      {/* Prior day extreme quality */}
+      <div style={{marginBottom:18}}>
+        <SectionLabel>Prior day HIGH quality</SectionLabel>
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          {[
+            {label:'Excess — clean seller rejection',value:'excess',col:C.red,sub:'High defended, structural resistance (~65-70% holds)'},
+            {label:'Poor — unfinished auction above',value:'poor',col:C.green,sub:'Upside magnetic, high is a target next session'},
+            {label:'Normal — nothing notable',value:'normal',col:'#aaa',sub:'No extra information from the high'},
+          ].map(o=>{
+            const active=biasInputs.prevHighQuality===o.value;
+            return(
+              <button key={o.value} onClick={()=>set('prevHighQuality')(active?'':o.value)} style={{
+                padding:'9px 14px',borderRadius:10,textAlign:'left',
+                border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
+                background:active?o.col+'18':'transparent',
+                cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
+                display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,
+              }}>
+                <span style={{color:active?o.col:C.textSub,fontSize:13,fontWeight:active?700:400}}>{o.label}</span>
+                <span style={{color:active?o.col:C.textDim,fontSize:11,flexShrink:0}}>{o.sub}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div style={{marginBottom:18}}>
+        <SectionLabel>Prior day LOW quality</SectionLabel>
+        <div style={{display:'flex',flexDirection:'column',gap:8}}>
+          {[
+            {label:'Excess — clean buyer rejection',value:'excess',col:C.green,sub:'Low defended, structural support (~65-70% holds)'},
+            {label:'Poor — unfinished auction below',value:'poor',col:C.red,sub:'Downside magnetic, low is a target next session'},
+            {label:'Normal — nothing notable',value:'normal',col:'#aaa',sub:'No extra information from the low'},
+          ].map(o=>{
+            const active=biasInputs.prevLowQuality===o.value;
+            return(
+              <button key={o.value} onClick={()=>set('prevLowQuality')(active?'':o.value)} style={{
+                padding:'9px 14px',borderRadius:10,textAlign:'left',
+                border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
+                background:active?o.col+'18':'transparent',
+                cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
+                display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,
+              }}>
+                <span style={{color:active?o.col:C.textSub,fontSize:13,fontWeight:active?700:400}}>{o.label}</span>
+                <span style={{color:active?o.col:C.textDim,fontSize:11,flexShrink:0}}>{o.sub}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div style={{fontSize:11,color:C.textDim,marginTop:8,lineHeight:1.5}}>
+          Only log excess when it is unambiguous — single or two isolated letters at the extreme, sharp rejection, price left fast. If you have to think about it, select Normal.
+        </div>
+      </div>
+
       {/* TPO distribution */}
       <div style={{marginBottom:18}}>
         <SectionLabel>TPO letter distribution (where did most letters print?)</SectionLabel>
@@ -1251,22 +1358,53 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
 
           {/* CVD — only show if time accepted */}
           {biasInputs.ibTimeAcceptance === 'yes' && (
-            <div style={{marginBottom:18}}>
-              <SectionLabel>CVD agreement with break direction?</SectionLabel>
-              <Pills
-                options={[
-                  {label:'Agreeing',value:'agreeing'},
-                  {label:'Flat',value:'flat'},
-                  {label:'Diverging',value:'diverging'},
-                ]}
-                value={biasInputs.ibCVD}
-                onChange={set('ibCVD')}
-                colors={{agreeing:C.green,flat:'#aaa',diverging:C.red}}
-              />
-              <div style={{fontSize:11,color:C.textDim,marginTop:6,lineHeight:1.5}}>
-                Agreeing = delta moving with price. Flat = no delta participation. Diverging = delta opposite to price — potential trap.
+            <>
+              <div style={{marginBottom:18}}>
+                <SectionLabel>CVD agreement with break direction?</SectionLabel>
+                <Pills
+                  options={[
+                    {label:'Agreeing',value:'agreeing'},
+                    {label:'Flat',value:'flat'},
+                    {label:'Diverging',value:'diverging'},
+                  ]}
+                  value={biasInputs.ibCVD}
+                  onChange={set('ibCVD')}
+                  colors={{agreeing:C.green,flat:'#aaa',diverging:C.red}}
+                />
+                <div style={{fontSize:11,color:C.textDim,marginTop:6,lineHeight:1.5}}>
+                  Agreeing = delta moving with price. Flat = no delta participation. Diverging = delta opposite to price — potential trap.
+                </div>
               </div>
-            </div>
+
+              {/* Opposite IB extreme broken? */}
+              <div style={{marginBottom:18}}>
+                <SectionLabel>Did price also break the opposite IB extreme?</SectionLabel>
+                <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                  {[
+                    {label:'No — single sided break only',value:'no',col:C.teal,sub:'Normal scenario, bias update stands'},
+                    {label:'Yes — opposite broke but snapped back',value:'yes_no_accept',col:C.yellow,sub:'Both sides tested, neither held — chop day, go neutral'},
+                    {label:'Yes — opposite broke and accepted',value:'yes_accepted',col:C.red,sub:'Double distribution or reversal — original bias dead'},
+                  ].map(o=>{
+                    const active=biasInputs.ibOppositeBreak===o.value;
+                    return(
+                      <button key={o.value} onClick={()=>set('ibOppositeBreak')(active?'':o.value)} style={{
+                        padding:'9px 14px',borderRadius:10,textAlign:'left',
+                        border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
+                        background:active?o.col+'18':'transparent',
+                        cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
+                        display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,
+                      }}>
+                        <span style={{color:active?o.col:C.textSub,fontSize:13,fontWeight:active?700:400}}>{o.label}</span>
+                        <span style={{color:active?o.col:C.textDim,fontSize:11,flexShrink:0}}>{o.sub}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div style={{fontSize:11,color:C.textDim,marginTop:8,lineHeight:1.5}}>
+                  Both sides breaking with no acceptance = chop, sit on hands. Both sides accepted = double distribution or structural reversal, original bias is dead either way.
+                </div>
+              </div>
+            </>
           )}
         </>
       )}
