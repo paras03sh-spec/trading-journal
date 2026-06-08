@@ -420,6 +420,17 @@ function computeMidSession(bi, preBias) {
 
   // Time acceptance not confirmed — break is unresolved
   if (ibTimeAcceptance === 'no') {
+    // Both sides snapped through with no acceptance = pure noise, chop
+    if (ibOppositeBreak === 'yes_no_accept') {
+      return {
+        updatedBias: 'neutral',
+        updatedConviction: 'neutral',
+        verdict: 'Both IB extremes snapped through — neither held. Choppy noise.',
+        action: 'Price tested both sides and rejected both without acceptance. This is the choppiest possible scenario — no edge in either direction. Sit on hands. Do not trade.',
+        color: C.yellow,
+        effect: 'neutralized',
+      };
+    }
     return {
       updatedBias: preBias.bias,
       updatedConviction: preBias.conviction,
@@ -1340,70 +1351,73 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
       {/* Time acceptance — only show if break happened */}
       {(biasInputs.ibBreakDir === 'high' || biasInputs.ibBreakDir === 'low') && (
         <>
+          {/* Opposite IB extreme — show immediately after any break logged */}
           <div style={{marginBottom:18}}>
-            <SectionLabel>Time acceptance (15–30 min held outside IB)?</SectionLabel>
-            <Pills
-              options={[
-                {label:'✓ Yes — held outside',value:'yes'},
-                {label:'✗ No — snapped back inside',value:'no'},
-              ]}
-              value={biasInputs.ibTimeAcceptance}
-              onChange={set('ibTimeAcceptance')}
-              colors={{yes:C.green,no:C.red}}
-            />
-            <div style={{fontSize:11,color:C.textDim,marginTop:6}}>
-              Yes = new TPO letters building outside IB. No = price returned inside quickly.
+            <SectionLabel>Did price also break the opposite IB extreme?</SectionLabel>
+            <div style={{display:'flex',flexDirection:'column',gap:8}}>
+              {[
+                {label:'No — single sided break only',value:'no',col:C.teal,sub:'Normal scenario'},
+                {label:'Yes — opposite broke but snapped back',value:'yes_no_accept',col:C.yellow,sub:'Both sides tested, neither held — chop, go neutral'},
+                {label:'Yes — opposite broke and accepted',value:'yes_accepted',col:C.red,sub:'Double distribution or reversal — bias dead'},
+              ].map(o=>{
+                const active=biasInputs.ibOppositeBreak===o.value;
+                return(
+                  <button key={o.value} onClick={()=>set('ibOppositeBreak')(active?'':o.value)} style={{
+                    padding:'9px 14px',borderRadius:10,textAlign:'left',
+                    border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
+                    background:active?o.col+'18':'transparent',
+                    cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
+                    display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,
+                  }}>
+                    <span style={{color:active?o.col:C.textSub,fontSize:13,fontWeight:active?700:400}}>{o.label}</span>
+                    <span style={{color:active?o.col:C.textDim,fontSize:11,flexShrink:0}}>{o.sub}</span>
+                  </button>
+                );
+              })}
+            </div>
+            <div style={{fontSize:11,color:C.textDim,marginTop:8,lineHeight:1.5}}>
+              Log this first — if both sides snapped, stop here. If single sided, continue below.
             </div>
           </div>
 
-          {/* CVD — only show if time accepted */}
-          {biasInputs.ibTimeAcceptance === 'yes' && (
+          {/* Only show time acceptance if opposite break was single sided or not yet selected */}
+          {(biasInputs.ibOppositeBreak === 'no' || !biasInputs.ibOppositeBreak) && (
             <>
               <div style={{marginBottom:18}}>
-                <SectionLabel>CVD agreement with break direction?</SectionLabel>
+                <SectionLabel>Time acceptance (15–30 min held outside IB)?</SectionLabel>
                 <Pills
                   options={[
-                    {label:'Agreeing',value:'agreeing'},
-                    {label:'Flat',value:'flat'},
-                    {label:'Diverging',value:'diverging'},
+                    {label:'✓ Yes — held outside',value:'yes'},
+                    {label:'✗ No — snapped back inside',value:'no'},
                   ]}
-                  value={biasInputs.ibCVD}
-                  onChange={set('ibCVD')}
-                  colors={{agreeing:C.green,flat:'#aaa',diverging:C.red}}
+                  value={biasInputs.ibTimeAcceptance}
+                  onChange={set('ibTimeAcceptance')}
+                  colors={{yes:C.green,no:C.red}}
                 />
-                <div style={{fontSize:11,color:C.textDim,marginTop:6,lineHeight:1.5}}>
-                  Agreeing = delta moving with price. Flat = no delta participation. Diverging = delta opposite to price — potential trap.
+                <div style={{fontSize:11,color:C.textDim,marginTop:6}}>
+                  Yes = new TPO letters building outside IB. No = price returned inside quickly.
                 </div>
               </div>
 
-              {/* Opposite IB extreme broken? */}
-              <div style={{marginBottom:18}}>
-                <SectionLabel>Did price also break the opposite IB extreme?</SectionLabel>
-                <div style={{display:'flex',flexDirection:'column',gap:8}}>
-                  {[
-                    {label:'No — single sided break only',value:'no',col:C.teal,sub:'Normal scenario, bias update stands'},
-                    {label:'Yes — opposite broke but snapped back',value:'yes_no_accept',col:C.yellow,sub:'Both sides tested, neither held — chop day, go neutral'},
-                    {label:'Yes — opposite broke and accepted',value:'yes_accepted',col:C.red,sub:'Double distribution or reversal — original bias dead'},
-                  ].map(o=>{
-                    const active=biasInputs.ibOppositeBreak===o.value;
-                    return(
-                      <button key={o.value} onClick={()=>set('ibOppositeBreak')(active?'':o.value)} style={{
-                        padding:'9px 14px',borderRadius:10,textAlign:'left',
-                        border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
-                        background:active?o.col+'18':'transparent',
-                        cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
-                        display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,
-                      }}>
-                        <span style={{color:active?o.col:C.textSub,fontSize:13,fontWeight:active?700:400}}>{o.label}</span>
-                        <span style={{color:active?o.col:C.textDim,fontSize:11,flexShrink:0}}>{o.sub}</span>
-                      </button>
-                    );
-                  })}
+              {/* CVD — only show if time accepted */}
+              {biasInputs.ibTimeAcceptance === 'yes' && (
+                <div style={{marginBottom:18}}>
+                  <SectionLabel>CVD agreement with break direction?</SectionLabel>
+                  <Pills
+                    options={[
+                      {label:'Agreeing',value:'agreeing'},
+                      {label:'Flat',value:'flat'},
+                      {label:'Diverging',value:'diverging'},
+                    ]}
+                    value={biasInputs.ibCVD}
+                    onChange={set('ibCVD')}
+                    colors={{agreeing:C.green,flat:'#aaa',diverging:C.red}}
+                  />
+                  <div style={{fontSize:11,color:C.textDim,marginTop:6,lineHeight:1.5}}>
+                    Agreeing = delta moving with price. Flat = no delta participation. Diverging = delta opposite to price — potential trap.
+                  </div>
                 </div>
-                <div style={{fontSize:11,color:C.textDim,marginTop:8,lineHeight:1.5}}>
-                  Both sides breaking with no acceptance = chop, sit on hands. Both sides accepted = double distribution or structural reversal, original bias is dead either way.
-                </div>
-              </div>
+              )}
             </>
           )}
         </>
