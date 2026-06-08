@@ -160,6 +160,32 @@ function computeBias(bi) {
       edgeBias = 'bullish'; edgeColor = C.green; edgeConv = 'high';
       edgeSignal = '❌ Failed breakout LOW — expanded below balance last session, overnight returned inside. Trapped shorts below edge.';
       edgeSizing = 'Strong long lean. Prior expansion low is support — buy against it. Target opposite balance edge (high). Confirm: price must be clearly inside the balance at 10:30, not hovering at the edge.';
+    } else if (edgeContext === 'tapped_low_now_middle') {
+      // Price tapped the balance low prior session/overnight, bounced, now trading clearly
+      // away from the edge in the middle of balance. Responsive buyers proved themselves.
+      // ~60-65% continuation toward the high edge from here.
+      edgeBias = 'bullish'; edgeColor = C.green; edgeConv = 'medium';
+      edgeSignal = '🔄 Low edge tapped prior/overnight + held — price now in middle of balance. Responsive buyers proved themselves.';
+      edgeSizing = 'Bullish lean within balance. Target: high edge. Entry on pullbacks to VWAP or prior session POC — not at the original tap level. Confirmation already done, do not chase.';
+    } else if (edgeContext === 'tapped_high_now_middle') {
+      // Mirror — price tapped balance high, rejected, now in middle.
+      // Responsive sellers proved themselves. ~60-65% continuation toward low edge.
+      edgeBias = 'bearish'; edgeColor = C.red; edgeConv = 'medium';
+      edgeSignal = '🔄 High edge tapped prior/overnight + held — price now in middle of balance. Responsive sellers proved themselves.';
+      edgeSizing = 'Bearish lean within balance. Target: low edge. Entry on bounces to VWAP or prior session POC — not at the original tap level. Confirmation already done, do not chase.';
+    } else if (edgeContext === 'failed_exp_low_now_middle') {
+      // Failed expansion below balance low, price has already rallied back to middle.
+      // Strongest possible scenario — trapped shorts are significantly underwater.
+      // Squeeze is already in progress. ~65-72% continuation toward high edge.
+      edgeBias = 'bullish'; edgeColor = C.green; edgeConv = 'high';
+      edgeSignal = '🚀 Failed expansion LOW + already back in middle — trapped shorts underwater, squeeze in progress.';
+      edgeSizing = 'Highest conviction bullish. The move is already proving itself. Target: high edge. Entry on pullbacks to VWAP, prior POC, or IB low — NOT the original break level. Hold runners. Do not fade this unless mid-session IB update contradicts.';
+    } else if (edgeContext === 'failed_exp_high_now_middle') {
+      // Mirror — failed expansion above balance high, price back in middle.
+      // Trapped longs significantly underwater. Squeeze in progress.
+      edgeBias = 'bearish'; edgeColor = C.red; edgeConv = 'high';
+      edgeSignal = '💥 Failed expansion HIGH + already back in middle — trapped longs underwater, squeeze in progress.';
+      edgeSizing = 'Highest conviction bearish. The move is already proving itself. Target: low edge. Entry on bounces to VWAP, prior POC, or IB high — NOT the original break level. Hold runners. Do not fade this unless mid-session IB update contradicts.';
     }
 
     signals.push(edgeSignal);
@@ -574,8 +600,6 @@ function emptyDay(){
       mentalStress:'',
       mentalConfidence:'',
       mentalExterior:'',
-      weeklyContext:'',
-      dayType:'',
     },
     trades:[newTrade()],
     eod:{emotions:'',well:'',fix:'',review:'',
@@ -1029,6 +1053,10 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
             {label:'↪ Returning to LOW edge from below',value:'low_from_below',col:C.red,sub:'Edge = resistance, reclaim, lean short'},
             {label:'❌ Failed breakout HIGH — back inside overnight',value:'failed_break_high',col:C.red,sub:'Trapped longs above, lean short (~68-72%)'},
             {label:'❌ Failed breakout LOW — back inside overnight',value:'failed_break_low',col:C.green,sub:'Trapped shorts below, lean long (~68-72%)'},
+            {label:'🔄 Low edge tapped prior/overnight + held — now in middle',value:'tapped_low_now_middle',col:C.green,sub:'Buyers proved, bullish lean toward high edge (~60-65%)'},
+            {label:'🔄 High edge tapped prior/overnight + held — now in middle',value:'tapped_high_now_middle',col:C.red,sub:'Sellers proved, bearish lean toward low edge (~60-65%)'},
+            {label:'🚀 Failed expansion LOW — already back in middle',value:'failed_exp_low_now_middle',col:C.green,sub:'Squeeze in progress, highest conviction bullish (~65-72%)'},
+            {label:'💥 Failed expansion HIGH — already back in middle',value:'failed_exp_high_now_middle',col:C.red,sub:'Squeeze in progress, highest conviction bearish (~65-72%)'},
           ].map(o=>{
             const active=biasInputs.edgeContext===o.value;
             return(
@@ -1046,7 +1074,7 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
           })}
         </div>
         <div style={{fontSize:11,color:C.textDim,marginTop:8,lineHeight:1.5}}>
-          Balance is fractal — applies to whatever range governs price on your timeframe. From inside = neutral two-sided watch. Returning to edge = directional reclaim lean. Failed breakout overnight = strongest signal, confirmed before session starts — price must be clearly inside the balance at 10:30, not hovering at the edge.
+          Balance is fractal — applies to whatever range governs price on your timeframe. From inside = neutral two-sided watch. Returning to edge = directional reclaim lean. Failed breakout overnight = strong signal near the edge. Tapped edge + now in middle = buyers/sellers proved themselves, directional lean toward opposite edge. Failed expansion + already in middle = squeeze in progress, highest conviction — entry on pullbacks not at original level.
         </div>
       </div>
 
@@ -1560,47 +1588,6 @@ function PreMarketTab({data,onChange,isMobile}){
       {/* ── MENTAL STATE ── */}
       <Divider label="Mental State"/>
       <MentalStatePanel data={mentalData} onChange={d=>onChange({...data,...d})}/>
-
-      {/* ── WEEKLY CONTEXT ── */}
-      <Divider label="Weekly Context"/>
-      <div style={{fontSize:11,color:C.textDim,marginBottom:10,lineHeight:1.6}}>
-        Mon/Tue only — note where price sits relative to prior week's value area. Leave blank Wed–Fri unless weekly level is directly relevant to today's trade.
-      </div>
-      <Field
-        label="Weekly VA Context (Mon/Tue)"
-        placeholder="e.g. Above prior week VA — bullish weekly context, long fades lower probability. / Inside prior week VA — both directions valid. / Below prior week VA — bearish weekly context."
-        value={data.weeklyContext||''}
-        onChange={set('weeklyContext')}
-        rows={2}
-      />
-
-      {/* ── DAY TYPE ── */}
-      <Divider label="Day Type (fill at 11:00–11:30)"/>
-      <div style={{fontSize:11,color:C.textDim,marginBottom:12,lineHeight:1.6}}>
-        Log what type of day it turned out to be. No scoring — pure data for future analysis.
-      </div>
-      <div style={{display:'flex',flexDirection:'column',gap:8}}>
-        {[
-          {label:'Trend Day',value:'trend',col:C.green,sub:'Directional, one timeframe. Hold runners, add pullbacks.'},
-          {label:'Normal Variation',value:'normal',col:C.blue,sub:'One directional move then rotate. Most common.'},
-          {label:'Neutral Day',value:'neutral',col:C.yellow,sub:'Both sides explored, no winner. Fade extremes only.'},
-          {label:'Double Distribution',value:'double',col:C.purple,sub:'Two separate value areas built. Trade the gap between.'},
-        ].map(o=>{
-          const active=(data.dayType||'')===o.value;
-          return(
-            <button key={o.value} onClick={()=>set('dayType')(active?'':o.value)} style={{
-              padding:'10px 14px',borderRadius:10,textAlign:'left',
-              border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
-              background:active?o.col+'18':'transparent',
-              cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
-              display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,
-            }}>
-              <span style={{color:active?o.col:C.textSub,fontSize:13,fontWeight:active?700:400}}>{o.label}</span>
-              <span style={{color:active?o.col:C.textDim,fontSize:11,flexShrink:0}}>{o.sub}</span>
-            </button>
-          );
-        })}
-      </div>
     </div>
   );
 }
@@ -1741,8 +1728,6 @@ function EODTab({data,onChange,trades,date,isMobile}){
   const prompt=`Review my trading journal for ${date}.
 Bias — ${biasStr}
 Mental State: ${mentalStr}
-Weekly Context: ${data.weeklyContext||'—'}
-Day Type: ${data.dayType||'—'}
 Trades (${trades.length}):
 ${trades.map((t,i)=>`Trade ${i+1}: ${t.ticker}|${t.direction||'—'}|${t.contracts}c|SL ${t.sl}pts|Setup:${t.plan}|Candle:${t.candle}|Result:${t.result}|Points:${t.points}|P&L:$${calcPnL(t.ticker,t.contracts,t.points).toFixed(0)}|Notes:${t.notes}`).join('\n')}
 Total P&L: $${total.toFixed(0)} | Total Points: ${totalPts.toFixed(1)}
@@ -1750,7 +1735,7 @@ EOD Emotions: ${data.emotions||'—'}
 What I Did Well: ${data.well||'—'}
 What I Must Fix: ${data.fix||'—'}
 General Review: ${data.review||'—'}
-Please: 1. ES vs NQ bias accuracy — did they align or diverge. 2. Did alignment call match what happened. 3. Trade-by-trade breakdown. 4. Mental state impact on execution. 5. Weekly context — was it relevant today. 6. Day type — did it match how you traded it. 7. What I did well (specific). 8. Top 1-2 fixes. 9. Confirm P&L math (ES=$50 NQ=$20 MES=$5 MNQ=$2). 10. One edge to build on. Direct, no padding.`;
+Please: 1. ES vs NQ bias accuracy — did they align or diverge. 2. Did alignment call match what happened. 3. Trade-by-trade breakdown. 4. Mental state impact. 5. What I did well (specific). 6. Top 1-2 fixes. 7. Confirm P&L math (ES=$50 NQ=$20 MES=$5 MNQ=$2). 8. One edge to build on. Direct, no padding.`;
 
   const copy=()=>{navigator.clipboard.writeText(prompt);setCopied(true);setTimeout(()=>setCopied(false),2500);};
 
@@ -2037,8 +2022,6 @@ export default function App(){
                 mentalStress:dayData.pre.mentalStress,
                 mentalConfidence:dayData.pre.mentalConfidence,
                 mentalExterior:dayData.pre.mentalExterior,
-                weeklyContext:dayData.pre.weeklyContext||'',
-                dayType:dayData.pre.dayType||'',
               }} onChange={updateEod} trades={dayData.trades} date={selectedDate} isMobile={isMobile}/> }
             </>
           )}
