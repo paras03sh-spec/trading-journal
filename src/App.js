@@ -574,6 +574,8 @@ function emptyDay(){
       mentalStress:'',
       mentalConfidence:'',
       mentalExterior:'',
+      weeklyContext:'',
+      dayType:'',
     },
     trades:[newTrade()],
     eod:{emotions:'',well:'',fix:'',review:'',
@@ -1558,6 +1560,47 @@ function PreMarketTab({data,onChange,isMobile}){
       {/* ── MENTAL STATE ── */}
       <Divider label="Mental State"/>
       <MentalStatePanel data={mentalData} onChange={d=>onChange({...data,...d})}/>
+
+      {/* ── WEEKLY CONTEXT ── */}
+      <Divider label="Weekly Context"/>
+      <div style={{fontSize:11,color:C.textDim,marginBottom:10,lineHeight:1.6}}>
+        Mon/Tue only — note where price sits relative to prior week's value area. Leave blank Wed–Fri unless weekly level is directly relevant to today's trade.
+      </div>
+      <Field
+        label="Weekly VA Context (Mon/Tue)"
+        placeholder="e.g. Above prior week VA — bullish weekly context, long fades lower probability. / Inside prior week VA — both directions valid. / Below prior week VA — bearish weekly context."
+        value={data.weeklyContext||''}
+        onChange={set('weeklyContext')}
+        rows={2}
+      />
+
+      {/* ── DAY TYPE ── */}
+      <Divider label="Day Type (fill at 11:00–11:30)"/>
+      <div style={{fontSize:11,color:C.textDim,marginBottom:12,lineHeight:1.6}}>
+        Log what type of day it turned out to be. No scoring — pure data for future analysis.
+      </div>
+      <div style={{display:'flex',flexDirection:'column',gap:8}}>
+        {[
+          {label:'Trend Day',value:'trend',col:C.green,sub:'Directional, one timeframe. Hold runners, add pullbacks.'},
+          {label:'Normal Variation',value:'normal',col:C.blue,sub:'One directional move then rotate. Most common.'},
+          {label:'Neutral Day',value:'neutral',col:C.yellow,sub:'Both sides explored, no winner. Fade extremes only.'},
+          {label:'Double Distribution',value:'double',col:C.purple,sub:'Two separate value areas built. Trade the gap between.'},
+        ].map(o=>{
+          const active=(data.dayType||'')===o.value;
+          return(
+            <button key={o.value} onClick={()=>set('dayType')(active?'':o.value)} style={{
+              padding:'10px 14px',borderRadius:10,textAlign:'left',
+              border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
+              background:active?o.col+'18':'transparent',
+              cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
+              display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,
+            }}>
+              <span style={{color:active?o.col:C.textSub,fontSize:13,fontWeight:active?700:400}}>{o.label}</span>
+              <span style={{color:active?o.col:C.textDim,fontSize:11,flexShrink:0}}>{o.sub}</span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1698,6 +1741,8 @@ function EODTab({data,onChange,trades,date,isMobile}){
   const prompt=`Review my trading journal for ${date}.
 Bias — ${biasStr}
 Mental State: ${mentalStr}
+Weekly Context: ${data.weeklyContext||'—'}
+Day Type: ${data.dayType||'—'}
 Trades (${trades.length}):
 ${trades.map((t,i)=>`Trade ${i+1}: ${t.ticker}|${t.direction||'—'}|${t.contracts}c|SL ${t.sl}pts|Setup:${t.plan}|Candle:${t.candle}|Result:${t.result}|Points:${t.points}|P&L:$${calcPnL(t.ticker,t.contracts,t.points).toFixed(0)}|Notes:${t.notes}`).join('\n')}
 Total P&L: $${total.toFixed(0)} | Total Points: ${totalPts.toFixed(1)}
@@ -1705,7 +1750,7 @@ EOD Emotions: ${data.emotions||'—'}
 What I Did Well: ${data.well||'—'}
 What I Must Fix: ${data.fix||'—'}
 General Review: ${data.review||'—'}
-Please: 1. ES vs NQ bias accuracy — did they align or diverge. 2. Did alignment call match what happened. 3. Trade-by-trade breakdown. 4. Mental state impact. 5. What I did well (specific). 6. Top 1-2 fixes. 7. Confirm P&L math (ES=$50 NQ=$20 MES=$5 MNQ=$2). 8. One edge to build on. Direct, no padding.`;
+Please: 1. ES vs NQ bias accuracy — did they align or diverge. 2. Did alignment call match what happened. 3. Trade-by-trade breakdown. 4. Mental state impact on execution. 5. Weekly context — was it relevant today. 6. Day type — did it match how you traded it. 7. What I did well (specific). 8. Top 1-2 fixes. 9. Confirm P&L math (ES=$50 NQ=$20 MES=$5 MNQ=$2). 10. One edge to build on. Direct, no padding.`;
 
   const copy=()=>{navigator.clipboard.writeText(prompt);setCopied(true);setTimeout(()=>setCopied(false),2500);};
 
@@ -1992,6 +2037,8 @@ export default function App(){
                 mentalStress:dayData.pre.mentalStress,
                 mentalConfidence:dayData.pre.mentalConfidence,
                 mentalExterior:dayData.pre.mentalExterior,
+                weeklyContext:dayData.pre.weeklyContext||'',
+                dayType:dayData.pre.dayType||'',
               }} onChange={updateEod} trades={dayData.trades} date={selectedDate} isMobile={isMobile}/> }
             </>
           )}
