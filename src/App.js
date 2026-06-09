@@ -672,7 +672,7 @@ function emptyDay(){
       img15ES:'',imgTPOES:'',img15NQ:'',imgTPONQ:''},
   };
 }
-function newTrade(){return{ticker:'',direction:'',contracts:'',sl:'',plan:'',candle:'',result:'',points:'',emotions:'',notes:'',img1:'',img15:'',open:true};}
+function newTrade(){return{ticker:'',direction:'',contracts:'',sl:'',plan:'',confluences:[],result:'',points:'',emotions:'',notes:'',img1:'',img15:'',open:true};}
 function useIsMobile(){
   const[mobile,setMobile]=useState(window.innerWidth<768);
   useEffect(()=>{
@@ -1062,7 +1062,6 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
             {label:'b — Trapped shorts',value:'b',col:C.teal},
             {label:'P — Spike rejected',value:'P',col:C.red},
             {label:'Normal bell',value:'normal',col:'#aaa'},
-            {label:'Single prints',value:'single_prints',col:C.yellow},
           ].map(o=>{
             const active=biasInputs.profileShape===o.value;
             return(
@@ -1801,9 +1800,38 @@ function TradeCard({index,trade,onChange,onRemove,isMobile}){
             }}/>
           </div>
           <div style={{marginBottom:16}}>
-            <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Reversal Candle</div>
-            <Pills options={[{label:'✓ Confirmed',value:'yes'},{label:'✗ No confirmation',value:'no'}]}
-              value={trade.candle} onChange={set('candle')} colors={{yes:C.green,no:C.red}}/>
+            <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Confluences at Entry</div>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+              {[
+                {label:'yVAH',value:'yVAH',col:C.blue},
+                {label:'yVAL',value:'yVAL',col:C.blue},
+                {label:'yPOC',value:'yPOC',col:C.blue},
+                {label:'Excess',value:'Excess',col:C.orange},
+                {label:'pVAH',value:'pVAH',col:C.purple},
+                {label:'pVAL',value:'pVAL',col:C.purple},
+                {label:'pPOC',value:'pPOC',col:C.purple},
+                {label:'PriorVAH',value:'PriorVAH',col:C.teal},
+                {label:'PriorVAL',value:'PriorVAL',col:C.teal},
+                {label:'PriorPOC',value:'PriorPOC',col:C.teal},
+                {label:'LEDGE',value:'LEDGE',col:C.yellow},
+                {label:'ETH VWAP',value:'ETHVWAP',col:C.red},
+                {label:'RTH VWAP',value:'RTHVWAP',col:C.green},
+              ].map(o=>{
+                const active=(trade.confluences||[]).includes(o.value);
+                const toggle=()=>{
+                  const cur=trade.confluences||[];
+                  set('confluences')(active?cur.filter(x=>x!==o.value):[...cur,o.value]);
+                };
+                return(
+                  <button key={o.value} onClick={toggle} style={{
+                    padding:'5px 11px',borderRadius:20,fontSize:11,fontFamily:'inherit',cursor:'pointer',
+                    border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
+                    background:active?o.col+'22':'transparent',
+                    color:active?o.col:C.textMut,fontWeight:active?700:400,transition:'all 0.15s',
+                  }}>{o.label}</button>
+                );
+              })}
+            </div>
           </div>
           <Divider label="Entry Charts"/>
           <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
@@ -1884,7 +1912,7 @@ function EODTab({data,onChange,trades,date,isMobile}){
 Bias — ${biasStr}
 Mental State: ${mentalStr}
 Trades (${trades.length}):
-${trades.map((t,i)=>`Trade ${i+1}: ${t.ticker}|${t.direction||'—'}|${t.contracts}c|SL ${t.sl}pts|Setup:${t.plan}|Candle:${t.candle}|Result:${t.result}|Points:${t.points}|P&L:$${calcPnL(t.ticker,t.contracts,t.points).toFixed(0)}|Notes:${t.notes}`).join('\n')}
+${trades.map((t,i)=>`Trade ${i+1}: ${t.ticker}|${t.direction||'—'}|${t.contracts}c|SL ${t.sl}pts|Setup:${t.plan}|Confluences:${(t.confluences||[]).join(',')||'none'}|Result:${t.result}|Points:${t.points}|P&L:$${calcPnL(t.ticker,t.contracts,t.points).toFixed(0)}|Notes:${t.notes}`).join('\n')}
 Total P&L: $${total.toFixed(0)} | Total Points: ${totalPts.toFixed(1)}
 EOD Emotions: ${data.emotions||'—'}
 What I Did Well: ${data.well||'—'}
