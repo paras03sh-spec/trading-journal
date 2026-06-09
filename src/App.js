@@ -1814,6 +1814,7 @@ function TradeCard({index,trade,onChange,onRemove,isMobile}){
                 {label:'PriorVAL',value:'PriorVAL',col:C.teal},
                 {label:'PriorPOC',value:'PriorPOC',col:C.teal},
                 {label:'LEDGE',value:'LEDGE',col:C.yellow},
+                {label:'Single Prints',value:'SinglePrints',col:C.yellow},
                 {label:'ETH VWAP',value:'ETHVWAP',col:C.red},
                 {label:'RTH VWAP',value:'RTHVWAP',col:C.green},
               ].map(o=>{
