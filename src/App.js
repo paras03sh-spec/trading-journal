@@ -14,8 +14,8 @@ const C = {
   blue:'#60a5fa', purple:'#a78bfa', teal:'#34d399', orange:'#fb923c',
 };
 
-function calcPnL(ticker,contracts,points){return(parseFloat(points)||0)*(POINT_VALUES[ticker]||0)*(parseFloat(contracts)||0);}
-function calcRisk(ticker,contracts,sl){return(parseFloat(sl)||0)*(POINT_VALUES[ticker]||0)*(parseFloat(contracts)||0);}
+function calcPnL(ticker,contracts,points){return(parseFloat(points)||0)*(POINT_VALUES[ticker]||0);}
+function calcRisk(ticker,contracts,sl){return(parseFloat(sl)||0)*(POINT_VALUES[ticker]||0);}
 function fmtDate(d){return new Date(d+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});}
 function todayStr(){return new Date().toLocaleDateString('en-CA');}
 function getMonthDays(year,month){
@@ -1781,7 +1781,7 @@ function TradeCard({index,trade,onChange,onRemove,isMobile}){
           </div>
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
             <Input label="Contracts" type="number" value={trade.contracts} onChange={set('contracts')}/>
-            <Input label="SL Points" type="number" value={trade.sl} onChange={set('sl')}/>
+            <Input label="SL Points (total, all contracts)" type="number" value={trade.sl} onChange={set('sl')}/>
           </div>
           <div style={{marginBottom:16}}>
             <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Direction</div>
@@ -1849,7 +1849,7 @@ function TradeCard({index,trade,onChange,onRemove,isMobile}){
             <Pills options={[{label:'Win',value:'W'},{label:'Loss',value:'L'},{label:'Break Even',value:'BE'}]}
               value={trade.result} onChange={set('result')} colors={{W:C.green,L:C.red,BE:C.yellow}}/>
           </div>
-          <Input label="Points Gained / Lost" type="number" value={trade.points} onChange={set('points')}/>
+          <Input label="Total Points (all contracts combined)" type="number" value={trade.points} onChange={set('points')}/>
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:20}}>
             <StatBox label="P&L $" val={`${pnl>=0?'+':''}$${pnl.toFixed(0)}`} color={pnl>=0?C.green:C.red}/>
             <StatBox label="Risk $" val={`$${risk.toFixed(0)}`} color={C.yellow}/>
