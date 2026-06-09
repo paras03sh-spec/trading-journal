@@ -48,7 +48,7 @@ function computeBias(bi) {
     vaOverlap,          // 'heavy'|'none'|''
     ibLocation,         // 'upper'|'middle'|'lower'|''  — where is price in IB at 10:30
     vwapRelation,       // 'above'|'at'|'below'|''  — price vs VWAP at 10:30
-    ethOvernight,       // 'broke_high_held'|'broke_high_rejected'|'broke_low_held'|'broke_low_rejected'|'inside'|''
+    ethOvernight,       // 'broke_high_held'|'broke_high_rejected'|'broke_low_held'|'broke_low_rejected'|'inside'|'both_sides_touched'|''
   } = bi;
 
   // ── Step 1: Prior day candle (base direction) ──
@@ -346,6 +346,8 @@ function computeBias(bi) {
     if (resolvedDir === 'long') ibBoost += 1;
   } else if (ethOvernight === 'inside') {
     signals.push('🌙 RTH opened inside overnight range — no ETH breakout signal. Overnight H/L are live targets for RTH session.');
+  } else if (ethOvernight === 'both_sides_touched') {
+    signals.push('🌙 ETH touched both sides — no clean directional story. Overnight was two-sided with no resolution. Defer to IB development at 10:30. Overnight H/L are live execution levels only.');
   }
 
   // ── Conviction scoring ──
@@ -1303,6 +1305,7 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
             {label:'⬆ Swept overnight HIGH + rejected',value:'broke_high_rejected',col:C.orange,sub:'Stop hunt done — watch RTH fade'},
             {label:'⬇ Broke overnight LOW + held',value:'broke_low_held',col:C.red,sub:'Level is resistance (~68-72% cont.)'},
             {label:'⬇ Swept overnight LOW + rejected',value:'broke_low_rejected',col:C.orange,sub:'Stop hunt done — watch RTH bounce'},
+            {label:'↕ Both sides touched — no clean story',value:'both_sides_touched',col:'#aaa',sub:'Two-sided overnight, no signal — defer to IB at 10:30'},
           ].map(o=>{
             const active=biasInputs.ethOvernight===o.value;
             return(
