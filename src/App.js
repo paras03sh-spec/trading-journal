@@ -15,7 +15,7 @@ const C = {
 };
 
 function calcPnL(ticker,contracts,points){return(parseFloat(points)||0)*(POINT_VALUES[ticker]||0);}
-function calcRisk(ticker,contracts,sl){return(parseFloat(sl)||0)*(POINT_VALUES[ticker]||0);}
+function calcRisk(ticker,contracts,sl){return(parseFloat(sl)||0)*(POINT_VALUES[ticker]||0)*(parseFloat(contracts)||0);}
 function fmtDate(d){return new Date(d+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});}
 function todayStr(){return new Date().toLocaleDateString('en-CA');}
 function getMonthDays(year,month){
@@ -1781,7 +1781,7 @@ function TradeCard({index,trade,onChange,onRemove,isMobile}){
           </div>
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
             <Input label="Contracts" type="number" value={trade.contracts} onChange={set('contracts')}/>
-            <Input label="SL Points (total, all contracts)" type="number" value={trade.sl} onChange={set('sl')}/>
+            <Input label="SL Points (per contract)" type="number" value={trade.sl} onChange={set('sl')}/>
           </div>
           <div style={{marginBottom:16}}>
             <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Direction</div>
