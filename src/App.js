@@ -666,6 +666,8 @@ function emptyDay(){
       mentalStress:'',
       mentalConfidence:'',
       mentalExterior:'',
+      dayType:'',
+      weeklyContext:'',
     },
     trades:[newTrade()],
     eod:{emotions:'',well:'',fix:'',review:'',
@@ -1924,18 +1926,28 @@ function EODTab({data,onChange,trades,date,isMobile}){
   const[copied,setCopied]=useState(false);
   const[organising,setOrganising]=useState(false);
 
+  const pre=dayData||{};
+  const esIn=data.esInputs||{};
+  const nqIn=data.nqInputs||{};
   const biasStr = `ES: ${data.esComputedBias||'—'} | NQ: ${data.nqComputedBias||'—'} | Alignment: ${data.alignmentBias||data.dailyBias||'—'}`;
   const mentalStr = [data.mentalSleep&&`Sleep: ${data.mentalSleep}`,data.mentalStress&&`Stress: ${data.mentalStress}`,data.mentalConfidence&&`Confidence: ${data.mentalConfidence}`,data.mentalExterior&&`External: ${data.mentalExterior}`].filter(Boolean).join(' · ')||'—';
+  const biasInputStr=(ins,label)=>`${label} Inputs: Candle=${ins.prevDayCandle||'—'} Profile=${ins.profileShape||'—'} HighQuality=${ins.prevHighQuality||'—'} LowQuality=${ins.prevLowQuality||'—'} TPO=${ins.tpoDistribution||'—'} POC=${ins.pocMigration||'—'} Edge=${ins.edgeContext||'—'} IBSize=${ins.ibSize||'—'} VAOverlap=${ins.vaOverlap||'—'} IBLocation=${ins.ibLocation||'—'} VWAP=${ins.vwapRelation||'—'} ETH=${ins.ethOvernight||'—'} | Mid: IBBreak=${ins.ibBreakDir||'—'} OppBreak=${ins.ibOppositeBreak||'—'} TimeAccept=${ins.ibTimeAcceptance||'—'} CVD=${ins.ibCVD||'—'}`;
   const prompt=`Review my trading journal for ${date}.
 Bias — ${biasStr}
+${biasInputStr(data.esInputs||{},'ES')}
+${biasInputStr(data.nqInputs||{},'NQ')}
+ES Plan: ${data.esPlan||'—'}
+NQ Plan: ${data.nqPlan||'—'}
+Day Type: ${data.dayType||'—'}
+Weekly Context: ${data.weeklyContext||'—'}
 Mental State: ${mentalStr}
 Trades (${trades.length}):
-${trades.map((t,i)=>`Trade ${i+1}: ${t.ticker}|${t.direction||'—'}|${t.contracts}c|SL ${t.sl}pts|Setup:${t.plan}|Confluences:${(t.confluences||[]).join(',')||'none'}|Result:${t.result}|Points:${t.points}|P&L:$${calcPnL(t.ticker,t.contracts,t.points).toFixed(0)}|Notes:${t.notes}`).join('\n')}
+${trades.map((t,i)=>{const r=calcRisk(t.ticker,t.contracts,t.sl);const p=calcPnL(t.ticker,t.contracts,t.points);const rr=r>0?(Math.abs(p)/r).toFixed(2):'—';return`Trade ${i+1}: ${t.ticker}|${t.direction||'—'}|${t.contracts}c|SL ${t.sl}pts(per contract)|Setup:${t.plan}|Confluences:${(t.confluences||[]).join(',')||'none'}|Result:${t.result}|TotalPoints:${t.points}|P&L:$${p.toFixed(0)}|Risk:$${r.toFixed(0)}|RR:${rr}R|Emotions:${t.emotions||'—'}|Notes:${t.notes||'—'}`}).join('\n')}
 Total P&L: $${total.toFixed(0)} | ES Points: ${esPts.toFixed(1)} | NQ Points: ${nqPts.toFixed(1)}
 What I Did Well: ${data.well||'—'}
 What I Must Fix: ${data.fix||'—'}
 General Review: ${data.review||'—'}
-Please: 1. ES vs NQ bias accuracy — did they align or diverge. 2. Did alignment call match what happened. 3. Trade-by-trade breakdown. 4. Mental state impact. 5. What I did well (specific). 6. Top 1-2 fixes. 7. Confirm P&L math (ES=$50 NQ=$20 MES=$5 MNQ=$2). 8. One edge to build on. Direct, no padding.`;
+Please: 1. ES vs NQ bias accuracy — did they align or diverge. 2. Did alignment call match what happened. 3. Trade-by-trade breakdown. 4. Mental state impact. 5. What I did well (specific). 6. Top 1-2 fixes. 7. Confirm P&L math (ES=$50/pt NQ=$20/pt MES=$5/pt MNQ=$2/pt — points are total across all contracts, SL is per contract). 8. One edge to build on. Direct, no padding.`;
 
   const copy=()=>{navigator.clipboard.writeText(prompt);setCopied(true);setTimeout(()=>setCopied(false),2500);};
 
@@ -2273,6 +2285,12 @@ export default function App(){
                 alignmentBias:dayData.pre.alignmentBias,
                 esComputedBias:dayData.pre.esComputedBias,
                 nqComputedBias:dayData.pre.nqComputedBias,
+                esInputs:dayData.pre.esInputs,
+                nqInputs:dayData.pre.nqInputs,
+                esPlan:dayData.pre.esPlan,
+                nqPlan:dayData.pre.nqPlan,
+                dayType:dayData.pre.dayType,
+                weeklyContext:dayData.pre.weeklyContext,
                 mentalSleep:dayData.pre.mentalSleep,
                 mentalStress:dayData.pre.mentalStress,
                 mentalConfidence:dayData.pre.mentalConfidence,
