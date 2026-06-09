@@ -1816,6 +1816,8 @@ function TradeCard({index,trade,onChange,onRemove,isMobile}){
                 {label:'IB High',value:'IBHigh',col:C.teal},
                 {label:'IB Low',value:'IBLow',col:C.teal},
                 {label:'LEDGE',value:'LEDGE',col:C.yellow},
+                {label:'Medium TF Edge',value:'MedTFEdge',col:C.yellow},
+                {label:'GAP',value:'GAP',col:C.yellow},
                 {label:'Single Prints',value:'SinglePrints',col:C.yellow},
                 {label:'ETH VWAP',value:'ETHVWAP',col:C.red},
                 {label:'RTH VWAP',value:'RTHVWAP',col:C.green},
