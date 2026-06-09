@@ -1866,15 +1866,21 @@ function TradeCard({index,trade,onChange,onRemove,isMobile}){
 
 function SummaryBar({trades}){
   const total=trades.reduce((s,t)=>s+calcPnL(t.ticker,t.contracts,t.points),0);
-  const totalPts=trades.reduce((s,t)=>s+(parseFloat(t.points)||0),0);
   const wins=trades.filter(t=>t.result==='W').length;
   const losses=trades.filter(t=>t.result==='L').length;
   const counted=trades.filter(t=>t.result).length;
   const wr=counted>0?Math.round((wins/counted)*100):0;
+  // Points broken down by instrument — mixing ES and NQ pts is meaningless
+  const esPts=trades.filter(t=>['ES','MES'].includes(t.ticker)).reduce((s,t)=>s+(parseFloat(t.points)||0),0);
+  const nqPts=trades.filter(t=>['NQ','MNQ'].includes(t.ticker)).reduce((s,t)=>s+(parseFloat(t.points)||0),0);
+  const hasES=trades.some(t=>['ES','MES'].includes(t.ticker));
+  const hasNQ=trades.some(t=>['NQ','MNQ'].includes(t.ticker));
+  const ptsLabel=hasES&&hasNQ?`ES ${esPts>=0?'+':''}${esPts.toFixed(1)} / NQ ${nqPts>=0?'+':''}${nqPts.toFixed(1)}`:hasES?`${esPts>=0?'+':''}${esPts.toFixed(1)} ES`:hasNQ?`${nqPts>=0?'+':''}${nqPts.toFixed(1)} NQ`:'—';
+  const ptsColor=hasES&&hasNQ?C.textSub:hasES?(esPts>=0?C.green:C.red):(nqPts>=0?C.green:C.red);
   return(
     <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:16}}>
       <StatBox label="P&L" val={`${total>=0?'+':''}$${total.toFixed(0)}`} color={total>=0?C.green:C.red}/>
-      <StatBox label="Points" val={`${totalPts>=0?'+':''}${totalPts.toFixed(1)}`} color={totalPts>=0?C.green:C.red}/>
+      <StatBox label="Points" val={ptsLabel} color={ptsColor}/>
       <StatBox label="W Rate" val={`${wr}%`} color={C.yellow}/>
       <StatBox label="Trades" val={`${wins}W ${losses}L`} color={C.textSub}/>
     </div>
@@ -1908,8 +1914,15 @@ function TradesTab({trades,onChange,isMobile}){
 function EODTab({data,onChange,trades,date,isMobile}){
   const set=k=>v=>onChange({...data,[k]:v});
   const total=trades.reduce((s,t)=>s+calcPnL(t.ticker,t.contracts,t.points),0);
-  const totalPts=trades.reduce((s,t)=>s+(parseFloat(t.points)||0),0);
+  const esPts=trades.filter(t=>['ES','MES'].includes(t.ticker)).reduce((s,t)=>s+(parseFloat(t.points)||0),0);
+  const nqPts=trades.filter(t=>['NQ','MNQ'].includes(t.ticker)).reduce((s,t)=>s+(parseFloat(t.points)||0),0);
+  const hasES=trades.some(t=>['ES','MES'].includes(t.ticker));
+  const hasNQ=trades.some(t=>['NQ','MNQ'].includes(t.ticker));
+  const ptsLabel=hasES&&hasNQ?`ES ${esPts>=0?'+':''}${esPts.toFixed(1)} / NQ ${nqPts>=0?'+':''}${nqPts.toFixed(1)}`:hasES?`${esPts>=0?'+':''}${esPts.toFixed(1)} ES`:hasNQ?`${nqPts>=0?'+':''}${nqPts.toFixed(1)} NQ`:'—';
+  const ptsColor=hasES&&hasNQ?C.textSub:hasES?(esPts>=0?C.green:C.red):(nqPts>=0?C.green:C.red);
+
   const[copied,setCopied]=useState(false);
+  const[organising,setOrganising]=useState(false);
 
   const biasStr = `ES: ${data.esComputedBias||'—'} | NQ: ${data.nqComputedBias||'—'} | Alignment: ${data.alignmentBias||data.dailyBias||'—'}`;
   const mentalStr = [data.mentalSleep&&`Sleep: ${data.mentalSleep}`,data.mentalStress&&`Stress: ${data.mentalStress}`,data.mentalConfidence&&`Confidence: ${data.mentalConfidence}`,data.mentalExterior&&`External: ${data.mentalExterior}`].filter(Boolean).join(' · ')||'—';
@@ -1918,8 +1931,7 @@ Bias — ${biasStr}
 Mental State: ${mentalStr}
 Trades (${trades.length}):
 ${trades.map((t,i)=>`Trade ${i+1}: ${t.ticker}|${t.direction||'—'}|${t.contracts}c|SL ${t.sl}pts|Setup:${t.plan}|Confluences:${(t.confluences||[]).join(',')||'none'}|Result:${t.result}|Points:${t.points}|P&L:$${calcPnL(t.ticker,t.contracts,t.points).toFixed(0)}|Notes:${t.notes}`).join('\n')}
-Total P&L: $${total.toFixed(0)} | Total Points: ${totalPts.toFixed(1)}
-EOD Emotions: ${data.emotions||'—'}
+Total P&L: $${total.toFixed(0)} | ES Points: ${esPts.toFixed(1)} | NQ Points: ${nqPts.toFixed(1)}
 What I Did Well: ${data.well||'—'}
 What I Must Fix: ${data.fix||'—'}
 General Review: ${data.review||'—'}
@@ -1927,16 +1939,46 @@ Please: 1. ES vs NQ bias accuracy — did they align or diverge. 2. Did alignmen
 
   const copy=()=>{navigator.clipboard.writeText(prompt);setCopied(true);setTimeout(()=>setCopied(false),2500);};
 
+  const organiseReview=async()=>{
+    if(!data.review||data.review.trim()==='')return;
+    setOrganising(true);
+    try{
+      const res=await fetch('https://api.anthropic.com/v1/messages',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          model:'claude-sonnet-4-20250514',
+          max_tokens:1000,
+          messages:[{role:'user',content:`You are analysing a futures day trader's end-of-day journal entry. The trader has written a raw general review. Your job is to:
+1. Fix grammar and spelling in the general review — keep ALL the same words, meaning and content, just fix errors. Do not rephrase or add anything.
+2. Extract from the review what the trader did well (specific positives, good executions, correct reads, rules followed).
+3. Extract from the review what the trader must fix (mistakes, rule breaks, bad entries, missed exits, anything negative).
+
+Respond ONLY with valid JSON, no markdown, no backticks:
+{"review":"corrected general review text here","well":"what was done well, extracted and written cleanly","fix":"what must be fixed, extracted and written cleanly"}
+
+General Review:
+${data.review}`}]
+        })
+      });
+      const json=await res.json();
+      const text=json.content?.find(b=>b.type==='text')?.text||'';
+      const parsed=JSON.parse(text.replace(/```json|```/g,'').trim());
+      onChange({...data,review:parsed.review||data.review,well:parsed.well||'',fix:parsed.fix||''});
+    }catch(e){console.error('Organise failed',e);}
+    setOrganising(false);
+  };
+
   return(
     <div>
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:24}}>
         {[
           {label:'Day P&L',val:`${total>=0?'+':''}$${total.toFixed(0)}`,col:total>=0?C.green:C.red},
-          {label:'Total Points',val:`${totalPts>=0?'+':''}${totalPts.toFixed(1)}`,col:totalPts>=0?C.green:C.red},
+          {label:'Points',val:ptsLabel,col:ptsColor},
         ].map(s=>(
           <div key={s.label} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:'16px'}}>
             <div style={{fontSize:11,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:8}}>{s.label}</div>
-            <div style={{fontSize:30,fontWeight:800,color:s.col,fontVariantNumeric:'tabular-nums'}}>{s.val}</div>
+            <div style={{fontSize:s.label==='Points'&&hasES&&hasNQ?16:30,fontWeight:800,color:s.col,fontVariantNumeric:'tabular-nums',lineHeight:1.2}}>{s.val}</div>
           </div>
         ))}
       </div>
@@ -1956,10 +1998,29 @@ Please: 1. ES vs NQ bias accuracy — did they align or diverge. 2. Did alignmen
       </div>
 
       <Divider label="Review"/>
-      <Field label="Overall Emotions & Summary" placeholder="In control? Reactive? Overtraded?" value={data.emotions} onChange={set('emotions')} rows={3}/>
-      <Field label="✅ What I Did Well" placeholder="Specific — clean executions, rules, reads..." value={data.well} onChange={set('well')} rows={2}/>
-      <Field label="❌ What I Must Fix" placeholder="Honest — rules broken, bad entries, oversized..." value={data.fix} onChange={set('fix')} rows={2}/>
-      <Field label="General Review" placeholder="Market narrative, levels, notes for tomorrow..." value={data.review} onChange={set('review')} rows={3}/>
+      <Field label="General Review" placeholder="Write freely — market narrative, what happened, mistakes, good reads, levels for tomorrow..." value={data.review} onChange={set('review')} rows={6}/>
+
+      <button onClick={organiseReview} disabled={organising||!data.review} style={{
+        width:'100%',padding:'13px',marginBottom:16,
+        background:organising?C.surface:'transparent',
+        border:`1.5px solid ${organising?C.border:C.yellow}`,
+        borderRadius:12,color:organising?C.textMut:C.yellow,
+        fontSize:13,fontFamily:'inherit',cursor:organising||!data.review?'not-allowed':'pointer',
+        fontWeight:700,transition:'all 0.2s',opacity:!data.review?0.4:1,
+      }}>{organising?'Organising…':'✦ Organise with AI'}</button>
+
+      {data.well&&(
+        <div style={{background:C.green+'10',border:`1px solid ${C.green}30`,borderRadius:12,padding:'14px 16px',marginBottom:12}}>
+          <div style={{fontSize:11,color:C.green,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700,marginBottom:8}}>✅ What I Did Well</div>
+          <div style={{fontSize:13,color:C.text,lineHeight:1.7,whiteSpace:'pre-wrap'}}>{data.well}</div>
+        </div>
+      )}
+      {data.fix&&(
+        <div style={{background:C.red+'10',border:`1px solid ${C.red}30`,borderRadius:12,padding:'14px 16px',marginBottom:16}}>
+          <div style={{fontSize:11,color:C.red,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700,marginBottom:8}}>❌ What I Must Fix</div>
+          <div style={{fontSize:13,color:C.text,lineHeight:1.7,whiteSpace:'pre-wrap'}}>{data.fix}</div>
+        </div>
+      )}
 
       <Divider label="Claude Analysis Prompt"/>
       <div style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:10,padding:'14px 16px',fontSize:11,color:C.textMut,lineHeight:1.8,fontFamily:'monospace',marginBottom:12,whiteSpace:'pre-wrap',maxHeight:140,overflowY:'auto'}}>{prompt}</div>
@@ -2056,9 +2117,10 @@ export default function App(){
       await saveDay(selectedDate,dayData);
       const trades=dayData.trades||[];
       const total=trades.reduce((s,t)=>s+calcPnL(t.ticker,t.contracts,t.points),0);
-      const totalPts=trades.reduce((s,t)=>s+(parseFloat(t.points)||0),0);
+      const esPts=trades.filter(t=>['ES','MES'].includes(t.ticker)).reduce((s,t)=>s+(parseFloat(t.points)||0),0);
+      const nqPts=trades.filter(t=>['NQ','MNQ'].includes(t.ticker)).reduce((s,t)=>s+(parseFloat(t.points)||0),0);
       const wins=trades.filter(t=>t.result==='W').length;
-      const summary={pnl:total,pts:totalPts,wins,trades:trades.length,bias:dayData.pre?.dailyBias||''};
+      const summary={pnl:total,esPts,nqPts,wins,trades:trades.length,bias:dayData.pre?.dailyBias||''};
       await saveIndex(selectedDate,summary);
       setIndex(prev=>({...prev,[selectedDate]:summary}));
       setSaveStatus('saved');
