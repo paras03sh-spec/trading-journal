@@ -2011,6 +2011,7 @@ function EODTab({data,onChange,trades,date,isMobile}){
   const[copied,setCopied]=useState(false);
   const[organising,setOrganising]=useState(false);
 
+  const pre=dayData||{};
   const esIn=data.esInputs||{};
   const nqIn=data.nqInputs||{};
   const biasStr = `ES: ${data.esComputedBias||'—'} | NQ: ${data.nqComputedBias||'—'} | Alignment: ${data.alignmentBias||data.dailyBias||'—'}`;
@@ -2456,22 +2457,29 @@ export default function App(){
             <>
               {tab===0&&<PreMarketTab data={dayData.pre} onChange={updatePre} isMobile={isMobile}/>}
               {tab===1&&<TradesTab trades={dayData.trades} onChange={updateTrades} isMobile={isMobile}/>}
-              {tab===2&&<EODTab data={{...dayData.eod,
-                dailyBias:dayData.pre.dailyBias,
-                alignmentBias:dayData.pre.alignmentBias,
-                esComputedBias:dayData.pre.esComputedBias,
-                nqComputedBias:dayData.pre.nqComputedBias,
-                esInputs:dayData.pre.esInputs,
-                nqInputs:dayData.pre.nqInputs,
-                esPlan:dayData.pre.esPlan,
-                nqPlan:dayData.pre.nqPlan,
-                dayType:dayData.pre.dayType,
-                weeklyContext:dayData.pre.weeklyContext,
-                mentalSleep:dayData.pre.mentalSleep,
-                mentalStress:dayData.pre.mentalStress,
-                mentalConfidence:dayData.pre.mentalConfidence,
-                mentalExterior:dayData.pre.mentalExterior,
-              }} onChange={updateEod} trades={dayData.trades} date={selectedDate} isMobile={isMobile}/> }
+              {tab===2&&<EODTab data={{
+                well:'',fix:'',review:'',
+                narrativeProfile:'',narrativeDayChar:'',narrativeLead:'',
+                narrativeReversalLevels:[],narrativeOrderFlow:[],
+                img15ES:'',imgTPOES:'',img15NQ:'',imgTPONQ:'',
+                ...(dayData.eod||{}),
+                narrativeReversalLevels:Array.isArray((dayData.eod||{}).narrativeReversalLevels)?(dayData.eod||{}).narrativeReversalLevels:[],
+                narrativeOrderFlow:Array.isArray((dayData.eod||{}).narrativeOrderFlow)?(dayData.eod||{}).narrativeOrderFlow:[],
+                dailyBias:dayData.pre?.dailyBias||'',
+                alignmentBias:dayData.pre?.alignmentBias||'',
+                esComputedBias:dayData.pre?.esComputedBias||'',
+                nqComputedBias:dayData.pre?.nqComputedBias||'',
+                esInputs:dayData.pre?.esInputs||{},
+                nqInputs:dayData.pre?.nqInputs||{},
+                esPlan:dayData.pre?.esPlan||'',
+                nqPlan:dayData.pre?.nqPlan||'',
+                dayType:dayData.pre?.dayType||'',
+                weeklyContext:dayData.pre?.weeklyContext||'',
+                mentalSleep:dayData.pre?.mentalSleep||'',
+                mentalStress:dayData.pre?.mentalStress||'',
+                mentalConfidence:dayData.pre?.mentalConfidence||'',
+                mentalExterior:dayData.pre?.mentalExterior||'',
+              }} onChange={updateEod} trades={dayData.trades||[]} date={selectedDate} isMobile={isMobile}/> }
             </>
           )}
         </div>
