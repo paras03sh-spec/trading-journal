@@ -2011,7 +2011,6 @@ function EODTab({data,onChange,trades,date,isMobile}){
   const[copied,setCopied]=useState(false);
   const[organising,setOrganising]=useState(false);
 
-  const pre=dayData||{};
   const esIn=data.esInputs||{};
   const nqIn=data.nqInputs||{};
   const biasStr = `ES: ${data.esComputedBias||'—'} | NQ: ${data.nqComputedBias||'—'} | Alignment: ${data.alignmentBias||data.dailyBias||'—'}`;
