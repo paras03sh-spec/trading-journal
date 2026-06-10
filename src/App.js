@@ -89,6 +89,10 @@ function computeBias(bi) {
     profileScore = -2; signals.push('📉 P-shape — spike rejected, value built low, short reinforced');
   } else if (profileShape === 'normal') {
     signals.push('⚪ Normal bell — no extra conviction, candle bias stands');
+  } else if (profileShape === 'balanced_no_shape') {
+    signals.push('⚪ Balanced / No Shape — market found equilibrium, no directional conviction. Prior value area unreliable. Rely on other inputs.');
+  } else if (profileShape === 'wide_range_no_shape') {
+    signals.push('⚠️ Wide Range / No Shape — huge range, reversal, closed mid. No clean value area. Reversal point is the key level. Expect revisit of spike extreme or open next session.');
   } else if (profileShape === 'single_prints') {
     signals.push('🧲 Single prints — secondary magnet, not a primary signal');
   }
@@ -397,13 +401,59 @@ function emptyBiasInputs() {
     ibBreakDir: '',
     ibTimeAcceptance: '',
     ibCVD: '',
-    ibOppositeBreak: '', // 'no'|'yes_no_accept'|'yes_accepted'|''
+    ibOppositeBreak: '',
+    liveEdgeContext: '',
   };
 }
 
 // ─── Mid-Session Update Engine ────────────────────────────────────────────────
+const CONVICTION_LEVELS = ['low','medium','high'];
+function applyLiveEdge(result, liveEdgeContext) {
+  if (!liveEdgeContext || liveEdgeContext === '') return result;
+  if (result.updatedConviction === 'neutral') return result; // neutral days not affected
+
+  const bullishEdge = ['failed_exp_low_middle','low_edge_tapped_held_middle','returning_low_from_below'];
+  const bearishEdge = ['failed_exp_high_middle','high_edge_tapped_held_middle','returning_high_from_above'];
+  const neutralEdge = ['at_high_edge','at_low_edge','not_at_edge'];
+
+  const edgeDir = bullishEdge.includes(liveEdgeContext) ? 'bullish'
+    : bearishEdge.includes(liveEdgeContext) ? 'bearish'
+    : 'neutral';
+
+  if (edgeDir === 'neutral') return result;
+
+  const agrees = edgeDir === result.updatedBias;
+  const conflicts = edgeDir !== result.updatedBias;
+  const curIdx = CONVICTION_LEVELS.indexOf(result.updatedConviction);
+  if (curIdx === -1) return result; // non-standard conviction, leave it
+
+  if (agrees) {
+    const newIdx = Math.min(curIdx + 1, CONVICTION_LEVELS.length - 1);
+    const newConviction = CONVICTION_LEVELS[newIdx];
+    return {
+      ...result,
+      updatedConviction: newConviction,
+      verdict: result.verdict + ` Live edge context agrees (${liveEdgeContext.replace(/_/g,' ')}) — conviction upgraded to ${newConviction}.`,
+      action: result.action + ` Live edge context reinforces direction.`,
+    };
+  }
+
+  if (conflicts) {
+    const newIdx = Math.max(curIdx - 1, 0);
+    const newConviction = CONVICTION_LEVELS[newIdx];
+    return {
+      ...result,
+      updatedConviction: newConviction,
+      verdict: result.verdict + ` Live edge context conflicts (${liveEdgeContext.replace(/_/g,' ')}) — conviction downgraded to ${newConviction}.`,
+      action: result.action + ` Live edge context is fighting the direction — reduce size, tighten stops.`,
+    };
+  }
+
+  return result;
+}
+
 function computeMidSession(bi, preBias) {
-  const { ibBreakDir, ibTimeAcceptance, ibCVD, ibOppositeBreak } = bi;
+  const { ibBreakDir, ibTimeAcceptance, ibCVD, ibOppositeBreak, liveEdgeContext } = bi;
 
   // Nothing entered yet
   if (!ibBreakDir) return null;
@@ -491,7 +541,7 @@ function computeMidSession(bi, preBias) {
   if (priorWasNeutral) {
     const newBias = breakDir;
     const conviction = cvdStrong ? 'medium' : cvdDiverging ? 'low' : 'low';
-    return {
+    return applyLiveEdge({
       updatedBias: newBias,
       updatedConviction: conviction,
       verdict: `Neutral day upgraded to ${newBias} by IB break ${ibBreakDir}.`,
@@ -500,13 +550,13 @@ function computeMidSession(bi, preBias) {
         : `IB accepted ${ibBreakDir}. Look for ${newBias === 'bullish' ? 'long' : 'short'} setups on pullbacks to IB ${ibBreakDir === 'high' ? 'high' : 'low'} as support/resistance.`,
       color: newBias === 'bullish' ? C.green : C.red,
       effect: 'upgrade',
-    };
+    }, liveEdgeContext);
   }
 
   // ── SCENARIO 2: Bias and break agree ──
   if (agrees) {
     const conviction = cvdDiverging ? 'medium' : 'high';
-    return {
+    return applyLiveEdge({
       updatedBias: preBias.bias,
       updatedConviction: conviction,
       verdict: `IB break ${ibBreakDir} confirms ${preBias.bias} bias.`,
@@ -515,29 +565,29 @@ function computeMidSession(bi, preBias) {
         : `Full confirmation. Press the ${preBias.bias === 'bullish' ? 'long' : 'short'} bias. IB ${ibBreakDir === 'high' ? 'high' : 'low'} is now your support/resistance. Hold runners.`,
       color: preBias.bias === 'bullish' ? C.green : C.red,
       effect: 'confirmed',
-    };
+    }, liveEdgeContext);
   }
 
   // ── SCENARIO 3: Bias and break contradict ──
   if (cvdDiverging) {
-    return {
+    return applyLiveEdge({
       updatedBias: preBias.bias,
       updatedConviction: 'medium',
       verdict: `IB break ${ibBreakDir} contradicts bias but CVD is diverging — likely a trap.`,
       action: `Price broke ${ibBreakDir} but delta didn't confirm. High probability failed break. Watch for reversal back through IB ${ibBreakDir === 'high' ? 'high' : 'low'}. Original ${preBias.bias} bias may still be valid.`,
       color: C.yellow,
       effect: 'caution',
-    };
+    }, liveEdgeContext);
   }
 
-  return {
+  return applyLiveEdge({
     updatedBias: 'neutral',
     updatedConviction: 'neutral',
     verdict: `IB break ${ibBreakDir} contradicts ${preBias.bias} bias with time + CVD confirmation.`,
     action: `Pre-market bias is wrong today. Stop looking for ${preBias.bias === 'bullish' ? 'longs' : 'shorts'}. Go neutral. Fade the range or sit on hands. Do not flip to ${preBias.bias === 'bullish' ? 'bearish' : 'bullish'} — one IB break is not a full structural reversal.`,
     color: C.orange,
     effect: 'neutralized',
-  };
+  }, liveEdgeContext);
 }
 
 // ─── NQ + ES Alignment Engine ─────────────────────────────────────────────────
@@ -671,6 +721,8 @@ function emptyDay(){
     },
     trades:[newTrade()],
     eod:{emotions:'',well:'',fix:'',review:'',
+      narrativeProfile:'',narrativeDayChar:'',narrativeLead:'',
+      narrativeReversalLevels:[],narrativeOrderFlow:[],
       img15ES:'',imgTPOES:'',img15NQ:'',imgTPONQ:''},
   };
 }
@@ -1064,6 +1116,8 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
             {label:'b — Trapped shorts',value:'b',col:C.teal},
             {label:'P — Spike rejected',value:'P',col:C.red},
             {label:'Normal bell',value:'normal',col:'#aaa'},
+            {label:'Balanced / No Shape',value:'balanced_no_shape',col:'#aaa'},
+            {label:'Wide Range / No Shape',value:'wide_range_no_shape',col:C.yellow},
           ].map(o=>{
             const active=biasInputs.profileShape===o.value;
             return(
@@ -1426,6 +1480,37 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
           )}
         </>
       )}
+
+      {/* Live Edge Context — updated as session develops */}
+      <div style={{marginTop:12,marginBottom:4}}>
+        <SectionLabel>Live Multi-Day Balance Edge Context</SectionLabel>
+        <div style={{fontSize:11,color:C.textDim,marginBottom:8,lineHeight:1.5}}>
+          Update as session develops. Overrides pre-market edge context. Agreements upgrade conviction, conflicts downgrade it.
+        </div>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+          {[
+            {label:'Not at edge',value:'not_at_edge',col:'#aaa'},
+            {label:'At HIGH edge',value:'at_high_edge',col:C.yellow},
+            {label:'At LOW edge',value:'at_low_edge',col:C.yellow},
+            {label:'Returning to HIGH from above',value:'returning_high_from_above',col:C.green},
+            {label:'Returning to LOW from below',value:'returning_low_from_below',col:C.red},
+            {label:'Failed exp HIGH → back inside',value:'failed_exp_high_middle',col:C.red},
+            {label:'Failed exp LOW → back inside',value:'failed_exp_low_middle',col:C.green},
+            {label:'LOW tapped + held, now middle',value:'low_edge_tapped_held_middle',col:C.green},
+            {label:'HIGH tapped + held, now middle',value:'high_edge_tapped_held_middle',col:C.red},
+          ].map(o=>{
+            const active=biasInputs.liveEdgeContext===o.value;
+            return(
+              <button key={o.value} onClick={()=>set('liveEdgeContext')(active?'':o.value)} style={{
+                padding:'6px 12px',borderRadius:20,fontSize:11,fontFamily:'inherit',cursor:'pointer',
+                border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
+                background:active?o.col+'22':'transparent',
+                color:active?o.col:C.textMut,fontWeight:active?700:400,transition:'all 0.15s',
+              }}>{o.label}</button>
+            );
+          })}
+        </div>
+      </div>
 
       {/* Mid-session output card */}
       {displayResult.midSession && (
@@ -1931,7 +2016,7 @@ function EODTab({data,onChange,trades,date,isMobile}){
   const nqIn=data.nqInputs||{};
   const biasStr = `ES: ${data.esComputedBias||'—'} | NQ: ${data.nqComputedBias||'—'} | Alignment: ${data.alignmentBias||data.dailyBias||'—'}`;
   const mentalStr = [data.mentalSleep&&`Sleep: ${data.mentalSleep}`,data.mentalStress&&`Stress: ${data.mentalStress}`,data.mentalConfidence&&`Confidence: ${data.mentalConfidence}`,data.mentalExterior&&`External: ${data.mentalExterior}`].filter(Boolean).join(' · ')||'—';
-  const biasInputStr=(ins,label)=>`${label} Inputs: Candle=${ins.prevDayCandle||'—'} Profile=${ins.profileShape||'—'} HighQuality=${ins.prevHighQuality||'—'} LowQuality=${ins.prevLowQuality||'—'} TPO=${ins.tpoDistribution||'—'} POC=${ins.pocMigration||'—'} Edge=${ins.edgeContext||'—'} IBSize=${ins.ibSize||'—'} VAOverlap=${ins.vaOverlap||'—'} IBLocation=${ins.ibLocation||'—'} VWAP=${ins.vwapRelation||'—'} ETH=${ins.ethOvernight||'—'} | Mid: IBBreak=${ins.ibBreakDir||'—'} OppBreak=${ins.ibOppositeBreak||'—'} TimeAccept=${ins.ibTimeAcceptance||'—'} CVD=${ins.ibCVD||'—'}`;
+  const biasInputStr=(ins,label)=>`${label} Inputs: Candle=${ins.prevDayCandle||'—'} Profile=${ins.profileShape||'—'} HighQuality=${ins.prevHighQuality||'—'} LowQuality=${ins.prevLowQuality||'—'} TPO=${ins.tpoDistribution||'—'} POC=${ins.pocMigration||'—'} Edge=${ins.edgeContext||'—'} IBSize=${ins.ibSize||'—'} VAOverlap=${ins.vaOverlap||'—'} IBLocation=${ins.ibLocation||'—'} VWAP=${ins.vwapRelation||'—'} ETH=${ins.ethOvernight||'—'} | Mid: IBBreak=${ins.ibBreakDir||'—'} OppBreak=${ins.ibOppositeBreak||'—'} TimeAccept=${ins.ibTimeAcceptance||'—'} CVD=${ins.ibCVD||'—'} LiveEdge=${ins.liveEdgeContext||'—'}`;
   const prompt=`Review my trading journal for ${date}.
 Bias — ${biasStr}
 ${biasInputStr(data.esInputs||{},'ES')}
@@ -1944,6 +2029,7 @@ Mental State: ${mentalStr}
 Trades (${trades.length}):
 ${trades.map((t,i)=>{const r=calcRisk(t.ticker,t.contracts,t.sl);const p=calcPnL(t.ticker,t.contracts,t.points);const rr=r>0?(Math.abs(p)/r).toFixed(2):'—';return`Trade ${i+1}: ${t.ticker}|${t.direction||'—'}|${t.contracts}c|SL ${t.sl}pts(per contract)|Setup:${t.plan}|Confluences:${(t.confluences||[]).join(',')||'none'}|Result:${t.result}|TotalPoints:${t.points}|P&L:$${p.toFixed(0)}|Risk:$${r.toFixed(0)}|RR:${rr}R|Emotions:${t.emotions||'—'}|Notes:${t.notes||'—'}`}).join('\n')}
 Total P&L: $${total.toFixed(0)} | ES Points: ${esPts.toFixed(1)} | NQ Points: ${nqPts.toFixed(1)}
+Market Narrative: Profile=${data.narrativeProfile||'—'} | DayChar=${data.narrativeDayChar||'—'} | Led=${data.narrativeLead||'—'} | ReversalLevels=${(data.narrativeReversalLevels||[]).join(',')||'—'} | OrderFlow=${(data.narrativeOrderFlow||[]).join(',')||'—'}
 What I Did Well: ${data.well||'—'}
 What I Must Fix: ${data.fix||'—'}
 General Review: ${data.review||'—'}
@@ -2012,6 +2098,91 @@ ${data.review}`}]
       <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:8}}>
         <ImageSlot label="15min — Full Day" value={data.img15NQ} onChange={set('img15NQ')} accent={C.purple}/>
         <ImageSlot label="TPO — Full Day" value={data.imgTPONQ} onChange={set('imgTPONQ')} accent={C.purple}/>
+      </div>
+
+      <Divider label="Market Narrative"/>
+
+      {/* Structured narrative tags */}
+      <div style={{marginBottom:16}}>
+        <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Profile Shape Formed</div>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
+          {[
+            {label:'D — Trend',value:'D',col:C.purple},
+            {label:'B — Double dist.',value:'B',col:C.green},
+            {label:'b — Trapped shorts',value:'b',col:C.teal},
+            {label:'P — Spike rejected',value:'P',col:C.red},
+            {label:'Normal bell',value:'normal',col:'#aaa'},
+            {label:'Balanced / No Shape',value:'balanced_no_shape',col:'#aaa'},
+            {label:'Wide Range / No Shape',value:'wide_range_no_shape',col:C.yellow},
+          ].map(o=>{
+            const active=data.narrativeProfile===o.value;
+            return <button key={o.value} onClick={()=>set('narrativeProfile')(active?'':o.value)} style={{padding:'5px 11px',borderRadius:20,fontSize:11,fontFamily:'inherit',cursor:'pointer',border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,background:active?o.col+'22':'transparent',color:active?o.col:C.textMut,fontWeight:active?700:400,transition:'all 0.15s'}}>{o.label}</button>;
+          })}
+        </div>
+
+        <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Day Character</div>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
+          {[
+            {label:'Trend Day',value:'trend',col:C.green},
+            {label:'Normal Variation',value:'normal_variation',col:C.blue},
+            {label:'Neutral / Rotational',value:'neutral_rotational',col:'#aaa'},
+            {label:'Choppy / No Edge',value:'choppy',col:C.yellow},
+            {label:'Double Distribution',value:'double_dist',col:C.purple},
+            {label:'Spike & Reversal',value:'spike_reversal',col:C.orange},
+          ].map(o=>{
+            const active=data.narrativeDayChar===o.value;
+            return <button key={o.value} onClick={()=>set('narrativeDayChar')(active?'':o.value)} style={{padding:'5px 11px',borderRadius:20,fontSize:11,fontFamily:'inherit',cursor:'pointer',border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,background:active?o.col+'22':'transparent',color:active?o.col:C.textMut,fontWeight:active?700:400,transition:'all 0.15s'}}>{o.label}</button>;
+          })}
+        </div>
+
+        <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Which Instrument Led</div>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
+          {[
+            {label:'NQ Led',value:'NQ',col:C.purple},
+            {label:'ES Led',value:'ES',col:C.blue},
+            {label:'Both Together',value:'both',col:'#aaa'},
+            {label:'Diverged',value:'diverged',col:C.orange},
+          ].map(o=>{
+            const active=data.narrativeLead===o.value;
+            return <button key={o.value} onClick={()=>set('narrativeLead')(active?'':o.value)} style={{padding:'5px 11px',borderRadius:20,fontSize:11,fontFamily:'inherit',cursor:'pointer',border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,background:active?o.col+'22':'transparent',color:active?o.col:C.textMut,fontWeight:active?700:400,transition:'all 0.15s'}}>{o.label}</button>;
+          })}
+        </div>
+
+        <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Key Reversal Level</div>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
+          {[
+            {label:'yVAH',value:'yVAH'},{label:'yVAL',value:'yVAL'},{label:'yPOC',value:'yPOC'},
+            {label:'pwVAH',value:'pwVAH'},{label:'pwVAL',value:'pwVAL'},{label:'pwPOC',value:'pwPOC'},
+            {label:'PriorVAH',value:'PriorVAH'},{label:'PriorVAL',value:'PriorVAL'},
+            {label:'IB High',value:'IBHigh'},{label:'IB Low',value:'IBLow'},
+            {label:'GAP',value:'GAP'},{label:'Excess',value:'Excess'},
+            {label:'LEDGE',value:'LEDGE'},{label:'RTH VWAP',value:'RTHVWAP'},
+            {label:'ETH VWAP',value:'ETHVWAP'},{label:'Single Prints',value:'SinglePrints'},
+          ].map(o=>{
+            const cur=data.narrativeReversalLevels||[];
+            const active=cur.includes(o.value);
+            const toggle=()=>set('narrativeReversalLevels')(active?cur.filter(x=>x!==o.value):[...cur,o.value]);
+            return <button key={o.value} onClick={toggle} style={{padding:'5px 11px',borderRadius:20,fontSize:11,fontFamily:'inherit',cursor:'pointer',border:active?`1.5px solid ${C.teal}`:`1.5px solid ${C.border}`,background:active?C.teal+'22':'transparent',color:active?C.teal:C.textMut,fontWeight:active?700:400,transition:'all 0.15s'}}>{o.value}</button>;
+          })}
+        </div>
+
+        <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Order Flow Character</div>
+        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+          {[
+            {label:'Clean absorption',value:'clean_absorption',col:C.green},
+            {label:'One-sided delta',value:'one_sided_delta',col:C.blue},
+            {label:'CVD divergence',value:'cvd_divergence',col:C.orange},
+            {label:'Stop hunt both sides',value:'stop_hunt',col:C.yellow},
+            {label:'Responsive activity',value:'responsive',col:C.teal},
+            {label:'Initiative activity',value:'initiative',col:C.purple},
+            {label:'Choppy / no read',value:'choppy_flow',col:'#aaa'},
+          ].map(o=>{
+            const cur=data.narrativeOrderFlow||[];
+            const active=cur.includes(o.value);
+            const toggle=()=>set('narrativeOrderFlow')(active?cur.filter(x=>x!==o.value):[...cur,o.value]);
+            return <button key={o.value} onClick={toggle} style={{padding:'5px 11px',borderRadius:20,fontSize:11,fontFamily:'inherit',cursor:'pointer',border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,background:active?o.col+'22':'transparent',color:active?o.col:C.textMut,fontWeight:active?700:400,transition:'all 0.15s'}}>{o.label}</button>;
+          })}
+        </div>
       </div>
 
       <Divider label="Review"/>
@@ -2137,7 +2308,13 @@ export default function App(){
       const esPts=trades.filter(t=>['ES','MES'].includes(t.ticker)).reduce((s,t)=>s+(parseFloat(t.points)||0),0);
       const nqPts=trades.filter(t=>['NQ','MNQ'].includes(t.ticker)).reduce((s,t)=>s+(parseFloat(t.points)||0),0);
       const wins=trades.filter(t=>t.result==='W').length;
-      const summary={pnl:total,esPts,nqPts,wins,trades:trades.length,bias:dayData.pre?.dailyBias||''};
+      const summary={
+        pnl:total,esPts,nqPts,wins,trades:trades.length,
+        bias:dayData.pre?.dailyBias||'',
+        narrativeProfile:dayData.eod?.narrativeProfile||'',
+        narrativeDayChar:dayData.eod?.narrativeDayChar||'',
+        narrativeLead:dayData.eod?.narrativeLead||'',
+      };
       await saveIndex(selectedDate,summary);
       setIndex(prev=>({...prev,[selectedDate]:summary}));
       setSaveStatus('saved');
