@@ -154,9 +154,9 @@ function computeBias(bi) {
   if (resolvedDir === 'long') structuralAgreement = Math.max(0, profileScore);
   else if (resolvedDir === 'short') structuralAgreement = Math.max(0, -profileScore);
 
-  // ── Step 5: Multi-day balance edge (longest-timeframe override) ──
   // ── Step 5: Multi-day balance edge context ──
   // Scores: ±2 = failed breakout/expansion/new expansion phase, ±1 = at edge/reclaim/tapped, 0 = middle/not at edge
+  let edgeBoost = 0;
   if (edgeContext && edgeContext !== 'none') {
     let edgeScore = 0;
     let edgeSignal = '';
@@ -218,7 +218,7 @@ function computeBias(bi) {
 
     signals.push(edgeSignal);
     if (edgeSizing) signals.push(`💡 ${edgeSizing}`);
-    score += edgeScore;
+    edgeBoost = edgeScore;
   }
 
   // ── Step 6: Same-day IB filter ──
@@ -349,10 +349,24 @@ function computeBias(bi) {
     signals.push('🌙 ETH touched both sides — no clean directional story. Overnight was two-sided with no resolution. Defer to IB development at 10:30. Overnight H/L are live execution levels only.');
   }
 
+  // ── Apply edge boost to direction ──
+  // If edge strongly disagrees with resolvedDir, downgrade to neutral
+  // If edge strongly agrees, reinforce. Edge score of ±2 can flip a neutral.
+  if (edgeBoost !== 0) {
+    const edgeDir = edgeBoost > 0 ? 'long' : 'short';
+    if (resolvedDir === 'neutral' && Math.abs(edgeBoost) >= 2) {
+      resolvedDir = edgeDir;
+      signals.push(`⚡ Edge context overrides neutral — ${edgeDir === 'long' ? 'bullish' : 'bearish'} from edge`);
+    } else if (resolvedDir !== 'neutral' && edgeDir !== resolvedDir && Math.abs(edgeBoost) >= 2) {
+      resolvedDir = 'neutral';
+      signals.push(`⚡ Edge context conflicts with structural direction — downgraded to neutral`);
+    }
+  }
+
   // ── Conviction scoring ──
   // score = structural agreement (0-4) + same-day boost.
   //   >=4 → high (~68-75%), 2-3 → medium (~60-65%), <2 → low (~55-58%)
-  const score = structuralAgreement + ibBoost;
+  const score = structuralAgreement + ibBoost + Math.abs(edgeBoost);
   let conviction, sizing, biasLabel, color;
 
   if (resolvedDir === 'neutral') {
