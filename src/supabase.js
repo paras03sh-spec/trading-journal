@@ -31,13 +31,13 @@ export async function loadIndex() {
   try {
     const { data, error } = await supabase
       .from('journal_index')
-      .select('date, pnl, pts, wins, trades, bias')
+      .select('date, pnl, esPts, nqPts, wins, trades, bias')
       .order('date', { ascending: false })
       .limit(365);
     if (error || !data) return {};
     const idx = {};
     data.forEach(row => {
-      idx[row.date] = { pnl: row.pnl, pts: row.pts, wins: row.wins, trades: row.trades, bias: row.bias };
+      idx[row.date] = { pnl: row.pnl, esPts: row.esPts, nqPts: row.nqPts, wins: row.wins, trades: row.trades, bias: row.bias };
     });
     return idx;
   } catch (_) { return {}; }
