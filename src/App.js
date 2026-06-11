@@ -188,30 +188,41 @@ function computeBias(bi) {
       edgeSizing = 'Strong long lean. Prior expansion low is support — buy against it. Target opposite balance edge (high). Confirm: price must be clearly inside the balance at 10:30, not hovering at the edge.';
     } else if (edgeContext === 'tapped_low_now_middle') {
       // Price tapped the balance low prior session/overnight, bounced, now trading clearly
-      // away from the edge in the middle of balance. Responsive buyers proved themselves.
-      // ~60-65% continuation toward the high edge from here.
-      edgeBias = 'bullish'; edgeColor = C.green; edgeConv = 'medium';
-      edgeSignal = '🔄 Low edge tapped prior/overnight + held — price now in middle of balance. Responsive buyers proved themselves.';
-      edgeSizing = 'Bullish lean within balance. Target: high edge. Entry on pullbacks to VWAP or prior session POC — not at the original tap level. Confirmation already done, do not chase.';
+      // away from the edge in the middle of balance. Auction completed to middle — signal decayed.
+      // Tapped edge + held is done, no remaining edge at middle.
+      edgeBias = 'bullish'; edgeColor = C.green; edgeConv = 'low';
+      edgeSignal = '🔄 Low edge tapped + held — price now in middle. Auction completed. Weak bullish lean only.';
+      edgeSizing = 'Low conviction. Signal decayed at middle. Target: high edge but wait for intraday confirmation before entering. Half size.';
     } else if (edgeContext === 'tapped_high_now_middle') {
-      // Mirror — price tapped balance high, rejected, now in middle.
-      // Responsive sellers proved themselves. ~60-65% continuation toward low edge.
-      edgeBias = 'bearish'; edgeColor = C.red; edgeConv = 'medium';
-      edgeSignal = '🔄 High edge tapped prior/overnight + held — price now in middle of balance. Responsive sellers proved themselves.';
-      edgeSizing = 'Bearish lean within balance. Target: low edge. Entry on bounces to VWAP or prior session POC — not at the original tap level. Confirmation already done, do not chase.';
+      // Mirror — price tapped balance high, rejected, now in middle. Auction completed to middle.
+      edgeBias = 'bearish'; edgeColor = C.red; edgeConv = 'low';
+      edgeSignal = '🔄 High edge tapped + held — price now in middle. Auction completed. Weak bearish lean only.';
+      edgeSizing = 'Low conviction. Signal decayed at middle. Target: low edge but wait for intraday confirmation before entering. Half size.';
     } else if (edgeContext === 'failed_exp_low_now_middle') {
       // Failed expansion below balance low, price has already rallied back to middle.
-      // Strongest possible scenario — trapped shorts are significantly underwater.
-      // Squeeze is already in progress. ~65-72% continuation toward high edge.
-      edgeBias = 'bullish'; edgeColor = C.green; edgeConv = 'high';
-      edgeSignal = '🚀 Failed expansion LOW + already back in middle — trapped shorts underwater, squeeze in progress.';
-      edgeSizing = 'Highest conviction bullish. The move is already proving itself. Target: high edge. Entry on pullbacks to VWAP, prior POC, or IB low — NOT the original break level. Hold runners. Do not fade this unless mid-session IB update contradicts.';
+      // Half the move is done — from low edge to middle. Remaining leg is middle to high edge.
+      // Signal partially decayed. Medium conviction, not high.
+      edgeBias = 'bullish'; edgeColor = C.green; edgeConv = 'medium';
+      edgeSignal = '🚀 Failed expansion LOW + back in middle — trapped shorts squeezed to middle. Medium conviction for continuation to high edge.';
+      edgeSizing = 'Medium conviction. Half the auction move completed. Target: high edge. Entry on pullbacks to VWAP or prior POC — not the original break level. Standard size.';
     } else if (edgeContext === 'failed_exp_high_now_middle') {
       // Mirror — failed expansion above balance high, price back in middle.
-      // Trapped longs significantly underwater. Squeeze in progress.
+      // Half the move done. Medium conviction for continuation to low edge.
+      edgeBias = 'bearish'; edgeColor = C.red; edgeConv = 'medium';
+      edgeSignal = '💥 Failed expansion HIGH + back in middle — trapped longs squeezed to middle. Medium conviction for continuation to low edge.';
+      edgeSizing = 'Medium conviction. Half the auction move completed. Target: low edge. Entry on bounces to VWAP or prior POC — not the original break level. Standard size.';
+    } else if (edgeContext === 'price_at_middle') {
+      edgeBias = 'neutral'; edgeColor = C.yellow; edgeConv = 'neutral';
+      edgeSignal = '⚖️ Price at middle of balance — signal decayed. No directional edge. Both edges are live targets.';
+      edgeSizing = 'Neutral. Fade extremes only — sell high edge, buy low edge. No trend trades. Half size max.';
+    } else if (edgeContext === 'expansion_bullish') {
+      edgeBias = 'bullish'; edgeColor = C.green; edgeConv = 'high';
+      edgeSignal = '📈 Bullish expansion — price accepted above balance high. New directional phase. Balance logic no longer applies.';
+      edgeSizing = 'Trending day rules. Hold runners. Add on pullbacks to prior balance high (now support). Measured move targets.';
+    } else if (edgeContext === 'expansion_bearish') {
       edgeBias = 'bearish'; edgeColor = C.red; edgeConv = 'high';
-      edgeSignal = '💥 Failed expansion HIGH + already back in middle — trapped longs underwater, squeeze in progress.';
-      edgeSizing = 'Highest conviction bearish. The move is already proving itself. Target: low edge. Entry on bounces to VWAP, prior POC, or IB high — NOT the original break level. Hold runners. Do not fade this unless mid-session IB update contradicts.';
+      edgeSignal = '📉 Bearish expansion — price accepted below balance low. New directional phase. Balance logic no longer applies.';
+      edgeSizing = 'Trending day rules. Hold runners. Add on bounces to prior balance low (now resistance). Measured move targets.';
     }
 
     signals.push(edgeSignal);
@@ -1228,8 +1239,11 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
             {label:'❌ Failed breakout LOW — back inside overnight',value:'failed_break_low',col:C.green,sub:'Trapped shorts below, lean long (~68-72%)'},
             {label:'🔄 Low edge tapped prior/overnight + held — now in middle',value:'tapped_low_now_middle',col:C.green,sub:'Buyers proved, bullish lean toward high edge (~60-65%)'},
             {label:'🔄 High edge tapped prior/overnight + held — now in middle',value:'tapped_high_now_middle',col:C.red,sub:'Sellers proved, bearish lean toward low edge (~60-65%)'},
-            {label:'🚀 Failed expansion LOW — already back in middle',value:'failed_exp_low_now_middle',col:C.green,sub:'Squeeze in progress, highest conviction bullish (~65-72%)'},
-            {label:'💥 Failed expansion HIGH — already back in middle',value:'failed_exp_high_now_middle',col:C.red,sub:'Squeeze in progress, highest conviction bearish (~65-72%)'},
+            {label:'🚀 Failed expansion LOW — already back in middle',value:'failed_exp_low_now_middle',col:C.green,sub:'Squeeze to middle done, medium conviction bullish'},
+            {label:'💥 Failed expansion HIGH — already back in middle',value:'failed_exp_high_now_middle',col:C.red,sub:'Squeeze to middle done, medium conviction bearish'},
+            {label:'⚖️ Price at middle of balance',value:'price_at_middle',col:C.yellow,sub:'Signal decayed — neutral, fade extremes only'},
+            {label:'📈 Bullish expansion — accepted above balance high',value:'expansion_bullish',col:C.green,sub:'New directional phase, trending day rules'},
+            {label:'📉 Bearish expansion — accepted below balance low',value:'expansion_bearish',col:C.red,sub:'New directional phase, trending day rules'},
           ].map(o=>{
             const active=biasInputs.edgeContext===o.value;
             return(
@@ -1496,6 +1510,9 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
             {label:'Failed exp LOW → back inside',value:'failed_exp_low_middle',col:C.green},
             {label:'LOW tapped + held, now middle',value:'low_edge_tapped_held_middle',col:C.green},
             {label:'HIGH tapped + held, now middle',value:'high_edge_tapped_held_middle',col:C.red},
+            {label:'⚖️ Price at middle',value:'price_at_middle',col:C.yellow},
+            {label:'📈 Bullish expansion',value:'expansion_bullish',col:C.green},
+            {label:'📉 Bearish expansion',value:'expansion_bearish',col:C.red},
           ].map(o=>{
             const active=biasInputs.liveEdgeContext===o.value;
             return(
