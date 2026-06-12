@@ -40,15 +40,19 @@ function computeBias(bi) {
     profileShape,       // 'B'|'b'|'P'|'D'|'normal'|'single_prints'|''
     prevHighQuality,    // 'excess'|'poor'|'normal'|''
     prevLowQuality,     // 'excess'|'poor'|'normal'|''
-    tpoDistribution,    // 'upper'|'lower'|''
     pocMigration,       // 'rising'|'flat'|'falling'|''
-    edgeContext,        // ''|'none'|'high_from_inside'|'low_from_inside'|'high_from_above'|'low_from_below'|'failed_break_high'|'failed_break_low'
     // same-day inputs
     ibSize,             // 'short'|'medium'|'large'|''
     vaOverlap,          // 'heavy'|'none'|''
     ibLocation,         // 'upper'|'middle'|'lower'|''  — where is price in IB at 10:30
     vwapRelation,       // 'above'|'at'|'below'|''  — price vs VWAP at 10:30
     ethOvernight,       // 'broke_high_held'|'broke_high_rejected'|'broke_low_held'|'broke_low_rejected'|'inside'|'both_sides_touched'|''
+    // live / mid-session inputs
+    liveEdgeContext,    // 'balance_edge_bulls'|'balance_edge_bears'|'failed_breakout_bulls'|'failed_breakout_bears'|'expansion_bulls'|'expansion_bears'|'middle_of_balance'|''
+    ibBreakDir,         // 'broke_high'|'broke_low'|'no_break'|''
+    ibTimeAcceptance,   // 'held'|'snapped'|''
+    ibCVD,              // 'agreeing'|'flat'|'diverging'|''
+    ibOppositeBreak,    // 'no'|'yes_no_accept'|'yes_accepted'|''
   } = bi;
 
   // ── Step 1: Prior day candle (base direction) ──
@@ -117,14 +121,7 @@ function computeBias(bi) {
     signals.push('⚠ Poor HIGH on prior day — unfinished auction above, upside magnetic pull. That high is a target.');
   }
 
-  // ── Step 4: TPO distribution (secondary, ±1) ──
-  if (tpoDistribution === 'upper') {
-    profileScore += 1; signals.push('⬆ TPO upper half — buyers controlled close');
-  } else if (tpoDistribution === 'lower') {
-    profileScore -= 1; signals.push('⬇ TPO lower half — sellers controlled close');
-  }
-
-  // ── Step 4: POC migration (secondary, ±1) ──
+  // ── POC migration (secondary, ±1) ──
   if (pocMigration === 'rising') {
     profileScore += 1; signals.push('↗ Rising POC — accumulation, long backing');
   } else if (pocMigration === 'falling') {
@@ -154,87 +151,42 @@ function computeBias(bi) {
   if (resolvedDir === 'long') structuralAgreement = Math.max(0, profileScore);
   else if (resolvedDir === 'short') structuralAgreement = Math.max(0, -profileScore);
 
-  // ── Step 5: Multi-day balance edge (longest-timeframe override) ──
-  if (edgeContext && edgeContext !== 'none') {
-    let edgeBias, edgeColor, edgeConv, edgeSizing, edgeSignal;
+  // ── Live Multi-Day Balance Edge (additive points, no override) ──
+  // Simplified to 6 directional options + middle. Live field only.
+  // Failed breakout & expansion = ±2 (strongest). Balance edge = ±1. Middle = 0.
+  let edgeBoost = 0;
+  if (liveEdgeContext === 'balance_edge_bulls') {
+    edgeBoost = 1;
+    signals.push('⬆ Balance edge bulls — at/reclaiming low edge, lean long toward high edge (+1).');
+  } else if (liveEdgeContext === 'balance_edge_bears') {
+    edgeBoost = -1;
+    signals.push('⬇ Balance edge bears — at/reclaiming high edge, lean short toward low edge (-1).');
+  } else if (liveEdgeContext === 'failed_breakout_bulls') {
+    edgeBoost = 2;
+    signals.push('❌ Failed breakout bulls — trapped shorts below, strong long lean toward opposite edge (+2).');
+  } else if (liveEdgeContext === 'failed_breakout_bears') {
+    edgeBoost = -2;
+    signals.push('❌ Failed breakout bears — trapped longs above, strong short lean toward opposite edge (-2).');
+  } else if (liveEdgeContext === 'expansion_bulls') {
+    edgeBoost = 2;
+    signals.push('📈 Expansion bulls — accepted above balance high, new directional phase, trending day rules (+2).');
+  } else if (liveEdgeContext === 'expansion_bears') {
+    edgeBoost = -2;
+    signals.push('📉 Expansion bears — accepted below balance low, new directional phase, trending day rules (-2).');
+  } else if (liveEdgeContext === 'middle_of_balance') {
+    edgeBoost = 0;
+    signals.push('⚖️ Middle of balance — signal decayed, no directional edge. Fade extremes only.');
+  }
 
-    if (edgeContext === 'high_from_inside') {
-      edgeBias = 'neutral'; edgeColor = C.yellow; edgeConv = 'edge-watch';
-      edgeSignal = '⬆ At HIGH edge from inside — long-into-edge done. Neutral at the line.';
-      edgeSizing = 'Two-sided: failed expansion = short back into range. Acceptance + hold above = breakout long. Do not press until it resolves.';
-    } else if (edgeContext === 'low_from_inside') {
-      edgeBias = 'neutral'; edgeColor = C.yellow; edgeConv = 'edge-watch';
-      edgeSignal = '⬇ At LOW edge from inside — short-into-edge done. Neutral at the line.';
-      edgeSizing = 'Two-sided: failed expansion = long back into range. Acceptance + hold below = breakout short. Do not press until it resolves.';
-    } else if (edgeContext === 'high_from_above') {
-      edgeBias = 'bullish'; edgeColor = C.green; edgeConv = 'reclaim';
-      edgeSignal = '↩ Returning to HIGH edge from above — edge is now support, reclaim attempt.';
-      edgeSizing = 'Lean long while edge holds as support. Long on a hold/bounce. If price slices back inside with acceptance, bias dead → neutral range-fade.';
-    } else if (edgeContext === 'low_from_below') {
-      edgeBias = 'bearish'; edgeColor = C.red; edgeConv = 'reclaim';
-      edgeSignal = '↪ Returning to LOW edge from below — edge is now resistance, reclaim attempt.';
-      edgeSizing = 'Lean short while edge holds as resistance. Short on a rejection. If price pushes back inside with acceptance, bias dead → neutral range-fade.';
-    } else if (edgeContext === 'failed_break_high') {
-      // Strongest balance edge signal — breakout confirmed failed overnight.
-      // Trapped longs above the edge + stops below it = mechanical selling pressure.
-      // ~68-72% resolution toward opposite balance edge.
-      edgeBias = 'bearish'; edgeColor = C.red; edgeConv = 'high';
-      edgeSignal = '❌ Failed breakout HIGH — expanded above balance last session, overnight returned inside. Trapped longs above edge.';
-      edgeSizing = 'Strong short lean. Prior expansion high is resistance — sell against it. Target opposite balance edge (low). Confirm: price must be clearly inside the balance at 10:30, not hovering at the edge.';
-    } else if (edgeContext === 'failed_break_low') {
-      // Mirror — trapped shorts below the edge = mechanical buying pressure.
-      edgeBias = 'bullish'; edgeColor = C.green; edgeConv = 'high';
-      edgeSignal = '❌ Failed breakout LOW — expanded below balance last session, overnight returned inside. Trapped shorts below edge.';
-      edgeSizing = 'Strong long lean. Prior expansion low is support — buy against it. Target opposite balance edge (high). Confirm: price must be clearly inside the balance at 10:30, not hovering at the edge.';
-    } else if (edgeContext === 'tapped_low_now_middle') {
-      // Price tapped the balance low prior session/overnight, bounced, now trading clearly
-      // away from the edge in the middle of balance. Auction completed to middle — signal decayed.
-      // Tapped edge + held is done, no remaining edge at middle.
-      edgeBias = 'bullish'; edgeColor = C.green; edgeConv = 'low';
-      edgeSignal = '🔄 Low edge tapped + held — price now in middle. Auction completed. Weak bullish lean only.';
-      edgeSizing = 'Low conviction. Signal decayed at middle. Target: high edge but wait for intraday confirmation before entering. Half size.';
-    } else if (edgeContext === 'tapped_high_now_middle') {
-      // Mirror — price tapped balance high, rejected, now in middle. Auction completed to middle.
-      edgeBias = 'bearish'; edgeColor = C.red; edgeConv = 'low';
-      edgeSignal = '🔄 High edge tapped + held — price now in middle. Auction completed. Weak bearish lean only.';
-      edgeSizing = 'Low conviction. Signal decayed at middle. Target: low edge but wait for intraday confirmation before entering. Half size.';
-    } else if (edgeContext === 'failed_exp_low_now_middle') {
-      // Failed expansion below balance low, price has already rallied back to middle.
-      // Half the move is done — from low edge to middle. Remaining leg is middle to high edge.
-      // Signal partially decayed. Medium conviction, not high.
-      edgeBias = 'bullish'; edgeColor = C.green; edgeConv = 'medium';
-      edgeSignal = '🚀 Failed expansion LOW + back in middle — trapped shorts squeezed to middle. Medium conviction for continuation to high edge.';
-      edgeSizing = 'Medium conviction. Half the auction move completed. Target: high edge. Entry on pullbacks to VWAP or prior POC — not the original break level. Standard size.';
-    } else if (edgeContext === 'failed_exp_high_now_middle') {
-      // Mirror — failed expansion above balance high, price back in middle.
-      // Half the move done. Medium conviction for continuation to low edge.
-      edgeBias = 'bearish'; edgeColor = C.red; edgeConv = 'medium';
-      edgeSignal = '💥 Failed expansion HIGH + back in middle — trapped longs squeezed to middle. Medium conviction for continuation to low edge.';
-      edgeSizing = 'Medium conviction. Half the auction move completed. Target: low edge. Entry on bounces to VWAP or prior POC — not the original break level. Standard size.';
-    } else if (edgeContext === 'price_at_middle') {
-      edgeBias = 'neutral'; edgeColor = C.yellow; edgeConv = 'neutral';
-      edgeSignal = '⚖️ Price at middle of balance — signal decayed. No directional edge. Both edges are live targets.';
-      edgeSizing = 'Neutral. Fade extremes only — sell high edge, buy low edge. No trend trades. Half size max.';
-    } else if (edgeContext === 'expansion_bullish') {
-      edgeBias = 'bullish'; edgeColor = C.green; edgeConv = 'high';
-      edgeSignal = '📈 Bullish expansion — price accepted above balance high. New directional phase. Balance logic no longer applies.';
-      edgeSizing = 'Trending day rules. Hold runners. Add on pullbacks to prior balance high (now support). Measured move targets.';
-    } else if (edgeContext === 'expansion_bearish') {
-      edgeBias = 'bearish'; edgeColor = C.red; edgeConv = 'high';
-      edgeSignal = '📉 Bearish expansion — price accepted below balance low. New directional phase. Balance logic no longer applies.';
-      edgeSizing = 'Trending day rules. Hold runners. Add on bounces to prior balance low (now resistance). Measured move targets.';
-    }
-
-    signals.push(edgeSignal);
-    if (ibSize === 'large') {
-      signals.push('📐 Large IB at the edge — extension already spent, favor the fade/rejection side.');
-    } else if (ibSize === 'short') {
-      signals.push('📐 Short IB at the edge — coiled, if it breaks/holds the move can run.');
-    } else if (ibSize === 'medium') {
-      signals.push('📐 Medium IB — let price tell you, no forced read.');
-    }
-
-    return { bias: edgeBias, conviction: edgeConv, sizing: edgeSizing, signals, color: edgeColor };
+  // Edge can flip a neutral structural read if strong enough
+  if (edgeBoost >= 2 && resolvedDir === 'neutral') {
+    resolvedDir = 'long';
+    structuralAgreement = 0;
+    signals.push('⚡ Failed breakout/expansion bulls establishes long from neutral.');
+  } else if (edgeBoost <= -2 && resolvedDir === 'neutral') {
+    resolvedDir = 'short';
+    structuralAgreement = 0;
+    signals.push('⚡ Failed breakout/expansion bears establishes short from neutral.');
   }
 
   // ── Step 6: Same-day IB filter ──
@@ -249,13 +201,8 @@ function computeBias(bi) {
   }
 
   if (ibSize === 'large') {
-    return {
-      bias: 'neutral',
-      conviction: 'fade',
-      sizing: 'Fade posture only. Sell IB high, buy IB low. Prior bias secondary.',
-      signals,
-      color: C.orange,
-    };
+    signals.push('📐 Large IB (>100% ATR) — market already moved. Fade posture: sell IB high, buy IB low. Conviction reduced.');
+    ibBoost -= 2;
   }
 
   // ── Step 7: VA overlap + IB location at 10:30 ──
@@ -365,10 +312,43 @@ function computeBias(bi) {
     signals.push('🌙 ETH touched both sides — no clean directional story. Overnight was two-sided with no resolution. Defer to IB development at 10:30. Overnight H/L are live execution levels only.');
   }
 
-  // ── Conviction scoring ──
-  // score = structural agreement (0-4) + same-day boost.
+  // ── Mid-session IB break (additive points, no override) ──
+  // Tells you what's more likely but never seizes control — just adds to the score.
+  // Broke + held = ±2, failed break (snapped back) = ±1 reversal, CVD modifies ±1.
+  let midBoost = 0;
+  if (ibBreakDir === 'broke_high' && ibTimeAcceptance === 'held') {
+    midBoost += 2;
+    signals.push('🔼 IB broke HIGH + held (15-30min acceptance) — bullish pressure (+2).');
+  } else if (ibBreakDir === 'broke_low' && ibTimeAcceptance === 'held') {
+    midBoost -= 2;
+    signals.push('🔽 IB broke LOW + held (15-30min acceptance) — bearish pressure (-2).');
+  } else if (ibBreakDir === 'broke_high' && ibTimeAcceptance === 'snapped') {
+    midBoost -= 1;
+    signals.push('↩ IB broke HIGH but snapped back — failed break, mild bearish reversal lean (-1).');
+  } else if (ibBreakDir === 'broke_low' && ibTimeAcceptance === 'snapped') {
+    midBoost += 1;
+    signals.push('↪ IB broke LOW but snapped back — failed break, mild bullish reversal lean (+1).');
+  } else if (ibBreakDir === 'no_break') {
+    signals.push('➡ No clean IB break — original bias carries, no mid-session adjustment.');
+  }
+  // Both sides accepted = double distribution, flag only (no points, bias context dead)
+  if (ibOppositeBreak === 'yes_accepted') {
+    signals.push('⚠️ Both IB sides accepted — double distribution. Directional edge dead, trade the gap between distributions.');
+    midBoost = 0;
+  }
+  // CVD modifier — agreeing reinforces the break, diverging warns of a trap
+  if (midBoost !== 0 && ibCVD === 'agreeing') {
+    midBoost += midBoost > 0 ? 1 : -1;
+    signals.push('📊 CVD agreeing with break — delta confirms, reinforced (±1).');
+  } else if (midBoost !== 0 && ibCVD === 'diverging') {
+    midBoost += midBoost > 0 ? -1 : 1;
+    signals.push('📊 CVD diverging — delta not confirming, potential trap, dampened (±1).');
+  }
+
+  // ── Conviction scoring (fully additive) ──
+  // score = structural agreement + edge points + same-day IB context + mid-session IB break
   //   >=4 → high (~68-75%), 2-3 → medium (~60-65%), <2 → low (~55-58%)
-  const score = structuralAgreement + ibBoost;
+  const score = structuralAgreement + Math.abs(edgeBoost) + ibBoost + Math.abs(midBoost);
   let conviction, sizing, biasLabel, color;
 
   if (resolvedDir === 'neutral') {
@@ -1197,19 +1177,6 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
       </div>
 
       {/* TPO distribution */}
-      <div style={{marginBottom:18}}>
-        <SectionLabel>TPO letter distribution (where did most letters print?)</SectionLabel>
-        <Pills
-          options={[
-            {label:'⬆ Upper half',value:'upper'},
-            {label:'⬇ Lower half',value:'lower'},
-          ]}
-          value={biasInputs.tpoDistribution}
-          onChange={set('tpoDistribution')}
-          colors={{upper:C.green,lower:C.red}}
-        />
-      </div>
-
       {/* POC migration */}
       <div style={{marginBottom:18}}>
         <SectionLabel>POC migration (last 3–5 sessions)</SectionLabel>
@@ -1223,46 +1190,6 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
           onChange={set('pocMigration')}
           colors={{rising:C.green,flat:'#aaa',falling:C.red}}
         />
-      </div>
-
-      {/* Multi-day balance edge */}
-      <div style={{marginBottom:24}}>
-        <SectionLabel>Multi-day balance edge context</SectionLabel>
-        <div style={{display:'flex',flexDirection:'column',gap:8}}>
-          {[
-            {label:'Not at an edge — open space',value:'none',col:C.teal,sub:'Bias runs normally'},
-            {label:'⬆ At HIGH edge, from inside',value:'high_from_inside',col:C.yellow,sub:'Failed exp short / breakout long'},
-            {label:'⬇ At LOW edge, from inside',value:'low_from_inside',col:C.yellow,sub:'Failed exp long / breakout short'},
-            {label:'↩ Returning to HIGH edge from above',value:'high_from_above',col:C.green,sub:'Edge = support, reclaim, lean long'},
-            {label:'↪ Returning to LOW edge from below',value:'low_from_below',col:C.red,sub:'Edge = resistance, reclaim, lean short'},
-            {label:'❌ Failed breakout HIGH — back inside overnight',value:'failed_break_high',col:C.red,sub:'Trapped longs above, lean short (~68-72%)'},
-            {label:'❌ Failed breakout LOW — back inside overnight',value:'failed_break_low',col:C.green,sub:'Trapped shorts below, lean long (~68-72%)'},
-            {label:'🔄 Low edge tapped prior/overnight + held — now in middle',value:'tapped_low_now_middle',col:C.green,sub:'Buyers proved, bullish lean toward high edge (~60-65%)'},
-            {label:'🔄 High edge tapped prior/overnight + held — now in middle',value:'tapped_high_now_middle',col:C.red,sub:'Sellers proved, bearish lean toward low edge (~60-65%)'},
-            {label:'🚀 Failed expansion LOW — already back in middle',value:'failed_exp_low_now_middle',col:C.green,sub:'Squeeze to middle done, medium conviction bullish'},
-            {label:'💥 Failed expansion HIGH — already back in middle',value:'failed_exp_high_now_middle',col:C.red,sub:'Squeeze to middle done, medium conviction bearish'},
-            {label:'⚖️ Price at middle of balance',value:'price_at_middle',col:C.yellow,sub:'Signal decayed — neutral, fade extremes only'},
-            {label:'📈 Bullish expansion — accepted above balance high',value:'expansion_bullish',col:C.green,sub:'New directional phase, trending day rules'},
-            {label:'📉 Bearish expansion — accepted below balance low',value:'expansion_bearish',col:C.red,sub:'New directional phase, trending day rules'},
-          ].map(o=>{
-            const active=biasInputs.edgeContext===o.value;
-            return(
-              <button key={o.value} onClick={()=>set('edgeContext')(active?'':o.value)} style={{
-                padding:'10px 14px',borderRadius:10,textAlign:'left',
-                border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
-                background:active?o.col+'18':'transparent',
-                cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
-                display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,
-              }}>
-                <span style={{color:active?o.col:C.textSub,fontSize:13,fontWeight:active?700:400}}>{o.label}</span>
-                <span style={{color:active?o.col:C.textDim,fontSize:11,opacity:0.8,flexShrink:0}}>{o.sub}</span>
-              </button>
-            );
-          })}
-        </div>
-        <div style={{fontSize:11,color:C.textDim,marginTop:8,lineHeight:1.5}}>
-          Balance is fractal — applies to whatever range governs price on your timeframe. From inside = neutral two-sided watch. Returning to edge = directional reclaim lean. Failed breakout overnight = strong signal near the edge. Tapped edge + now in middle = buyers/sellers proved themselves, directional lean toward opposite edge. Failed expansion + already in middle = squeeze in progress, highest conviction — entry on pullbacks not at original level.
-        </div>
       </div>
 
       {/* ── SECTION B: Same-day inputs (10:30 check) ── */}
@@ -1495,24 +1422,19 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
 
       {/* Live Edge Context — updated as session develops */}
       <div style={{marginTop:12,marginBottom:4}}>
-        <SectionLabel>Live Multi-Day Balance Edge Context</SectionLabel>
+        <SectionLabel>Multi-Day Balance Edge (live — adds to score)</SectionLabel>
         <div style={{fontSize:11,color:C.textDim,marginBottom:8,lineHeight:1.5}}>
-          Update as session develops. Overrides pre-market edge context. Agreements upgrade conviction, conflicts downgrade it.
+          Update as session develops. Adds points to the bias score — never overrides. Failed breakout & expansion = ±2, balance edge = ±1, middle = 0.
         </div>
         <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
           {[
-            {label:'Not at edge',value:'not_at_edge',col:'#aaa'},
-            {label:'At HIGH edge',value:'at_high_edge',col:C.yellow},
-            {label:'At LOW edge',value:'at_low_edge',col:C.yellow},
-            {label:'Returning to HIGH from above',value:'returning_high_from_above',col:C.green},
-            {label:'Returning to LOW from below',value:'returning_low_from_below',col:C.red},
-            {label:'Failed exp HIGH → back inside',value:'failed_exp_high_middle',col:C.red},
-            {label:'Failed exp LOW → back inside',value:'failed_exp_low_middle',col:C.green},
-            {label:'LOW tapped + held, now middle',value:'low_edge_tapped_held_middle',col:C.green},
-            {label:'HIGH tapped + held, now middle',value:'high_edge_tapped_held_middle',col:C.red},
-            {label:'⚖️ Price at middle',value:'price_at_middle',col:C.yellow},
-            {label:'📈 Bullish expansion',value:'expansion_bullish',col:C.green},
-            {label:'📉 Bearish expansion',value:'expansion_bearish',col:C.red},
+            {label:'⬆ Balance edge bulls',value:'balance_edge_bulls',col:C.green},
+            {label:'⬇ Balance edge bears',value:'balance_edge_bears',col:C.red},
+            {label:'❌ Failed breakout bulls',value:'failed_breakout_bulls',col:C.green},
+            {label:'❌ Failed breakout bears',value:'failed_breakout_bears',col:C.red},
+            {label:'📈 Expansion bulls',value:'expansion_bulls',col:C.green},
+            {label:'📉 Expansion bears',value:'expansion_bears',col:C.red},
+            {label:'⚖️ Middle of balance',value:'middle_of_balance',col:C.yellow},
           ].map(o=>{
             const active=biasInputs.liveEdgeContext===o.value;
             return(
