@@ -101,24 +101,16 @@ function computeBias(bi) {
     signals.push('🧲 Single prints — secondary magnet, not a primary signal');
   }
 
-  // ── Step 3: Prior day extreme quality (excess / poor) ──
+  // ── Step 3: Prior day extreme quality — excess only ──
   // Excess = clean single/two letter rejection at extreme. Level defended (~65-70%).
-  // Poor = overlapping letters at extreme. Unfinished auction, magnetic pull back.
   // Excess at LOW = bullish +1 (buyers defended). Excess at HIGH = bearish -1 (sellers defended).
-  // Poor LOW = bearish -1 (unfinished auction below, downside pull). Poor HIGH = bullish +1 (upside target magnetic).
   if (prevLowQuality === 'excess') {
     profileScore += 1;
     signals.push('✅ Excess at prior day LOW — clean buyer rejection, low defended (~65-70% holds). Structural support.');
-  } else if (prevLowQuality === 'poor') {
-    profileScore -= 1;
-    signals.push('⚠ Poor LOW on prior day — unfinished auction below, downside magnetic pull. That low is a target.');
   }
   if (prevHighQuality === 'excess') {
     profileScore -= 1;
     signals.push('✅ Excess at prior day HIGH — clean seller rejection, high defended (~65-70% holds). Structural resistance.');
-  } else if (prevHighQuality === 'poor') {
-    profileScore += 1;
-    signals.push('⚠ Poor HIGH on prior day — unfinished auction above, upside magnetic pull. That high is a target.');
   }
 
   // ── POC migration (secondary, ±1) ──
@@ -205,7 +197,7 @@ function computeBias(bi) {
     ibBoost -= 2;
   }
 
-  // ── Step 7: VA overlap + IB location at 10:30 ──
+  // ── Step 7: VA overlap ──
   if (vaOverlap === 'heavy') {
     signals.push('🔁 Heavy VA overlap — balanced day likely (~70-80%), tighten targets');
     if (resolvedDir !== 'neutral') ibBoost -= 1;
@@ -214,126 +206,32 @@ function computeBias(bi) {
     ibBoost += 1;
   }
 
-  // IB location at 10:30 — where price is sitting within the completed IB.
-  // Upper quarter = buyers held high ground through the IB (~62-68% bullish continuation).
-  // Lower quarter = sellers held low ground (~62-68% bearish continuation).
-  // Middle = rotational, balanced day likely (~70-75%), no directional lean.
-  if (ibLocation === 'upper') {
-    if (resolvedDir === 'long') {
-      signals.push('📍 Price in upper IB quarter at 10:30 — buyers held high ground, confirms long bias (~62-68%)');
-      ibBoost += 2;
-    } else if (resolvedDir === 'short') {
-      signals.push('📍 Price in upper IB quarter — conflicts with short bias. Buyers held the IB. Reduce conviction.');
-      ibBoost -= 1;
-    } else {
-      signals.push('📍 Price in upper IB quarter — mild long lean on a neutral day, watch for IB high break');
-      ibBoost += 1;
-    }
-  } else if (ibLocation === 'lower') {
-    if (resolvedDir === 'short') {
-      signals.push('📍 Price in lower IB quarter at 10:30 — sellers held low ground, confirms short bias (~62-68%)');
-      ibBoost += 2;
-    } else if (resolvedDir === 'long') {
-      signals.push('📍 Price in lower IB quarter — conflicts with long bias. Sellers held the IB. Reduce conviction.');
-      ibBoost -= 1;
-    } else {
-      signals.push('📍 Price in lower IB quarter — mild short lean on a neutral day, watch for IB low break');
-      ibBoost += 1;
-    }
-  } else if (ibLocation === 'middle') {
-    signals.push('📍 Price in IB middle at 10:30 — rotational open, balanced day likely (~70-75%), fade extremes');
-    if (resolvedDir !== 'neutral') ibBoost -= 1;
-  }
-
-  // ── Step 8: VWAP relationship at 10:30 ──
-  // VWAP is the most widely used institutional intraday reference.
-  // By 10:30 it has 2 hours of data and is a meaningful read.
-  // Agreement with bias = confirms direction, improves entry quality.
-  // Conflict with bias = caution, wait for VWAP flip before committing.
-  // At VWAP = neutral, wait for separation.
-  if (vwapRelation === 'above') {
-    if (resolvedDir === 'long') {
-      signals.push('📊 Price above VWAP — confirms long bias. Look for longs on VWAP retest, not extended above it.');
-      ibBoost += 1;
-    } else if (resolvedDir === 'short') {
-      signals.push('📊 Price above VWAP — conflicts with short bias. Wait for price to break and accept below VWAP before shorting.');
-      ibBoost -= 1;
-    } else {
-      signals.push('📊 Price above VWAP — mild long lean on neutral day. Long setups above VWAP only.');
-    }
-  } else if (vwapRelation === 'below') {
-    if (resolvedDir === 'short') {
-      signals.push('📊 Price below VWAP — confirms short bias. Look for shorts on VWAP retest, not extended below it.');
-      ibBoost += 1;
-    } else if (resolvedDir === 'long') {
-      signals.push('📊 Price below VWAP — conflicts with long bias. Same-day auction not confirming. Wait for VWAP reclaim before pressing longs.');
-      ibBoost -= 1;
-    } else {
-      signals.push('📊 Price below VWAP — mild short lean on neutral day. Short setups below VWAP only.');
-    }
-  } else if (vwapRelation === 'at') {
-    signals.push('📊 Price at VWAP — institutional pivot point. Wait for separation. Direction of break from VWAP sets intraday tone.');
-  }
-
-  // ── Step 9: ETH overnight level interaction ──
-  // Overnight H/L are liquidity pools. Market sweeps them before moving.
-  // Broke and HELD = directional confirmation, ~68-72% continuation.
-  // Broke and REJECTED = failed sweep, likely reversal back inside overnight range.
-  // Inside overnight range = no information from ETH yet.
-  if (ethOvernight === 'broke_high_held') {
-    if (resolvedDir === 'long') {
-      signals.push('🌙 ETH broke overnight high + held — confirms long bias. Overnight level is now support (~68-72%).');
-      ibBoost += 1;
-    } else if (resolvedDir === 'short') {
-      signals.push('🌙 ETH broke overnight high + held — conflicts with short bias. Wait for RTH to reject and close back below overnight high.');
-      ibBoost -= 1;
-    } else {
-      signals.push('🌙 ETH broke overnight high + held — mild long lean. Overnight level is support.');
-    }
-  } else if (ethOvernight === 'broke_low_held') {
-    if (resolvedDir === 'short') {
-      signals.push('🌙 ETH broke overnight low + held — confirms short bias. Overnight level is now resistance (~68-72%).');
-      ibBoost += 1;
-    } else if (resolvedDir === 'long') {
-      signals.push('🌙 ETH broke overnight low + held — conflicts with long bias. Wait for RTH to reject and close back above overnight low.');
-      ibBoost -= 1;
-    } else {
-      signals.push('🌙 ETH broke overnight low + held — mild short lean. Overnight level is resistance.');
-    }
-  } else if (ethOvernight === 'broke_high_rejected') {
-    signals.push('🌙 ETH swept overnight high but rejected — failed sweep. Bearish lean at that level. Stop hunt done, watch for RTH fade.');
-    if (resolvedDir === 'short') ibBoost += 1;
-  } else if (ethOvernight === 'broke_low_rejected') {
-    signals.push('🌙 ETH swept overnight low but rejected — failed sweep. Bullish lean at that level. Stop hunt done, watch for RTH bounce.');
-    if (resolvedDir === 'long') ibBoost += 1;
-  } else if (ethOvernight === 'inside') {
-    signals.push('🌙 RTH opened inside overnight range — no ETH breakout signal. Overnight H/L are live targets for RTH session.');
-  } else if (ethOvernight === 'both_sides_touched') {
-    signals.push('🌙 ETH touched both sides — no clean directional story. Overnight was two-sided with no resolution. Defer to IB development at 10:30. Overnight H/L are live execution levels only.');
-  }
-
   // ── Mid-session IB break (additive points, no override) ──
   // Tells you what's more likely but never seizes control — just adds to the score.
   // Broke + held = ±2, failed break (snapped back) = ±1 reversal, CVD modifies ±1.
+  // Both sides accepted = neutral (0).
   let midBoost = 0;
-  if (ibBreakDir === 'broke_high' && ibTimeAcceptance === 'held') {
+  if (ibBreakDir === 'high' && ibTimeAcceptance === 'yes') {
     midBoost += 2;
     signals.push('🔼 IB broke HIGH + held (15-30min acceptance) — bullish pressure (+2).');
-  } else if (ibBreakDir === 'broke_low' && ibTimeAcceptance === 'held') {
+  } else if (ibBreakDir === 'low' && ibTimeAcceptance === 'yes') {
     midBoost -= 2;
     signals.push('🔽 IB broke LOW + held (15-30min acceptance) — bearish pressure (-2).');
-  } else if (ibBreakDir === 'broke_high' && ibTimeAcceptance === 'snapped') {
+  } else if (ibBreakDir === 'high' && ibTimeAcceptance === 'no') {
     midBoost -= 1;
-    signals.push('↩ IB broke HIGH but snapped back — failed break, mild bearish reversal lean (-1).');
-  } else if (ibBreakDir === 'broke_low' && ibTimeAcceptance === 'snapped') {
+    signals.push('↩ IB broke HIGH but snapped back — higher prices rejected, mild bearish lean (-1).');
+  } else if (ibBreakDir === 'low' && ibTimeAcceptance === 'no') {
     midBoost += 1;
-    signals.push('↪ IB broke LOW but snapped back — failed break, mild bullish reversal lean (+1).');
-  } else if (ibBreakDir === 'no_break') {
+    signals.push('↪ IB broke LOW but snapped back — lower prices rejected, mild bullish lean (+1).');
+  } else if (ibBreakDir === 'none') {
     signals.push('➡ No clean IB break — original bias carries, no mid-session adjustment.');
   }
-  // Both sides accepted = double distribution, flag only (no points, bias context dead)
+  // Opposite side broke + accepted = both sides accepted = neutral, no points
   if (ibOppositeBreak === 'yes_accepted') {
-    signals.push('⚠️ Both IB sides accepted — double distribution. Directional edge dead, trade the gap between distributions.');
+    signals.push('⚠️ Both IB sides accepted — two-sided, no winner. Neutral, trade the gap / sit on hands.');
+    midBoost = 0;
+  } else if (ibOppositeBreak === 'yes_no_accept') {
+    signals.push('⚠️ Both sides tested but neither held — chop. Neutral.');
     midBoost = 0;
   }
   // CVD modifier — agreeing reinforces the break, diverging warns of a trap
@@ -1128,8 +1026,7 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
         <div style={{display:'flex',flexDirection:'column',gap:8}}>
           {[
             {label:'Excess — clean seller rejection',value:'excess',col:C.red,sub:'High defended, structural resistance (~65-70% holds)'},
-            {label:'Poor — unfinished auction above',value:'poor',col:C.green,sub:'Upside magnetic, high is a target next session'},
-            {label:'Normal — nothing notable',value:'normal',col:'#aaa',sub:'No extra information from the high'},
+            {label:'No excess — nothing notable',value:'normal',col:'#aaa',sub:'No extra information from the high'},
           ].map(o=>{
             const active=biasInputs.prevHighQuality===o.value;
             return(
@@ -1153,8 +1050,7 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
         <div style={{display:'flex',flexDirection:'column',gap:8}}>
           {[
             {label:'Excess — clean buyer rejection',value:'excess',col:C.green,sub:'Low defended, structural support (~65-70% holds)'},
-            {label:'Poor — unfinished auction below',value:'poor',col:C.red,sub:'Downside magnetic, low is a target next session'},
-            {label:'Normal — nothing notable',value:'normal',col:'#aaa',sub:'No extra information from the low'},
+            {label:'No excess — nothing notable',value:'normal',col:'#aaa',sub:'No extra information from the low'},
           ].map(o=>{
             const active=biasInputs.prevLowQuality===o.value;
             return(
@@ -1229,96 +1125,6 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
           colors={{heavy:C.yellow,none:C.blue}}
         />
         <div style={{fontSize:11,color:C.textDim,marginTop:6}}>Heavy → balanced day likely. No overlap → trend day probability up.</div>
-      </div>
-
-      {/* IB location at 10:30 */}
-      <div style={{marginBottom:8}}>
-        <SectionLabel>Where is price in the IB at 10:30? (same-day read)</SectionLabel>
-        <div style={{display:'flex',flexDirection:'column',gap:8}}>
-          {[
-            {label:'⬆ Upper quarter',value:'upper',col:C.green,sub:'Buyers held high ground (~62-68% bullish cont.)'},
-            {label:'↔ Middle',value:'middle',col:C.yellow,sub:'Rotational, balanced day likely (~70-75%)'},
-            {label:'⬇ Lower quarter',value:'lower',col:C.red,sub:'Sellers held low ground (~62-68% bearish cont.)'},
-          ].map(o=>{
-            const active=biasInputs.ibLocation===o.value;
-            return(
-              <button key={o.value} onClick={()=>set('ibLocation')(active?'':o.value)} style={{
-                padding:'10px 14px',borderRadius:10,textAlign:'left',
-                border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
-                background:active?o.col+'18':'transparent',
-                cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
-                display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,
-              }}>
-                <span style={{color:active?o.col:C.textSub,fontSize:13,fontWeight:active?700:400}}>{o.label}</span>
-                <span style={{color:active?o.col:C.textDim,fontSize:11,flexShrink:0}}>{o.sub}</span>
-              </button>
-            );
-          })}
-        </div>
-        <div style={{fontSize:11,color:C.textDim,marginTop:8,lineHeight:1.5}}>
-          Upper or lower quarter confirms or conflicts with your bias. Middle = balanced, fade extremes, tighten targets. Direction matters — upper quarter on a short bias day reduces conviction, not adds.
-        </div>
-      </div>
-
-      {/* VWAP relationship at 10:30 */}
-      <div style={{marginBottom:8}}>
-        <SectionLabel>Price vs VWAP at 10:30</SectionLabel>
-        <div style={{display:'flex',flexDirection:'column',gap:8}}>
-          {[
-            {label:'⬆ Above VWAP',value:'above',col:C.green,sub:'Confirms long bias / conflicts with short'},
-            {label:'↔ At VWAP',value:'at',col:C.yellow,sub:'Pivot point — wait for separation'},
-            {label:'⬇ Below VWAP',value:'below',col:C.red,sub:'Confirms short bias / conflicts with long'},
-          ].map(o=>{
-            const active=biasInputs.vwapRelation===o.value;
-            return(
-              <button key={o.value} onClick={()=>set('vwapRelation')(active?'':o.value)} style={{
-                padding:'10px 14px',borderRadius:10,textAlign:'left',
-                border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
-                background:active?o.col+'18':'transparent',
-                cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
-                display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,
-              }}>
-                <span style={{color:active?o.col:C.textSub,fontSize:13,fontWeight:active?700:400}}>{o.label}</span>
-                <span style={{color:active?o.col:C.textDim,fontSize:11,flexShrink:0}}>{o.sub}</span>
-              </button>
-            );
-          })}
-        </div>
-        <div style={{fontSize:11,color:C.textDim,marginTop:8,lineHeight:1.5}}>
-          VWAP is the institutional intraday reference. Bias + VWAP agreement = highest quality entry zone. Conflict = wait for VWAP flip before pressing. Never enter long extended far above VWAP or short extended far below it — enter on the retest.
-        </div>
-      </div>
-
-      {/* ETH overnight level */}
-      <div style={{marginBottom:18}}>
-        <SectionLabel>ETH overnight level interaction</SectionLabel>
-        <div style={{display:'flex',flexDirection:'column',gap:8}}>
-          {[
-            {label:'Inside overnight range',value:'inside',col:'#aaa',sub:'Overnight H/L are live RTH targets'},
-            {label:'⬆ Broke overnight HIGH + held',value:'broke_high_held',col:C.green,sub:'Level is support (~68-72% cont.)'},
-            {label:'⬆ Swept overnight HIGH + rejected',value:'broke_high_rejected',col:C.orange,sub:'Stop hunt done — watch RTH fade'},
-            {label:'⬇ Broke overnight LOW + held',value:'broke_low_held',col:C.red,sub:'Level is resistance (~68-72% cont.)'},
-            {label:'⬇ Swept overnight LOW + rejected',value:'broke_low_rejected',col:C.orange,sub:'Stop hunt done — watch RTH bounce'},
-            {label:'↕ Both sides touched — no clean story',value:'both_sides_touched',col:'#aaa',sub:'Two-sided overnight, no signal — defer to IB at 10:30'},
-          ].map(o=>{
-            const active=biasInputs.ethOvernight===o.value;
-            return(
-              <button key={o.value} onClick={()=>set('ethOvernight')(active?'':o.value)} style={{
-                padding:'9px 14px',borderRadius:10,textAlign:'left',
-                border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
-                background:active?o.col+'18':'transparent',
-                cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
-                display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,
-              }}>
-                <span style={{color:active?o.col:C.textSub,fontSize:12,fontWeight:active?700:400}}>{o.label}</span>
-                <span style={{color:active?o.col:C.textDim,fontSize:11,flexShrink:0}}>{o.sub}</span>
-              </button>
-            );
-          })}
-        </div>
-        <div style={{fontSize:11,color:C.textDim,marginTop:8,lineHeight:1.5}}>
-          Never take your first trade before the overnight H/L has been swept or clearly respected. Wait for the sweep — then enter on the rejection.
-        </div>
       </div>
 
       <div style={{height:1,background:C.surface2,margin:'28px 0 24px'}}/>
