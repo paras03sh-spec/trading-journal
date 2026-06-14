@@ -181,13 +181,14 @@ function computeBias(bi) {
     signals.push('📐 Large IB (>100% ATR) — market already moved. Fade posture: sell IB high, buy IB low. Conviction reduced (-2).');
   }
 
-  // VA overlap
+  // VA overlap — regime context only, not scored
+  // Use to identify balance vs trending regime for edge context selection
   if (vaOverlap === 'heavy') {
-    signals.push('🔁 Heavy VA overlap — balanced day likely (~70-80%), tighten targets');
-    if (resolvedDir !== 'neutral') ibBoost -= 1;
+    signals.push('🔁 Multi-day heavy VA overlap — balance regime. Fade extremes, expect rotation. Use edge context accordingly.');
+  } else if (vaOverlap === 'partial') {
+    signals.push('↔ Partial VA overlap — transitional. One side attempting to break out. Watch which side gets rejected.');
   } else if (vaOverlap === 'none') {
-    signals.push('↔ No VA overlap — market rejecting prior value, trend probability up (+1)');
-    ibBoost += 1;
+    signals.push('➡ No VA overlap — trending/expansion regime. Follow the bias direction, hold runners, don\'t fade.');
   }
 
   // ── Step 6: Live multi-day balance edge (additive, no override) ──
@@ -1103,19 +1104,24 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
         </div>
       </div>
 
-      {/* VA overlap */}
-      <div style={{marginBottom:18}}>
-        <SectionLabel>Value area overlap with prior session</SectionLabel>
+      {/* VA overlap — regime context, not scored */}
+      <div style={{marginBottom:18,padding:'12px 14px',background:C.surface,borderRadius:12,border:`1px solid ${C.border}`}}>
+        <div style={{fontSize:11,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700,marginBottom:8}}>
+          Multi-Day VA Overlap — Regime Context (not scored)
+        </div>
         <Pills
           options={[
-            {label:'Heavy overlap',value:'heavy'},
-            {label:'No overlap / gap',value:'none'},
+            {label:'Heavy overlap (2+ sessions)',value:'heavy'},
+            {label:'Partial overlap',value:'partial'},
+            {label:'No overlap',value:'none'},
           ]}
           value={biasInputs.vaOverlap}
           onChange={set('vaOverlap')}
-          colors={{heavy:C.yellow,none:C.blue}}
+          colors={{heavy:C.yellow,partial:'#aaa',none:C.blue}}
         />
-        <div style={{fontSize:11,color:C.textDim,marginTop:6}}>Heavy → balanced day likely. No overlap → trend day probability up.</div>
+        <div style={{fontSize:11,color:C.textDim,marginTop:8,lineHeight:1.5}}>
+          Heavy = balance regime, fade extremes, use edge context to identify balance edges. Partial = transitional, one side trying to break. None = trending regime, follow bias, hold runners. Use this to inform your live edge context selection.
+        </div>
       </div>
 
       {/* IB close vs midpoint — 83-95% directional accuracy */}
