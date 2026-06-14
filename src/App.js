@@ -33,32 +33,30 @@ function getMonthDays(year,month){
 
 // ─── Bias Engine ──────────────────────────────────────────────────────────────
 function computeBias(bi) {
-  // bi = biasInputs object from pre data
   const {
-    prevDayCandle,      // 'green' | 'red' | 'inside' | ''
-    insideDayCount,     // number (0,1,2,3+)
-    profileShape,       // 'B'|'b'|'P'|'D'|'normal'|'single_prints'|''
-    prevHighQuality,    // 'excess'|'poor'|'normal'|''
-    prevLowQuality,     // 'excess'|'poor'|'normal'|''
+    prevDayCandle,      // 'green'|'red'|'inside'|''
+    insideDayCount,     // number
+    profileShape,       // 'B'|'b'|'P'|'D'|'normal'|'balanced_no_shape'|'wide_range_no_shape'|''
+    prevHighQuality,    // 'excess'|'normal'|''
+    prevLowQuality,     // 'excess'|'normal'|''
     pocMigration,       // 'rising'|'flat'|'falling'|''
-    // same-day inputs
     ibSize,             // 'short'|'medium'|'large'|''
+    ibCloseMid,         // 'above'|'below'|'' — IB close vs midpoint (83-95% directional, +2)
+    ibFormedLast,       // 'high'|'low'|'' — which side formed last (opposite leans, +1)
     vaOverlap,          // 'heavy'|'none'|''
-    ibLocation,         // 'upper'|'middle'|'lower'|''  — where is price in IB at 10:30
-    vwapRelation,       // 'above'|'at'|'below'|''  — price vs VWAP at 10:30
-    ethOvernight,       // 'broke_high_held'|'broke_high_rejected'|'broke_low_held'|'broke_low_rejected'|'inside'|'both_sides_touched'|''
-    // live / mid-session inputs
     liveEdgeContext,    // 'balance_edge_bulls'|'balance_edge_bears'|'failed_breakout_bulls'|'failed_breakout_bears'|'expansion_bulls'|'expansion_bears'|'middle_of_balance'|''
-    ibBreakDir,         // 'broke_high'|'broke_low'|'no_break'|''
-    ibTimeAcceptance,   // 'held'|'snapped'|''
-    ibCVD,              // 'agreeing'|'flat'|'diverging'|''
+    ibBreakDir,         // 'high'|'low'|'none'|''
     ibOppositeBreak,    // 'no'|'yes_no_accept'|'yes_accepted'|''
+    ibSecondBreak,      // 'high'|'low'|'' — second break direction on double break days (+2)
+    ibTimeAcceptance,   // 'yes'|'no'|''
+    ibCVD,              // 'agreeing'|'flat'|'diverging'|''
+    pdhPdlBreak,        // 'pdh'|'pdl'|'' — PDH/PDL break during session (+1)
   } = bi;
 
-  // ── Step 1: Prior day candle (base direction) ──
-  let baseDir = null; // 'long' | 'short' | 'neutral'
   let signals = [];
 
+  // ── Step 1: Prior day candle (base direction) ──
+  let baseDir = null;
   if (parseInt(insideDayCount) >= 2) {
     baseDir = 'neutral';
     signals.push(`⚪ ${insideDayCount}+ consecutive inside days — balance mode, fade extremes only`);
@@ -73,180 +71,244 @@ function computeBias(bi) {
     signals.push('⚪ Inside day — neutral, fade extremes');
   }
 
-  if (baseDir === null) {
-    return { bias: '', conviction: '', sizing: '', signals: [], color: C.textMut };
-  }
+  if (baseDir === null) return { bias: '', conviction: '', sizing: '', signals: [], color: C.textMut };
 
-  // ── Step 2: Profile shape ──
-  // profileScore: positive = bullish weight, negative = bearish weight.
-  // ±2 = primary structural signal, ±1 = secondary.
+  // ── Step 2: Profile shape (±2 primary, ±1 secondary) ──
   let profileScore = 0;
   if (profileShape === 'D') {
-    if (prevDayCandle === 'green') { profileScore = 2; signals.push('📈 D-shape trend up — strongest continuation signal'); }
-    else if (prevDayCandle === 'red') { profileScore = -2; signals.push('📉 D-shape trend down — strongest continuation signal'); }
+    if (prevDayCandle === 'green') { profileScore = 2; signals.push('📈 D-shape trend up — strongest continuation signal (+2)'); }
+    else if (prevDayCandle === 'red') { profileScore = -2; signals.push('📉 D-shape trend down — strongest continuation signal (-2)'); }
     else { signals.push('📊 D-shape noted — needs a directional candle to confirm'); }
   } else if (profileShape === 'B') {
-    profileScore = 2; signals.push('📈 B-shape — buyers won both auctions, long reinforced');
+    profileScore = 2; signals.push('📈 B-shape — buyers won both auctions, long reinforced (+2)');
   } else if (profileShape === 'b') {
-    profileScore = 2; signals.push('📈 b-shape — trapped shorts below, long reinforced');
+    profileScore = 2; signals.push('📈 b-shape — trapped shorts below, long reinforced (+2)');
   } else if (profileShape === 'P') {
-    profileScore = -2; signals.push('📉 P-shape — spike rejected, value built low, short reinforced');
+    profileScore = -2; signals.push('📉 P-shape — spike rejected, value built low, short reinforced (-2)');
   } else if (profileShape === 'normal') {
     signals.push('⚪ Normal bell — no extra conviction, candle bias stands');
   } else if (profileShape === 'balanced_no_shape') {
-    signals.push('⚪ Balanced / No Shape — market found equilibrium, no directional conviction. Prior value area unreliable. Rely on other inputs.');
+    signals.push('⚪ Balanced / No Shape — market found equilibrium, no directional conviction. Prior value area unreliable.');
   } else if (profileShape === 'wide_range_no_shape') {
-    signals.push('⚠️ Wide Range / No Shape — huge range, reversal, closed mid. No clean value area. Reversal point is the key level. Expect revisit of spike extreme or open next session.');
-  } else if (profileShape === 'single_prints') {
-    signals.push('🧲 Single prints — secondary magnet, not a primary signal');
+    signals.push('⚠️ Wide Range / No Shape — huge range, reversal, closed mid. Reversal point is the key level.');
   }
 
-  // ── Step 3: Prior day extreme quality — excess only ──
-  // Excess = clean single/two letter rejection at extreme. Level defended (~65-70%).
-  // Excess at LOW = bullish +1 (buyers defended). Excess at HIGH = bearish -1 (sellers defended).
+  // ── Step 3: Prior day extreme quality — excess only (±1) ──
   if (prevLowQuality === 'excess') {
     profileScore += 1;
-    signals.push('✅ Excess at prior day LOW — clean buyer rejection, low defended (~65-70% holds). Structural support.');
+    signals.push('✅ Excess at prior day LOW — clean buyer rejection, low defended (~65-70%). Structural support (+1).');
   }
   if (prevHighQuality === 'excess') {
     profileScore -= 1;
-    signals.push('✅ Excess at prior day HIGH — clean seller rejection, high defended (~65-70% holds). Structural resistance.');
+    signals.push('✅ Excess at prior day HIGH — clean seller rejection, high defended (~65-70%). Structural resistance (-1).');
   }
 
-  // ── POC migration (secondary, ±1) ──
+  // ── Step 4: POC migration (±1, multi-session context) ──
   if (pocMigration === 'rising') {
-    profileScore += 1; signals.push('↗ Rising POC — accumulation, long backing');
+    profileScore += 1; signals.push('↗ Rising POC (3-5 sessions) — accumulation, long backing (+1)');
   } else if (pocMigration === 'falling') {
-    profileScore -= 1; signals.push('↘ Falling POC — distribution, short backing');
+    profileScore -= 1; signals.push('↘ Falling POC (3-5 sessions) — distribution, short backing (-1)');
   } else if (pocMigration === 'flat') {
     signals.push('➡ Flat POC — balanced, reduce trend conviction');
   }
 
-  // ── Resolve structural direction (candle + profile + tpo + poc) ──
+  // ── Resolve structural direction ──
   let resolvedDir = baseDir;
   if (baseDir === 'long' && profileScore <= -2) {
     resolvedDir = 'neutral';
-    signals.push('⚡ Structure conflicts with green candle — downgraded to neutral');
+    signals.push('⚡ Profile strongly conflicts with green candle — downgraded to neutral');
   } else if (baseDir === 'short' && profileScore >= 2) {
     resolvedDir = 'neutral';
-    signals.push('⚡ Structure conflicts with red candle — downgraded to neutral');
+    signals.push('⚡ Profile strongly conflicts with red candle — downgraded to neutral');
   } else if (baseDir === 'neutral' && profileScore >= 2) {
     resolvedDir = 'long';
-    signals.push('⚡ Structure overrides inside day — long from profile');
+    signals.push('⚡ Strong profile overrides inside/neutral candle — long from structure');
   } else if (baseDir === 'neutral' && profileScore <= -2) {
     resolvedDir = 'short';
-    signals.push('⚡ Structure overrides inside day — short from profile');
+    signals.push('⚡ Strong profile overrides inside/neutral candle — short from structure');
   }
 
-  // structuralAgreement = how strongly the structure agrees with resolvedDir
+  // structural agreement score — how strongly structure backs the direction
   let structuralAgreement = 0;
   if (resolvedDir === 'long') structuralAgreement = Math.max(0, profileScore);
   else if (resolvedDir === 'short') structuralAgreement = Math.max(0, -profileScore);
 
-  // ── Live Multi-Day Balance Edge (additive points, no override) ──
-  // Simplified to 6 directional options + middle. Live field only.
-  // Failed breakout & expansion = ±2 (strongest). Balance edge = ±1. Middle = 0.
+  // ── Step 5: Same-day IB inputs ──
+  let ibBoost = 0;
+
+  // IB close vs midpoint — strongest single IB directional input (83-95% accuracy, +2)
+  if (ibCloseMid === 'above') {
+    if (resolvedDir === 'long' || resolvedDir === 'neutral') {
+      ibBoost += 2;
+      signals.push('📊 IB closed ABOVE midpoint — 83.5% upside breakout probability (+2).');
+    } else {
+      ibBoost -= 1;
+      signals.push('📊 IB closed ABOVE midpoint — conflicts with short bias, upside lean (-1 conflict).');
+    }
+  } else if (ibCloseMid === 'below') {
+    if (resolvedDir === 'short' || resolvedDir === 'neutral') {
+      ibBoost += 2;
+      signals.push('📊 IB closed BELOW midpoint — 94.9% downside breakout probability (+2).');
+    } else {
+      ibBoost -= 1;
+      signals.push('📊 IB closed BELOW midpoint — conflicts with long bias, downside lean (-1 conflict).');
+    }
+  }
+
+  // IB formed last — which side formed last leans opposite (52-57%, +1)
+  if (ibFormedLast === 'high') {
+    // High formed last = bearish lean (market rejected up, low breaks more likely)
+    if (resolvedDir === 'short') {
+      ibBoost += 1;
+      signals.push('📐 IB HIGH formed last — late rejection of highs, downside leans more likely (+1).');
+    } else if (resolvedDir === 'long') {
+      ibBoost -= 1;
+      signals.push('📐 IB HIGH formed last — late rejection conflicts with long bias (-1).');
+    } else {
+      signals.push('📐 IB HIGH formed last — mild bearish lean on neutral day.');
+    }
+  } else if (ibFormedLast === 'low') {
+    // Low formed last = bullish lean (market rejected down, high breaks more likely)
+    if (resolvedDir === 'long') {
+      ibBoost += 1;
+      signals.push('📐 IB LOW formed last — late rejection of lows, upside leans more likely (+1).');
+    } else if (resolvedDir === 'short') {
+      ibBoost -= 1;
+      signals.push('📐 IB LOW formed last — late rejection conflicts with short bias (-1).');
+    } else {
+      signals.push('📐 IB LOW formed last — mild bullish lean on neutral day.');
+    }
+  }
+
+  // IB size
+  if (ibSize === 'short') {
+    ibBoost += 1;
+    signals.push('📐 Short IB (<50% ATR) — trending day likely (~75-80% after confirmed break), lean into bias (+1)');
+  } else if (ibSize === 'medium') {
+    signals.push('📐 Medium IB — no extra info, carry bias, use VP levels for execution');
+  } else if (ibSize === 'large') {
+    ibBoost -= 2;
+    signals.push('📐 Large IB (>100% ATR) — market already moved. Fade posture: sell IB high, buy IB low. Conviction reduced (-2).');
+  }
+
+  // VA overlap
+  if (vaOverlap === 'heavy') {
+    signals.push('🔁 Heavy VA overlap — balanced day likely (~70-80%), tighten targets');
+    if (resolvedDir !== 'neutral') ibBoost -= 1;
+  } else if (vaOverlap === 'none') {
+    signals.push('↔ No VA overlap — market rejecting prior value, trend probability up (+1)');
+    ibBoost += 1;
+  }
+
+  // ── Step 6: Live multi-day balance edge (additive, no override) ──
   let edgeBoost = 0;
   if (liveEdgeContext === 'balance_edge_bulls') {
     edgeBoost = 1;
-    signals.push('⬆ Balance edge bulls — at/reclaiming low edge, lean long toward high edge (+1).');
+    signals.push('⬆ Balance edge bulls — at/reclaiming low edge, lean long (+1).');
   } else if (liveEdgeContext === 'balance_edge_bears') {
     edgeBoost = -1;
-    signals.push('⬇ Balance edge bears — at/reclaiming high edge, lean short toward low edge (-1).');
+    signals.push('⬇ Balance edge bears — at/reclaiming high edge, lean short (-1).');
   } else if (liveEdgeContext === 'failed_breakout_bulls') {
     edgeBoost = 2;
-    signals.push('❌ Failed breakout bulls — trapped shorts below, strong long lean toward opposite edge (+2).');
+    signals.push('❌ Failed breakout bulls — trapped shorts below, strong long lean (+2).');
   } else if (liveEdgeContext === 'failed_breakout_bears') {
     edgeBoost = -2;
-    signals.push('❌ Failed breakout bears — trapped longs above, strong short lean toward opposite edge (-2).');
+    signals.push('❌ Failed breakout bears — trapped longs above, strong short lean (-2).');
   } else if (liveEdgeContext === 'expansion_bulls') {
     edgeBoost = 2;
-    signals.push('📈 Expansion bulls — accepted above balance high, new directional phase, trending day rules (+2).');
+    signals.push('📈 Expansion bulls — accepted above balance high, new directional phase (+2).');
   } else if (liveEdgeContext === 'expansion_bears') {
     edgeBoost = -2;
-    signals.push('📉 Expansion bears — accepted below balance low, new directional phase, trending day rules (-2).');
+    signals.push('📉 Expansion bears — accepted below balance low, new directional phase (-2).');
   } else if (liveEdgeContext === 'middle_of_balance') {
     edgeBoost = 0;
     signals.push('⚖️ Middle of balance — signal decayed, no directional edge. Fade extremes only.');
   }
 
-  // Edge can flip a neutral structural read if strong enough
+  // Edge establishes direction on neutral days if strong enough
   if (edgeBoost >= 2 && resolvedDir === 'neutral') {
-    resolvedDir = 'long';
-    structuralAgreement = 0;
+    resolvedDir = 'long'; structuralAgreement = 0;
     signals.push('⚡ Failed breakout/expansion bulls establishes long from neutral.');
   } else if (edgeBoost <= -2 && resolvedDir === 'neutral') {
-    resolvedDir = 'short';
-    structuralAgreement = 0;
+    resolvedDir = 'short'; structuralAgreement = 0;
     signals.push('⚡ Failed breakout/expansion bears establishes short from neutral.');
   }
 
-  // ── Step 6: Same-day IB filter ──
-  let ibBoost = 0;
-  if (ibSize === 'short') {
-    signals.push('📐 Short IB (<50% ATR) — trending day likely (~75-80% after a confirmed break), lean into bias');
-    ibBoost = 1;
-  } else if (ibSize === 'medium') {
-    signals.push('📐 Medium IB — no extra info, carry bias, use VP levels for execution');
-  } else if (ibSize === 'large') {
-    signals.push('📐 Large IB (>100% ATR) — market already moved, shift to fade posture regardless of bias');
-  }
-
-  if (ibSize === 'large') {
-    signals.push('📐 Large IB (>100% ATR) — market already moved. Fade posture: sell IB high, buy IB low. Conviction reduced.');
-    ibBoost -= 2;
-  }
-
-  // ── Step 7: VA overlap ──
-  if (vaOverlap === 'heavy') {
-    signals.push('🔁 Heavy VA overlap — balanced day likely (~70-80%), tighten targets');
-    if (resolvedDir !== 'neutral') ibBoost -= 1;
-  } else if (vaOverlap === 'none') {
-    signals.push('↔ No VA overlap — market rejecting prior value, trend probability up');
-    ibBoost += 1;
-  }
-
-  // ── Mid-session IB break (additive points, no override) ──
-  // Tells you what's more likely but never seizes control — just adds to the score.
-  // Broke + held = ±2, failed break (snapped back) = ±1 reversal, CVD modifies ±1.
-  // Both sides accepted = neutral (0).
+  // ── Step 7: Mid-session IB break (additive, no override) ──
   let midBoost = 0;
-  if (ibBreakDir === 'high' && ibTimeAcceptance === 'yes') {
-    midBoost += 2;
-    signals.push('🔼 IB broke HIGH + held (15-30min acceptance) — bullish pressure (+2).');
-  } else if (ibBreakDir === 'low' && ibTimeAcceptance === 'yes') {
-    midBoost -= 2;
-    signals.push('🔽 IB broke LOW + held (15-30min acceptance) — bearish pressure (-2).');
-  } else if (ibBreakDir === 'high' && ibTimeAcceptance === 'no') {
-    midBoost -= 1;
-    signals.push('↩ IB broke HIGH but snapped back — higher prices rejected, mild bearish lean (-1).');
-  } else if (ibBreakDir === 'low' && ibTimeAcceptance === 'no') {
-    midBoost += 1;
-    signals.push('↪ IB broke LOW but snapped back — lower prices rejected, mild bullish lean (+1).');
-  } else if (ibBreakDir === 'none') {
-    signals.push('➡ No clean IB break — original bias carries, no mid-session adjustment.');
-  }
-  // Opposite side broke + accepted = both sides accepted = neutral, no points
+
+  // Both sides scenario — check first
   if (ibOppositeBreak === 'yes_accepted') {
-    signals.push('⚠️ Both IB sides accepted — two-sided, no winner. Neutral, trade the gap / sit on hands.');
-    midBoost = 0;
+    // Both sides accepted = double distribution
+    // BUT if we know which broke second, that direction wins 68-72%
+    if (ibSecondBreak === 'high') {
+      midBoost = 2;
+      signals.push('🔼 Double break — second break was HIGH. Second break wins 68-72% (+2 bullish).');
+    } else if (ibSecondBreak === 'low') {
+      midBoost = -2;
+      signals.push('🔽 Double break — second break was LOW. Second break wins 68-72% (-2 bearish).');
+    } else {
+      midBoost = 0;
+      signals.push('⚠️ Both IB sides accepted — double distribution. Log which side broke second for directional edge.');
+    }
   } else if (ibOppositeBreak === 'yes_no_accept') {
-    signals.push('⚠️ Both sides tested but neither held — chop. Neutral.');
     midBoost = 0;
-  }
-  // CVD modifier — agreeing reinforces the break, diverging warns of a trap
-  if (midBoost !== 0 && ibCVD === 'agreeing') {
-    midBoost += midBoost > 0 ? 1 : -1;
-    signals.push('📊 CVD agreeing with break — delta confirms, reinforced (±1).');
-  } else if (midBoost !== 0 && ibCVD === 'diverging') {
-    midBoost += midBoost > 0 ? -1 : 1;
-    signals.push('📊 CVD diverging — delta not confirming, potential trap, dampened (±1).');
+    signals.push('⚠️ Both sides tested but neither held — chop. Neutral.');
+  } else {
+    // Single sided break
+    if (ibBreakDir === 'high' && ibTimeAcceptance === 'yes') {
+      midBoost = 2;
+      signals.push('🔼 IB broke HIGH + held — bullish pressure confirmed (+2).');
+    } else if (ibBreakDir === 'low' && ibTimeAcceptance === 'yes') {
+      midBoost = -2;
+      signals.push('🔽 IB broke LOW + held — bearish pressure confirmed (-2).');
+    } else if (ibBreakDir === 'high' && ibTimeAcceptance === 'no') {
+      midBoost = -1;
+      signals.push('↩ IB broke HIGH but snapped back — higher prices rejected, mild bearish lean (-1).');
+    } else if (ibBreakDir === 'low' && ibTimeAcceptance === 'no') {
+      midBoost = 1;
+      signals.push('↪ IB broke LOW but snapped back — lower prices rejected, mild bullish lean (+1).');
+    } else if (ibBreakDir === 'none') {
+      signals.push('➡ No clean IB break — original bias carries.');
+    }
+
+    // CVD modifier on single sided breaks only
+    if (midBoost !== 0 && ibCVD === 'agreeing') {
+      midBoost += midBoost > 0 ? 1 : -1;
+      signals.push('📊 CVD agreeing with break — delta confirms (+1 in break direction).');
+    } else if (midBoost !== 0 && ibCVD === 'diverging') {
+      midBoost += midBoost > 0 ? -1 : 1;
+      signals.push('📊 CVD diverging — delta not confirming, potential trap (dampened).');
+    }
   }
 
-  // ── Conviction scoring (fully additive) ──
-  // score = structural agreement + edge points + same-day IB context + mid-session IB break
-  //   >=4 → high (~68-75%), 2-3 → medium (~60-65%), <2 → low (~55-58%)
-  const score = structuralAgreement + Math.abs(edgeBoost) + ibBoost + Math.abs(midBoost);
+  // PDH/PDL break during session (+1 in break direction)
+  if (pdhPdlBreak === 'pdh') {
+    if (resolvedDir === 'long' || resolvedDir === 'neutral') {
+      midBoost += 1;
+      signals.push('📈 PDH broke during session — 81% bullish close probability (+1).');
+    } else {
+      signals.push('📈 PDH broke during session — conflicts with short bias. Watch for reversal.');
+    }
+  } else if (pdhPdlBreak === 'pdl') {
+    if (resolvedDir === 'short' || resolvedDir === 'neutral') {
+      midBoost -= 1;
+      signals.push('📉 PDL broke during session — 66% bearish close probability (-1).');
+    } else {
+      signals.push('📉 PDL broke during session — conflicts with long bias. Watch for reversal.');
+    }
+  }
+
+  // Shallow retracement signal note (94% continuation — informational only, not scored)
+  // User can note this in trade notes — no UI input needed
+
+  // ── Conviction scoring (fully additive, directionally aware) ──
+  // edgeBoost and midBoost are directional — positive = bullish, negative = bearish
+  // Agreement with resolvedDir adds, conflict subtracts
+  const edgeContrib = resolvedDir === 'long' ? edgeBoost : resolvedDir === 'short' ? -edgeBoost : 0;
+  const midContrib = resolvedDir === 'long' ? midBoost : resolvedDir === 'short' ? -midBoost : 0;
+  const score = structuralAgreement + ibBoost + edgeContrib + midContrib;
+
   let conviction, sizing, biasLabel, color;
 
   if (resolvedDir === 'neutral') {
@@ -257,15 +319,20 @@ function computeBias(bi) {
   } else {
     biasLabel = resolvedDir === 'long' ? 'bullish' : 'bearish';
     color = resolvedDir === 'long' ? C.green : C.red;
-    if (score >= 4) {
+    if (score >= 5) {
       conviction = 'high';
-      sizing = 'Full size. Hold runners. Highest-probability day when IB also confirms (~68-75%).';
-    } else if (score >= 2) {
+      sizing = 'Full size. Hold runners. High-probability alignment (~68-75%).';
+    } else if (score >= 3) {
       conviction = 'medium';
       sizing = 'Standard size. Normal stops. Take clean setups only (~60-65%).';
-    } else {
+    } else if (score >= 1) {
       conviction = 'low';
       sizing = 'Reduced size. Tighter stops. Base-rate edge only (~55-58%).';
+    } else {
+      conviction = 'neutral';
+      sizing = 'Score too low or conflicting — treat as neutral. Fade extremes only.';
+      biasLabel = 'neutral';
+      color = C.yellow;
     }
   }
 
@@ -277,21 +344,22 @@ function emptyBiasInputs() {
     prevDayCandle: '',
     insideDayCount: '0',
     profileShape: '',
-    prevHighQuality: '', // 'excess'|'poor'|'normal'|''
-    prevLowQuality: '',  // 'excess'|'poor'|'normal'|''
-    tpoDistribution: '',
+    prevHighQuality: '', // 'excess'|'normal'|''
+    prevLowQuality: '',  // 'excess'|'normal'|''
     pocMigration: '',
-    edgeContext: '',
+    // same-day inputs
     ibSize: '',
+    ibCloseMid: '',      // 'above'|'below'|'' — IB close vs IB midpoint (83-95% directional)
+    ibFormedLast: '',    // 'high'|'low'|'' — which side of IB formed last (52-57% opposite breaks)
     vaOverlap: '',
-    ibLocation: '',
-    vwapRelation: '',
-    ethOvernight: '',
+    // live / mid-session inputs
+    liveEdgeContext: '',
     ibBreakDir: '',
+    ibOppositeBreak: '',  // 'no'|'yes_no_accept'|'yes_accepted'|''
+    ibSecondBreak: '',    // 'high'|'low'|'' — which side was the second break on double break days
     ibTimeAcceptance: '',
     ibCVD: '',
-    ibOppositeBreak: '',
-    liveEdgeContext: '',
+    pdhPdlBreak: '',     // 'pdh'|'pdl'|'' — PDH or PDL broke during session
   };
 }
 
@@ -1127,6 +1195,40 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
         <div style={{fontSize:11,color:C.textDim,marginTop:6}}>Heavy → balanced day likely. No overlap → trend day probability up.</div>
       </div>
 
+      {/* IB close vs midpoint — 83-95% directional accuracy */}
+      <div style={{marginBottom:18}}>
+        <SectionLabel>IB close vs IB midpoint at 10:30</SectionLabel>
+        <Pills
+          options={[
+            {label:'⬆ Closed ABOVE midpoint',value:'above'},
+            {label:'⬇ Closed BELOW midpoint',value:'below'},
+          ]}
+          value={biasInputs.ibCloseMid}
+          onChange={set('ibCloseMid')}
+          colors={{above:C.green,below:C.red}}
+        />
+        <div style={{fontSize:11,color:C.textDim,marginTop:6,lineHeight:1.5}}>
+          Strongest single IB directional input. Above mid = 83.5% upside breakout. Below mid = 94.9% downside breakout. (NQStats 10yr, 2,571 sessions)
+        </div>
+      </div>
+
+      {/* IB formed last — which side formed last leans opposite */}
+      <div style={{marginBottom:18}}>
+        <SectionLabel>Which side of IB formed LAST?</SectionLabel>
+        <Pills
+          options={[
+            {label:'⬆ HIGH formed last',value:'high'},
+            {label:'⬇ LOW formed last',value:'low'},
+          ]}
+          value={biasInputs.ibFormedLast}
+          onChange={set('ibFormedLast')}
+          colors={{high:C.red,low:C.green}}
+        />
+        <div style={{fontSize:11,color:C.textDim,marginTop:6,lineHeight:1.5}}>
+          IB tends to break opposite to whichever side formed last. High formed last = lean down (52-57%). Low formed last = lean up. Combined with midpoint close: 74-84% accuracy. (TradingStats 10yr, 5,519 sessions)
+        </div>
+      </div>
+
       <div style={{height:1,background:C.surface2,margin:'28px 0 24px'}}/>
       <div style={{fontSize:11,color:C.orange,letterSpacing:'0.1em',textTransform:'uppercase',fontWeight:700,marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
         <div style={{width:3,height:14,background:C.orange,borderRadius:2}}/>
@@ -1161,7 +1263,7 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
               {[
                 {label:'No — single sided break only',value:'no',col:C.teal,sub:'Normal scenario'},
                 {label:'Yes — opposite broke but snapped back',value:'yes_no_accept',col:C.yellow,sub:'Both sides tested, neither held — chop, go neutral'},
-                {label:'Yes — opposite broke and accepted',value:'yes_accepted',col:C.red,sub:'Double distribution or reversal — bias dead'},
+                {label:'Yes — opposite broke and accepted',value:'yes_accepted',col:C.red,sub:'Double distribution — log which side broke second below'},
               ].map(o=>{
                 const active=biasInputs.ibOppositeBreak===o.value;
                 return(
@@ -1183,7 +1285,26 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
             </div>
           </div>
 
-          {/* Only show time acceptance if opposite break was single sided or not yet selected */}
+          {/* Second break direction — only show when both sides accepted */}
+          {biasInputs.ibOppositeBreak === 'yes_accepted' && (
+            <div style={{marginBottom:18}}>
+              <SectionLabel>Which side broke SECOND? (68-72% wins)</SectionLabel>
+              <Pills
+                options={[
+                  {label:'⬆ HIGH broke second',value:'high'},
+                  {label:'⬇ LOW broke second',value:'low'},
+                ]}
+                value={biasInputs.ibSecondBreak}
+                onChange={set('ibSecondBreak')}
+                colors={{high:C.green,low:C.red}}
+              />
+              <div style={{fontSize:11,color:C.textDim,marginTop:6,lineHeight:1.5}}>
+                On double break days the second break wins 68-72% of the time. (TradingStats 10yr, 6,142+ sessions)
+              </div>
+            </div>
+          )}
+
+          {/* Only show time acceptance if opposite break was single sided */}
           {(biasInputs.ibOppositeBreak === 'no' || !biasInputs.ibOppositeBreak) && (
             <>
               <div style={{marginBottom:18}}>
@@ -1252,6 +1373,26 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
               }}>{o.label}</button>
             );
           })}
+        </div>
+      </div>
+
+      {/* PDH/PDL break during session */}
+      <div style={{marginTop:16,marginBottom:4}}>
+        <SectionLabel>PDH / PDL break during session</SectionLabel>
+        <div style={{fontSize:11,color:C.textDim,marginBottom:8,lineHeight:1.5}}>
+          Did price break and hold above prior day high or below prior day low during RTH?
+        </div>
+        <Pills
+          options={[
+            {label:'📈 PDH broke + held',value:'pdh'},
+            {label:'📉 PDL broke + held',value:'pdl'},
+          ]}
+          value={biasInputs.pdhPdlBreak}
+          onChange={set('pdhPdlBreak')}
+          colors={{pdh:C.green,pdl:C.red}}
+        />
+        <div style={{fontSize:11,color:C.textDim,marginTop:6,lineHeight:1.5}}>
+          PDH break = 81% bullish session close. PDL break = 66% bearish. (NQStats 10yr, 2,488 sessions)
         </div>
       </div>
 
