@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { loadDay, saveDay, loadIndex, saveIndex } from './supabase';
+import { loadDay, saveDay, loadIndex, saveIndex, getCurrentUser, signIn, signUp, signOut } from './supabase';
 
 const POINT_VALUES = { ES: 50, NQ: 20, MES: 5, MNQ: 2 };
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -1023,9 +1023,6 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
             </div>
           )}
           <div style={{display:'flex',flexDirection:'column',gap:6}}>
-            {displayResult.signals.map((s,i)=>(
-              <div key={i} style={{fontSize:12,color:C.textMut,lineHeight:1.5}}>{s}</div>
-            ))}
           </div>
         </div>
       )}
@@ -1099,9 +1096,7 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
           onChange={set('ibSize')}
           colors={{short:C.teal,medium:'#aaa',large:C.orange}}
         />
-        <div style={{fontSize:11,color:C.textDim,marginTop:6,lineHeight:1.5}}>
-          Short → trending day. Medium → carry bias. Large → fade posture regardless of bias.
-        </div>
+        
       </div>
 
       {/* VA overlap — regime context, not scored */}
@@ -1119,9 +1114,7 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
           onChange={set('vaOverlap')}
           colors={{heavy:C.yellow,partial:'#aaa',none:C.blue}}
         />
-        <div style={{fontSize:11,color:C.textDim,marginTop:8,lineHeight:1.5}}>
-          Heavy = balance regime, fade extremes, use edge context to identify balance edges. Partial = transitional, one side trying to break. None = trending regime, follow bias, hold runners. Use this to inform your live edge context selection.
-        </div>
+        
       </div>
 
       {/* IB close vs midpoint — 83-95% directional accuracy */}
@@ -1136,9 +1129,7 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
           onChange={set('ibCloseMid')}
           colors={{above:C.green,below:C.red}}
         />
-        <div style={{fontSize:11,color:C.textDim,marginTop:6,lineHeight:1.5}}>
-          Strongest single IB directional input. Above mid = 83.5% upside breakout. Below mid = 94.9% downside breakout. (NQStats 10yr, 2,571 sessions)
-        </div>
+        
       </div>
 
       {/* IB formed last — which side formed last leans opposite */}
@@ -1153,9 +1144,7 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
           onChange={set('ibFormedLast')}
           colors={{high:C.red,low:C.green}}
         />
-        <div style={{fontSize:11,color:C.textDim,marginTop:6,lineHeight:1.5}}>
-          IB tends to break opposite to whichever side formed last. High formed last = lean down (52-57%). Low formed last = lean up. Combined with midpoint close: 74-84% accuracy. (TradingStats 10yr, 5,519 sessions)
-        </div>
+        
       </div>
 
       <div style={{height:1,background:C.surface2,margin:'28px 0 24px'}}/>
@@ -1163,9 +1152,7 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
         <div style={{width:3,height:14,background:C.orange,borderRadius:2}}/>
         Mid-Session IB Update
       </div>
-      <div style={{fontSize:11,color:C.textDim,marginBottom:18,lineHeight:1.6}}>
-        Fill in as the session develops. Check at 11:00 ET (C-period close) for confirmation.
-      </div>
+      
 
       {/* Step 1: Did IB break? */}
       <div style={{marginBottom:18}}>
@@ -1196,9 +1183,7 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
               onChange={set('ibTimeAcceptance')}
               colors={{yes:C.green,no:C.red}}
             />
-            <div style={{fontSize:11,color:C.textDim,marginTop:6,lineHeight:1.5}}>
-              C-period confirmation: 45.5% of ES days reach 100% extension when confirmed. ~33% of all first breaks fail — snapping back before 11:00 is a failed break signal. When first upside break fails, 37% subsequently break the IB low. When first downside break fails, 31.5% break upside. (TradingStats 10yr)
-            </div>
+            
           </div>
 
           {/* Step 3: CVD — only if held */}
@@ -1215,9 +1200,7 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
                 onChange={set('ibCVD')}
                 colors={{agreeing:C.green,flat:'#aaa',diverging:C.red}}
               />
-              <div style={{fontSize:11,color:C.textDim,marginTop:6,lineHeight:1.5}}>
-                Check CVD at the moment price is at the IB extreme. Agreeing = delta expanding with the break — real participation. Diverging = delta not confirming — potential trap, 70-75% reversal signal at major levels. (Bookmap/footprint data)
-              </div>
+              
             </div>
           )}
 
@@ -1241,7 +1224,6 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
                       display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,
                     }}>
                       <span style={{color:active?o.col:C.textSub,fontSize:13,fontWeight:active?700:400}}>{o.label}</span>
-                      <span style={{color:active?o.col:C.textDim,fontSize:11,flexShrink:0}}>{o.sub}</span>
                     </button>
                   );
                 })}
@@ -1262,9 +1244,7 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
                 onChange={set('ibSecondBreak')}
                 colors={{high:C.green,low:C.red}}
               />
-              <div style={{fontSize:11,color:C.textDim,marginTop:6,lineHeight:1.5}}>
-                On double break days the second break wins 68-72% of the time. (TradingStats 10yr, 6,142+ sessions)
-              </div>
+              
             </div>
           )}
         </>
@@ -1273,9 +1253,7 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
       {/* Live Edge Context — updated as session develops */}
       <div style={{marginTop:12,marginBottom:4}}>
         <SectionLabel>Multi-Day Balance Edge (live — adds to score)</SectionLabel>
-        <div style={{fontSize:11,color:C.textDim,marginBottom:8,lineHeight:1.5}}>
-          Update as session develops. Failed breakout & expansion = ±2. Balance edge & middle = 0 (two-sided, no score until resolved).
-        </div>
+        
         <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
           {[
             {label:'⚖️ Balance edge above',value:'balance_edge_above',col:C.yellow},
@@ -1302,9 +1280,7 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
       {/* PDH/PDL break during session */}
       <div style={{marginTop:16,marginBottom:4}}>
         <SectionLabel>PDH / PDL interaction during session</SectionLabel>
-        <div style={{fontSize:11,color:C.textDim,marginBottom:8,lineHeight:1.5}}>
-          Did price interact with prior day high or low during RTH? (NQStats 10yr, 2,488 sessions)
-        </div>
+        
         <Pills
           options={[
             {label:'📈 PDH broke + held',value:'pdh_held'},
@@ -1316,9 +1292,7 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
           onChange={set('pdhPdlBreak')}
           colors={{pdh_held:C.green,pdl_held:C.red,pdh_snapped:C.red,pdl_snapped:C.green}}
         />
-        <div style={{fontSize:11,color:C.textDim,marginTop:6,lineHeight:1.5}}>
-          Held: PDH +1 (81% bullish close) / PDL -1 (66% bearish close). Snapped back: failed break leans opposite direction ∓1.
-        </div>
+        
       </div>
 
       {/* Profile shape — context only, no scoring */}
@@ -1347,9 +1321,7 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
             );
           })}
         </div>
-        <div style={{fontSize:11,color:C.textDim,marginTop:8,lineHeight:1.5}}>
-          Logged for pattern analysis only. Not included in bias score — shape alone is too subjective and fakeable to drive direction reliably.
-        </div>
+        
       </div>
 
       {/* Mid-session output card */}
@@ -1549,17 +1521,6 @@ function PreMarketTab({data,onChange,isMobile}){
       )}
 
       {/* Signal log */}
-      {result.signals && result.signals.length > 0 && (
-        <div style={{
-          padding:'12px 14px',borderRadius:10,marginBottom:16,
-          background:result.color+'08',border:`1px solid ${result.color}22`,
-        }}>
-          {result.signals.map((s,i)=>(
-            <div key={i} style={{fontSize:11,color:C.textMut,lineHeight:1.6,paddingBottom:i<result.signals.length-1?4:0}}>{s}</div>
-          ))}
-        </div>
-      )}
-
       {/* Bias inputs */}
       <BiasEnginePanel biasInputs={inputs} onChange={onInputChange} result={result} preBiasResult={result}/>
 
@@ -2033,9 +1994,73 @@ function CalendarModal({selectedDate,onSelect,onClose,index}){
 }
 
 // ─── Root ─────────────────────────────────────────────────────────────────────
+// ─── Login Screen ─────────────────────────────────────────────────────────────
+function LoginScreen(){
+  const[email,setEmail]=useState('');
+  const[password,setPassword]=useState('');
+  const[mode,setMode]=useState('login'); // 'login'|'signup'
+  const[error,setError]=useState('');
+  const[loading,setLoading]=useState(false);
+
+  const handle=async()=>{
+    if(!email||!password){setError('Enter email and password.');return;}
+    setLoading(true);setError('');
+    const{error:err}=mode==='login'?await signIn(email,password):await signUp(email,password);
+    setLoading(false);
+    if(err)setError(err.message);
+  };
+
+  return(
+    <div style={{minHeight:'100vh',background:C.bg,display:'flex',alignItems:'center',justifyContent:'center',fontFamily:"'Inter',sans-serif",padding:20}}>
+      <div style={{width:'100%',maxWidth:380,background:C.surface,borderRadius:20,padding:'36px 32px',border:`1px solid ${C.border}`}}>
+        <div style={{fontSize:22,fontWeight:800,color:C.text,marginBottom:4}}>Trading Journal</div>
+        <div style={{fontSize:13,color:C.textMut,marginBottom:32}}>{mode==='login'?'Sign in to your account':'Create a new account'}</div>
+
+        <div style={{marginBottom:14}}>
+          <div style={{fontSize:11,color:C.textSub,marginBottom:6,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.07em'}}>Email</div>
+          <input
+            type="email" value={email} onChange={e=>setEmail(e.target.value)}
+            onKeyDown={e=>e.key==='Enter'&&handle()}
+            placeholder="you@email.com"
+            style={{width:'100%',padding:'11px 14px',borderRadius:10,border:`1.5px solid ${C.border}`,background:C.bg,color:C.text,fontSize:14,fontFamily:'inherit',outline:'none'}}
+          />
+        </div>
+        <div style={{marginBottom:22}}>
+          <div style={{fontSize:11,color:C.textSub,marginBottom:6,fontWeight:600,textTransform:'uppercase',letterSpacing:'0.07em'}}>Password</div>
+          <input
+            type="password" value={password} onChange={e=>setPassword(e.target.value)}
+            onKeyDown={e=>e.key==='Enter'&&handle()}
+            placeholder="••••••••"
+            style={{width:'100%',padding:'11px 14px',borderRadius:10,border:`1.5px solid ${C.border}`,background:C.bg,color:C.text,fontSize:14,fontFamily:'inherit',outline:'none'}}
+          />
+        </div>
+
+        {error&&<div style={{fontSize:12,color:C.red,marginBottom:14,padding:'8px 12px',background:C.red+'15',borderRadius:8}}>{error}</div>}
+
+        <button onClick={handle} disabled={loading} style={{
+          width:'100%',padding:'13px',borderRadius:12,
+          background:loading?C.surface:C.blue,border:'none',
+          color:'#fff',fontSize:14,fontFamily:'inherit',fontWeight:700,
+          cursor:loading?'not-allowed':'pointer',marginBottom:16,
+          opacity:loading?0.6:1,transition:'all 0.15s',
+        }}>{loading?'...':(mode==='login'?'Sign In':'Create Account')}</button>
+
+        <div style={{textAlign:'center',fontSize:13,color:C.textMut}}>
+          {mode==='login'?'No account? ':'Have an account? '}
+          <span onClick={()=>{setMode(m=>m==='login'?'signup':'login');setError('');}} style={{color:C.blue,cursor:'pointer',fontWeight:600}}>
+            {mode==='login'?'Sign up':'Sign in'}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App(){
   const today=todayStr();
   const isMobile=useIsMobile();
+  const[user,setUser]=useState(null);
+  const[authLoading,setAuthLoading]=useState(true);
   const[selectedDate,setSelectedDate]=useState(today);
   const[tab,setTab]=useState(0);
   const[dayData,setDayData]=useState(null);
@@ -2045,18 +2070,28 @@ export default function App(){
   const[showCal,setShowCal]=useState(false);
   const saveTimer=useRef(null);
 
-  useEffect(()=>{loadIndex().then(idx=>setIndex(idx||{}));},[]);
+  // Auth state listener
   useEffect(()=>{
+    getCurrentUser().then(u=>{setUser(u);setAuthLoading(false);});
+    const{data:{subscription}}=supabase.auth.onAuthStateChange((_,session)=>{
+      setUser(session?.user||null);
+    });
+    return()=>subscription.unsubscribe();
+  },[]);
+
+  useEffect(()=>{if(user)loadIndex(user.id).then(idx=>setIndex(idx||{}));},[user]);
+  useEffect(()=>{
+    if(!user)return;
     setLoading(true);
-    loadDay(selectedDate).then(d=>{setDayData(d||emptyDay());setLoading(false);});
-  },[selectedDate]);
+    loadDay(selectedDate,user.id).then(d=>{setDayData(d||emptyDay());setLoading(false);});
+  },[selectedDate,user]);
 
   useEffect(()=>{
-    if(!dayData||loading)return;
+    if(!dayData||loading||!user)return;
     setSaveStatus('saving');
     clearTimeout(saveTimer.current);
     saveTimer.current=setTimeout(async()=>{
-      await saveDay(selectedDate,dayData);
+      await saveDay(selectedDate,dayData,user.id);
       const trades=dayData.trades||[];
       const total=trades.reduce((s,t)=>s+calcPnL(t.ticker,t.contracts,t.points),0);
       const esPts=trades.filter(t=>['ES','MES'].includes(t.ticker)).reduce((s,t)=>s+(parseFloat(t.points)||0),0);
@@ -2066,7 +2101,7 @@ export default function App(){
         pnl:total,esPts,nqPts,wins,trades:trades.length,
         bias:dayData.pre?.dailyBias||'',
       };
-      await saveIndex(selectedDate,summary);
+      await saveIndex(selectedDate,summary,user.id);
       setIndex(prev=>({...prev,[selectedDate]:summary}));
       setSaveStatus('saved');
       setTimeout(()=>setSaveStatus('idle'),3000);
@@ -2094,6 +2129,16 @@ export default function App(){
   const dayIdx=index[selectedDate];
   const sideW=260;
 
+  // Auth loading
+  if(authLoading) return(
+    <div style={{minHeight:'100vh',background:C.bg,display:'flex',alignItems:'center',justifyContent:'center',fontFamily:"'Inter',sans-serif"}}>
+      <div style={{color:C.textMut,fontSize:14}}>Loading...</div>
+    </div>
+  );
+
+  // Login screen
+  if(!user) return <LoginScreen/>;
+
   return(
     <div style={{minHeight:'100vh',background:C.bg,fontFamily:"'Inter','DM Sans','Helvetica Neue',sans-serif",color:C.text}}>
       <style>{`
@@ -2117,6 +2162,10 @@ export default function App(){
             </div>
             <div style={{fontSize:12,color:saveStatus==='saving'?C.yellow:saveStatus==='saved'?C.green:C.textDim}}>
               {saveStatus==='saving'?'● Saving...':saveStatus==='saved'?'✓ Saved':'○ Auto-save on'}
+            </div>
+            <div style={{marginTop:'auto',paddingTop:16,borderTop:`1px solid ${C.border}`}}>
+              
+              <button onClick={signOut} style={{width:'100%',padding:'8px',borderRadius:8,background:'transparent',border:`1px solid ${C.border}`,color:C.textMut,fontSize:12,fontFamily:'inherit',cursor:'pointer'}}>Sign out</button>
             </div>
             <div>
               <div style={{fontSize:10,color:C.textMut,letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:10}}>Date</div>
