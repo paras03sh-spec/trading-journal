@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { loadDay, saveDay, loadIndex, saveIndex, getCurrentUser, signIn, signUp, signOut } from './supabase';
+import { supabase, loadDay, saveDay, loadIndex, saveIndex, getCurrentUser, signIn, signUp, signOut } from './supabase';
 
 const POINT_VALUES = { ES: 50, NQ: 20, MES: 5, MNQ: 2 };
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
