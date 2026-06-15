@@ -41,16 +41,18 @@ function computeBias(bi) {
     prevLowQuality,     // 'excess'|'normal'|''
     pocMigration,       // 'rising'|'flat'|'falling'|''
     ibSize,             // 'short'|'medium'|'large'|''
-    ibCloseMid,         // 'above'|'below'|'' — IB close vs midpoint (83-95% directional, +2)
     ibFormedLast,       // 'high'|'low'|'' — which side formed last (opposite leans, +1)
-    vaOverlap,          // 'heavy'|'none'|''
+    vaOverlap,          // 'heavy'|'partial'|'none'|''
     liveEdgeContext,    // 'balance_edge_above'|'balance_edge_below'|'failed_breakout_above'|'failed_breakout_below'|'expansion_above'|'expansion_below'|'middle_of_balance'|''
+    ibCloseMid,         // 'above'|'below'|'' — IB close vs midpoint at 10:30 (mid-session input, +2)
     ibBreakDir,         // 'high'|'low'|'none'|''
     ibOppositeBreak,    // 'no'|'yes_no_accept'|'yes_accepted'|''
-    ibSecondBreak,      // 'high'|'low'|'' — second break direction on double break days (+2)
+    ibSecondBreak,      // 'high'|'low'|'' — second break direction (+2, 68-72%)
     ibTimeAcceptance,   // 'yes'|'no'|''
+    ibBreakTiming,      // 'c_period'|'d_e_period'|'afternoon'|'' — when break occurred (+1/0/-1)
+    ibRetrace,          // 'shallow'|'deep'|'' — retracement depth (shallow +1 93.8%, deep -2)
     ibCVD,              // 'agreeing'|'flat'|'diverging'|''
-    pdhPdlBreak,        // 'pdh'|'pdl'|'' — PDH/PDL break during session (+1)
+    pdhPdlBreak,        // 'pdh_held'|'pdl_held'|'pdh_snapped'|'pdl_snapped'|''
   } = bi;
 
   let signals = [];
@@ -126,26 +128,8 @@ function computeBias(bi) {
   // ── Step 5: Same-day IB inputs ──
   let ibBoost = 0;
 
-  // IB close vs midpoint — strongest single IB directional input (83-95% accuracy, +2)
-  if (ibCloseMid === 'above') {
-    if (resolvedDir === 'long' || resolvedDir === 'neutral') {
-      ibBoost += 2;
-      signals.push('📊 IB closed ABOVE midpoint — 83.5% upside breakout probability (+2).');
-    } else {
-      ibBoost -= 1;
-      signals.push('📊 IB closed ABOVE midpoint — conflicts with short bias, upside lean (-1 conflict).');
-    }
-  } else if (ibCloseMid === 'below') {
-    if (resolvedDir === 'short' || resolvedDir === 'neutral') {
-      ibBoost += 2;
-      signals.push('📊 IB closed BELOW midpoint — 94.9% downside breakout probability (+2).');
-    } else {
-      ibBoost -= 1;
-      signals.push('📊 IB closed BELOW midpoint — conflicts with long bias, downside lean (-1 conflict).');
-    }
-  }
-
   // IB formed last — which side formed last leans opposite (52-57%, +1)
+  // Combined with IB close vs midpoint (logged at 10:30 in mid-session): 74-84% accuracy
   if (ibFormedLast === 'high') {
     // High formed last = bearish lean (market rejected up, low breaks more likely)
     if (resolvedDir === 'short') {
@@ -232,6 +216,25 @@ function computeBias(bi) {
   // ── Step 7: Mid-session IB break (additive, no override) ──
   let midBoost = 0;
 
+  // IB close vs midpoint — logged at 10:30 when IB closes (83-95% directional, +2)
+  if (ibCloseMid === 'above') {
+    if (resolvedDir === 'long' || resolvedDir === 'neutral') {
+      midBoost += 2;
+      signals.push('📊 IB closed ABOVE midpoint — 83.5% upside breakout probability (+2).');
+    } else {
+      midBoost -= 1;
+      signals.push('📊 IB closed ABOVE midpoint — conflicts with short bias (-1 conflict).');
+    }
+  } else if (ibCloseMid === 'below') {
+    if (resolvedDir === 'short' || resolvedDir === 'neutral') {
+      midBoost += 2;
+      signals.push('📊 IB closed BELOW midpoint — 94.9% downside breakout probability (+2).');
+    } else {
+      midBoost -= 1;
+      signals.push('📊 IB closed BELOW midpoint — conflicts with long bias (-1 conflict).');
+    }
+  }
+
   // Both sides scenario — check first
   if (ibOppositeBreak === 'yes_accepted') {
     // Both sides accepted = double distribution
@@ -274,6 +277,41 @@ function computeBias(bi) {
     } else if (midBoost !== 0 && ibCVD === 'diverging') {
       midBoost += midBoost > 0 ? -1 : 1;
       signals.push('📊 CVD diverging — delta not confirming, potential trap (dampened).');
+    }
+
+    // Break timing — C-period strongest, afternoon weakest
+    // C-period (10:30-11:00): +1 — strongest confirmation, 45.5% ES reach 100% extension
+    // D/E period (11:00-12:00): 0 — moderate, no additional score
+    // Afternoon (12:00+): -1 — late break, lower extension prob, higher false break risk
+    if (ibBreakDir !== 'none' && ibTimeAcceptance === 'yes') {
+      if (ibBreakTiming === 'c_period') {
+        midBoost += midBoost > 0 ? 1 : -1;
+        signals.push('⏰ C-period break (10:30-11:00) — strongest timing. 45.5% reach 100% extension (+1).');
+        // Noon Curve PM note
+        if (ibBreakDir === 'high') {
+          signals.push('🌙 Noon Curve: 82% probability PM session extends to new high. Historical PM extreme forms ~2:04pm — consider holding toward 2pm.');
+        } else if (ibBreakDir === 'low') {
+          signals.push('🌙 Noon Curve: 72% probability PM session extends to new low. Historical PM extreme forms ~2:04pm — consider holding toward 2pm.');
+        }
+      } else if (ibBreakTiming === 'd_e_period') {
+        signals.push('⏰ D/E period break (11:00-12:00) — moderate timing. No additional score.');
+      } else if (ibBreakTiming === 'afternoon') {
+        midBoost += midBoost > 0 ? -1 : 1;
+        signals.push('⏰ Afternoon break (12:00+) — late timing. Lower extension probability, higher false break risk (-1).');
+      }
+    }
+
+    // Retracement depth after break
+    // Shallow (<25% back into IB): +1 — 93.8% close in breakout direction, zero double break days
+    // Deep (>50% back into IB): -2 — only 24.8% close in original direction, double break likely
+    if (ibTimeAcceptance === 'yes' && ibRetrace) {
+      if (ibRetrace === 'shallow') {
+        midBoost += midBoost > 0 ? 1 : -1;
+        signals.push('📐 Shallow retracement (<25% back into IB) — 93.8% continuation rate. Zero became double break days. High conviction (+1).');
+      } else if (ibRetrace === 'deep') {
+        midBoost = midBoost > 0 ? midBoost - 2 : midBoost + 2;
+        signals.push('📐 Deep retracement (>50% back into IB) — original breakout signal largely dead. Only 24.8% close in original direction. Double break likely (-2).');
+      }
     }
   }
 
@@ -352,7 +390,9 @@ function emptyBiasInputs() {
     pocMigration: '',
     // same-day inputs
     ibSize: '',
-    ibCloseMid: '',      // 'above'|'below'|'' — IB close vs IB midpoint (83-95% directional)
+    ibCloseMid: '',      // 'above'|'below'|'' — IB close vs IB midpoint (moved to mid-session)
+    ibBreakTiming: '',   // 'c_period'|'d_e_period'|'afternoon'|'' — when did break occur
+    ibRetrace: '',       // 'shallow'|'deep'|'' — retracement depth after break
     ibFormedLast: '',    // 'high'|'low'|'' — which side of IB formed last (52-57% opposite breaks)
     vaOverlap: '',
     // live / mid-session inputs
@@ -1117,21 +1157,6 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
         
       </div>
 
-      {/* IB close vs midpoint — 83-95% directional accuracy */}
-      <div style={{marginBottom:18}}>
-        <SectionLabel>IB close vs IB midpoint at 10:30</SectionLabel>
-        <Pills
-          options={[
-            {label:'⬆ Closed ABOVE midpoint',value:'above'},
-            {label:'⬇ Closed BELOW midpoint',value:'below'},
-          ]}
-          value={biasInputs.ibCloseMid}
-          onChange={set('ibCloseMid')}
-          colors={{above:C.green,below:C.red}}
-        />
-        
-      </div>
-
       {/* IB formed last — which side formed last leans opposite */}
       <div style={{marginBottom:18}}>
         <SectionLabel>Which side of IB formed LAST?</SectionLabel>
@@ -1144,7 +1169,6 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
           onChange={set('ibFormedLast')}
           colors={{high:C.red,low:C.green}}
         />
-        
       </div>
 
       <div style={{height:1,background:C.surface2,margin:'28px 0 24px'}}/>
@@ -1152,7 +1176,20 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
         <div style={{width:3,height:14,background:C.orange,borderRadius:2}}/>
         Mid-Session IB Update
       </div>
-      
+
+      {/* IB close vs midpoint — fill at 10:30 when IB closes */}
+      <div style={{marginBottom:18}}>
+        <SectionLabel>IB close vs midpoint (log at 10:30)</SectionLabel>
+        <Pills
+          options={[
+            {label:'⬆ Closed ABOVE midpoint',value:'above'},
+            {label:'⬇ Closed BELOW midpoint',value:'below'},
+          ]}
+          value={biasInputs.ibCloseMid}
+          onChange={set('ibCloseMid')}
+          colors={{above:C.green,below:C.red}}
+        />
+      </div>
 
       {/* Step 1: Did IB break? */}
       <div style={{marginBottom:18}}>
@@ -1244,7 +1281,39 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
                 onChange={set('ibSecondBreak')}
                 colors={{high:C.green,low:C.red}}
               />
-              
+            </div>
+          )}
+
+          {/* Break timing — when did the break occur */}
+          {biasInputs.ibTimeAcceptance === 'yes' && (
+            <div style={{marginBottom:18}}>
+              <SectionLabel>When did the break occur?</SectionLabel>
+              <Pills
+                options={[
+                  {label:'C-period (10:30–11:00)',value:'c_period'},
+                  {label:'D/E period (11:00–12:00)',value:'d_e_period'},
+                  {label:'Afternoon (12:00+)',value:'afternoon'},
+                ]}
+                value={biasInputs.ibBreakTiming}
+                onChange={set('ibBreakTiming')}
+                colors={{c_period:C.green,d_e_period:'#aaa',afternoon:C.red}}
+              />
+            </div>
+          )}
+
+          {/* Retracement depth after break */}
+          {biasInputs.ibTimeAcceptance === 'yes' && (
+            <div style={{marginBottom:18}}>
+              <SectionLabel>Retracement depth after break</SectionLabel>
+              <Pills
+                options={[
+                  {label:'Shallow (<25% back into IB)',value:'shallow'},
+                  {label:'Deep (>50% back into IB)',value:'deep'},
+                ]}
+                value={biasInputs.ibRetrace}
+                onChange={set('ibRetrace')}
+                colors={{shallow:C.green,deep:C.red}}
+              />
             </div>
           )}
         </>
@@ -1817,7 +1886,7 @@ function EODTab({data,onChange,trades,date,isMobile}){
   const nqIn=data.nqInputs||{};
   const biasStr = `ES: ${data.esComputedBias||'—'} | NQ: ${data.nqComputedBias||'—'} | Alignment: ${data.alignmentBias||data.dailyBias||'—'}`;
   const mentalStr = [data.mentalSleep&&`Sleep: ${data.mentalSleep}`,data.mentalStress&&`Stress: ${data.mentalStress}`,data.mentalConfidence&&`Confidence: ${data.mentalConfidence}`,data.mentalExterior&&`External: ${data.mentalExterior}`].filter(Boolean).join(' · ')||'—';
-  const biasInputStr=(ins,label)=>`${label} Inputs: Candle=${ins.prevDayCandle||'—'} Shape=${ins.profileShape||'—'}(ref only) POC=${ins.pocMigration||'—'} IBSize=${ins.ibSize||'—'} IBCloseMid=${ins.ibCloseMid||'—'} IBFormedLast=${ins.ibFormedLast||'—'} VAOverlap=${ins.vaOverlap||'—'} | Mid: IBBreak=${ins.ibBreakDir||'—'} OppBreak=${ins.ibOppositeBreak||'—'} SecondBreak=${ins.ibSecondBreak||'—'} TimeAccept=${ins.ibTimeAcceptance||'—'} CVD=${ins.ibCVD||'—'} PDH/PDL=${ins.pdhPdlBreak||'—'} LiveEdge=${ins.liveEdgeContext||'—'}`;
+  const biasInputStr=(ins,label)=>`${label} Inputs: Candle=${ins.prevDayCandle||'—'} Shape=${ins.profileShape||'—'}(ref) POC=${ins.pocMigration||'—'} IBSize=${ins.ibSize||'—'} IBFormedLast=${ins.ibFormedLast||'—'} VAOverlap=${ins.vaOverlap||'—'} | Mid: IBCloseMid=${ins.ibCloseMid||'—'} IBBreak=${ins.ibBreakDir||'—'} TimeAccept=${ins.ibTimeAcceptance||'—'} BreakTiming=${ins.ibBreakTiming||'—'} Retrace=${ins.ibRetrace||'—'} CVD=${ins.ibCVD||'—'} OppBreak=${ins.ibOppositeBreak||'—'} SecondBreak=${ins.ibSecondBreak||'—'} PDH/PDL=${ins.pdhPdlBreak||'—'} LiveEdge=${ins.liveEdgeContext||'—'}`;
   const prompt=`Review my trading journal for ${date}.
 Bias — ${biasStr}
 ${biasInputStr(data.esInputs||{},'ES')}
