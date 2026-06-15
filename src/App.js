@@ -715,7 +715,46 @@ function emptyDay(){
       img15ES:'',imgTPOES:'',img15NQ:'',imgTPONQ:''},
   };
 }
-function newTrade(){return{ticker:'',direction:'',contracts:'',sl:'',plan:'',confluences:[],result:'',points:'',emotions:'',notes:'',img1:'',img15:'',open:true};}
+function newTrade(){return{ticker:'',direction:'',contracts:'',sl:'',plan:'',confluences:[],result:'',points:'',entryTime:'',exitTime:'',emotions:'',notes:'',img1:'',img15:'',open:true};}
+
+// Generate 5-min interval time options for 10:30am - 4:00pm EST
+function timeOptions(){
+  const opts=[];
+  for(let h=10;h<=16;h++){
+    for(let m=0;m<60;m+=5){
+      if(h===10&&m<30)continue; // start at 10:30
+      if(h===16&&m>0)break;     // end at 16:00
+      const hh=String(h).padStart(2,'0');
+      const mm=String(m).padStart(2,'0');
+      const period=h<12?'AM':h===12?'PM':'PM';
+      const h12=h>12?h-12:h===0?12:h;
+      opts.push({value:`${hh}:${mm}`,label:`${h12}:${mm} ${period}`});
+    }
+  }
+  return opts;
+}
+const TIME_OPTIONS=timeOptions();
+
+function calcHoldTime(entry,exit){
+  if(!entry||!exit)return null;
+  const [eh,em]=entry.split(':').map(Number);
+  const [xh,xm]=exit.split(':').map(Number);
+  const mins=(xh*60+xm)-(eh*60+em);
+  if(mins<=0)return null;
+  if(mins<60)return `${mins}m`;
+  return `${Math.floor(mins/60)}h ${mins%60>0?`${mins%60}m`:''}`.trim();
+}
+
+function sessionWindow(time){
+  if(!time)return null;
+  const [h,m]=time.split(':').map(Number);
+  const total=h*60+m;
+  if(total>=630&&total<690)return 'C-period';   // 10:30-11:00
+  if(total>=690&&total<720)return 'D-period';   // 11:00-12:00
+  if(total>=720&&total<840)return 'Noon';       // 12:00-2:00pm
+  if(total>=840&&total<=960)return 'Afternoon'; // 2:00-4:00pm
+  return null;
+}
 function useIsMobile(){
   const[mobile,setMobile]=useState(window.innerWidth<768);
   useEffect(()=>{
@@ -1806,6 +1845,49 @@ function TradeCard({index,trade,onChange,onRemove,isMobile}){
               value={trade.result} onChange={set('result')} colors={{W:C.green,L:C.red,BE:C.yellow}}/>
           </div>
           <Input label="Total Points (all contracts combined)" type="number" value={trade.points} onChange={set('points')}/>
+
+          {/* Entry / Exit time */}
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>
+            <div>
+              <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Entry Time (EST)</div>
+              <select value={trade.entryTime||''} onChange={e=>set('entryTime')(e.target.value)} style={{
+                width:'100%',padding:'9px 12px',borderRadius:10,border:`1.5px solid ${C.border}`,
+                background:C.bg,color:trade.entryTime?C.text:C.textDim,fontSize:13,fontFamily:'inherit',
+                cursor:'pointer',outline:'none',
+              }}>
+                <option value=''>-- select --</option>
+                {TIME_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Exit Time (EST)</div>
+              <select value={trade.exitTime||''} onChange={e=>set('exitTime')(e.target.value)} style={{
+                width:'100%',padding:'9px 12px',borderRadius:10,border:`1.5px solid ${C.border}`,
+                background:C.bg,color:trade.exitTime?C.text:C.textDim,fontSize:13,fontFamily:'inherit',
+                cursor:'pointer',outline:'none',
+              }}>
+                <option value=''>-- select --</option>
+                {TIME_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {/* Hold time + session window auto-display */}
+          {(trade.entryTime||trade.exitTime)&&(
+            <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}>
+              {trade.entryTime&&(()=>{const w=sessionWindow(trade.entryTime);return w&&(
+                <div style={{padding:'4px 10px',borderRadius:6,background:C.surface2,border:`1px solid ${C.border}`,fontSize:11,color:C.textSub}}>
+                  Entry: <span style={{color:C.blue,fontWeight:700}}>{w}</span>
+                </div>
+              );})()}
+              {calcHoldTime(trade.entryTime,trade.exitTime)&&(
+                <div style={{padding:'4px 10px',borderRadius:6,background:C.surface2,border:`1px solid ${C.border}`,fontSize:11,color:C.textSub}}>
+                  Hold: <span style={{color:C.yellow,fontWeight:700}}>{calcHoldTime(trade.entryTime,trade.exitTime)}</span>
+                </div>
+              )}
+            </div>
+          )}
+
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:20}}>
             <StatBox label="P&L $" val={`${pnl>=0?'+':''}$${pnl.toFixed(0)}`} color={pnl>=0?C.green:C.red}/>
             <StatBox label="Risk $" val={`$${risk.toFixed(0)}`} color={C.yellow}/>
@@ -1896,7 +1978,7 @@ Day Type: ${data.dayType||'—'}
 Weekly Context: ${data.weeklyContext||'—'}
 Mental State: ${mentalStr}
 Trades (${trades.length}):
-${trades.map((t,i)=>{const r=calcRisk(t.ticker,t.contracts,t.sl);const p=calcPnL(t.ticker,t.contracts,t.points);const rr=r>0?(Math.abs(p)/r).toFixed(2):'—';return`Trade ${i+1}: ${t.ticker}|${t.direction||'—'}|${t.contracts}c|SL ${t.sl}pts(per contract)|Setup:${t.plan}|Confluences:${(t.confluences||[]).join(',')||'none'}|Result:${t.result}|TotalPoints:${t.points}|P&L:$${p.toFixed(0)}|Risk:$${r.toFixed(0)}|RR:${rr}R|Emotions:${t.emotions||'—'}|Notes:${t.notes||'—'}`}).join('\n')}
+${trades.map((t,i)=>{const r=calcRisk(t.ticker,t.contracts,t.sl);const p=calcPnL(t.ticker,t.contracts,t.points);const rr=r>0?(Math.abs(p)/r).toFixed(2):'—';const hold=calcHoldTime(t.entryTime,t.exitTime)||'—';const win=sessionWindow(t.entryTime)||'—';return`Trade ${i+1}: ${t.ticker}|${t.direction||'—'}|${t.contracts}c|SL ${t.sl}pts(per contract)|Setup:${t.plan}|Confluences:${(t.confluences||[]).join(',')||'none'}|Result:${t.result}|TotalPoints:${t.points}|P&L:$${p.toFixed(0)}|Risk:$${r.toFixed(0)}|RR:${rr}R|Entry:${t.entryTime||'—'}EST(${win})|Exit:${t.exitTime||'—'}EST|Hold:${hold}|Emotions:${t.emotions||'—'}|Notes:${t.notes||'—'}`}).join('\n')}
 Total P&L: $${total.toFixed(0)} | ES Points: ${esPts.toFixed(1)} | NQ Points: ${nqPts.toFixed(1)}
 What I Did Well: ${data.well||'—'}
 What I Must Fix: ${data.fix||'—'}
