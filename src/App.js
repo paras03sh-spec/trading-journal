@@ -253,13 +253,28 @@ function computeBias(bi) {
     midBoost = 0;
     signals.push('⚠️ Both sides tested but neither held — chop. Neutral.');
   } else {
-    // Single sided break
+    // Single sided break — merged timing + held into one score
+    // C-period break + held = ±2 (strongest, 45.5% reach 100% extension)
+    // D/E or afternoon break + held = ±1 (weaker, lower extension probability)
+    // Snapped back = ∓1 (failed break, mild reversal)
     if (ibBreakDir === 'high' && ibTimeAcceptance === 'yes') {
-      midBoost = 2;
-      signals.push('🔼 IB broke HIGH + held — bullish pressure confirmed (+2).');
+      if (ibBreakTiming === 'c_period') {
+        midBoost = 2;
+        signals.push('🔼 IB broke HIGH + held C-period (10:30-11:00) — strongest confirmation. 45.5% reach 100% extension (+2).');
+        signals.push('🌙 Noon Curve: 82% probability PM session extends to new high. Historical PM extreme ~2:04pm — consider holding toward 2pm.');
+      } else {
+        midBoost = 1;
+        signals.push(`🔼 IB broke HIGH + held ${ibBreakTiming === 'afternoon' ? 'afternoon (12:00+)' : 'D/E period (11:00-12:00)'} — confirmed but lower extension probability (+1).`);
+      }
     } else if (ibBreakDir === 'low' && ibTimeAcceptance === 'yes') {
-      midBoost = -2;
-      signals.push('🔽 IB broke LOW + held — bearish pressure confirmed (-2).');
+      if (ibBreakTiming === 'c_period') {
+        midBoost = -2;
+        signals.push('🔽 IB broke LOW + held C-period (10:30-11:00) — strongest confirmation. 45.5% reach 100% extension (-2).');
+        signals.push('🌙 Noon Curve: 72% probability PM session extends to new low. Historical PM extreme ~2:04pm — consider holding toward 2pm.');
+      } else {
+        midBoost = -1;
+        signals.push(`🔽 IB broke LOW + held ${ibBreakTiming === 'afternoon' ? 'afternoon (12:00+)' : 'D/E period (11:00-12:00)'} — confirmed but lower extension probability (-1).`);
+      }
     } else if (ibBreakDir === 'high' && ibTimeAcceptance === 'no') {
       midBoost = -1;
       signals.push('↩ IB broke HIGH but snapped back — higher prices rejected, mild bearish lean (-1).');
@@ -279,38 +294,14 @@ function computeBias(bi) {
       signals.push('📊 CVD diverging — delta not confirming, potential trap (dampened).');
     }
 
-    // Break timing — C-period strongest, afternoon weakest
-    // C-period (10:30-11:00): +1 — strongest confirmation, 45.5% ES reach 100% extension
-    // D/E period (11:00-12:00): 0 — moderate, no additional score
-    // Afternoon (12:00+): -1 — late break, lower extension prob, higher false break risk
-    if (ibBreakDir !== 'none' && ibTimeAcceptance === 'yes') {
-      if (ibBreakTiming === 'c_period') {
-        midBoost += midBoost > 0 ? 1 : -1;
-        signals.push('⏰ C-period break (10:30-11:00) — strongest timing. 45.5% reach 100% extension (+1).');
-        // Noon Curve PM note
-        if (ibBreakDir === 'high') {
-          signals.push('🌙 Noon Curve: 82% probability PM session extends to new high. Historical PM extreme forms ~2:04pm — consider holding toward 2pm.');
-        } else if (ibBreakDir === 'low') {
-          signals.push('🌙 Noon Curve: 72% probability PM session extends to new low. Historical PM extreme forms ~2:04pm — consider holding toward 2pm.');
-        }
-      } else if (ibBreakTiming === 'd_e_period') {
-        signals.push('⏰ D/E period break (11:00-12:00) — moderate timing. No additional score.');
-      } else if (ibBreakTiming === 'afternoon') {
-        midBoost += midBoost > 0 ? -1 : 1;
-        signals.push('⏰ Afternoon break (12:00+) — late timing. Lower extension probability, higher false break risk (-1).');
-      }
-    }
-
-    // Retracement depth after break
-    // Shallow (<25% back into IB): +1 — 93.8% close in breakout direction, zero double break days
-    // Deep (>50% back into IB): -2 — only 24.8% close in original direction, double break likely
+    // Retracement depth after held break
     if (ibTimeAcceptance === 'yes' && ibRetrace) {
       if (ibRetrace === 'shallow') {
         midBoost += midBoost > 0 ? 1 : -1;
-        signals.push('📐 Shallow retracement (<25% back into IB) — 93.8% continuation rate. Zero became double break days. High conviction (+1).');
+        signals.push('📐 Shallow retracement (<25% back into IB) — 93.8% continuation, zero double break days (+1).');
       } else if (ibRetrace === 'deep') {
         midBoost = midBoost > 0 ? midBoost - 2 : midBoost + 2;
-        signals.push('📐 Deep retracement (>50% back into IB) — original breakout signal largely dead. Only 24.8% close in original direction. Double break likely (-2).');
+        signals.push('📐 Deep retracement (>50% back into IB) — breakout signal largely dead. 24.8% close in original direction. Double break likely (-2).');
       }
     }
   }
@@ -1208,25 +1199,50 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
 
       {(biasInputs.ibBreakDir === 'high' || biasInputs.ibBreakDir === 'low') && (
         <>
-          {/* Step 2: C-period confirmation */}
+          {/* Step 2: Break result — merged timing + held into one question */}
           <div style={{marginBottom:18}}>
-            <SectionLabel>C-period close (11:00 bar) — held outside IB?</SectionLabel>
-            <Pills
-              options={[
-                {label:'✓ Yes — 11:00 bar closed outside IB',value:'yes'},
-                {label:'✗ No — snapped back inside before 11:00',value:'no'},
-              ]}
-              value={biasInputs.ibTimeAcceptance}
-              onChange={set('ibTimeAcceptance')}
-              colors={{yes:C.green,no:C.red}}
-            />
-            
+            <SectionLabel>Break result</SectionLabel>
+            <div style={{display:'flex',flexDirection:'column',gap:8}}>
+              {[
+                {label:'✓ Held — broke in C-period (10:30–11:00)',value:'c_period',col:C.green},
+                {label:'✓ Held — broke in D/E period (11:00–12:00)',value:'d_e_period',col:C.teal},
+                {label:'✓ Held — broke afternoon (12:00+)',value:'afternoon',col:'#aaa'},
+                {label:'✗ Snapped back inside',value:'snapped',col:C.red},
+              ].map(o=>{
+                const isSnapped = o.value === 'snapped';
+                const timing = isSnapped ? null : o.value;
+                const acceptance = isSnapped ? 'no' : 'yes';
+                const isActive = isSnapped
+                  ? biasInputs.ibTimeAcceptance === 'no'
+                  : biasInputs.ibTimeAcceptance === 'yes' && biasInputs.ibBreakTiming === timing;
+                const handleClick = () => {
+                  if (isActive) {
+                    set('ibTimeAcceptance')('');
+                    set('ibBreakTiming')('');
+                  } else {
+                    set('ibTimeAcceptance')(acceptance);
+                    if (!isSnapped) set('ibBreakTiming')(timing);
+                    else set('ibBreakTiming')('');
+                  }
+                };
+                return(
+                  <button key={o.value} onClick={handleClick} style={{
+                    padding:'9px 14px',borderRadius:10,textAlign:'left',
+                    border:isActive?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
+                    background:isActive?o.col+'18':'transparent',
+                    cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
+                  }}>
+                    <span style={{color:isActive?o.col:C.textSub,fontSize:13,fontWeight:isActive?700:400}}>{o.label}</span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
 
           {/* Step 3: CVD — only if held */}
           {biasInputs.ibTimeAcceptance === 'yes' && (
             <div style={{marginBottom:18}}>
-              <SectionLabel>CVD agreement at the IB break level?</SectionLabel>
+              <SectionLabel>CVD at the IB break level?</SectionLabel>
               <Pills
                 options={[
                   {label:'Agreeing',value:'agreeing'},
@@ -1280,23 +1296,6 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
                 value={biasInputs.ibSecondBreak}
                 onChange={set('ibSecondBreak')}
                 colors={{high:C.green,low:C.red}}
-              />
-            </div>
-          )}
-
-          {/* Break timing — when did the break occur */}
-          {biasInputs.ibTimeAcceptance === 'yes' && (
-            <div style={{marginBottom:18}}>
-              <SectionLabel>When did the break occur?</SectionLabel>
-              <Pills
-                options={[
-                  {label:'C-period (10:30–11:00)',value:'c_period'},
-                  {label:'D/E period (11:00–12:00)',value:'d_e_period'},
-                  {label:'Afternoon (12:00+)',value:'afternoon'},
-                ]}
-                value={biasInputs.ibBreakTiming}
-                onChange={set('ibBreakTiming')}
-                colors={{c_period:C.green,d_e_period:'#aaa',afternoon:C.red}}
               />
             </div>
           )}
