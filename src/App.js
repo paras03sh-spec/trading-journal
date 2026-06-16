@@ -1251,19 +1251,16 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
                 {label:'✗ Snapped back inside',value:'snapped',col:C.red},
               ].map(o=>{
                 const isSnapped = o.value === 'snapped';
-                const timing = isSnapped ? null : o.value;
-                const acceptance = isSnapped ? 'no' : 'yes';
                 const isActive = isSnapped
                   ? biasInputs.ibTimeAcceptance === 'no'
-                  : biasInputs.ibTimeAcceptance === 'yes' && biasInputs.ibBreakTiming === timing;
+                  : biasInputs.ibTimeAcceptance === 'yes' && biasInputs.ibBreakTiming === o.value;
                 const handleClick = () => {
                   if (isActive) {
-                    set('ibTimeAcceptance')('');
-                    set('ibBreakTiming')('');
+                    onChange({...biasInputs, ibTimeAcceptance:'', ibBreakTiming:''});
+                  } else if (isSnapped) {
+                    onChange({...biasInputs, ibTimeAcceptance:'no', ibBreakTiming:''});
                   } else {
-                    set('ibTimeAcceptance')(acceptance);
-                    if (!isSnapped) set('ibBreakTiming')(timing);
-                    else set('ibBreakTiming')('');
+                    onChange({...biasInputs, ibTimeAcceptance:'yes', ibBreakTiming:o.value});
                   }
                 };
                 return(
