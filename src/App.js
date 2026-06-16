@@ -218,19 +218,19 @@ function computeBias(bi) {
   // ── Step 7: Mid-session IB break (additive, no override) ──
   let midBoost = 0;
 
-  // IB close vs midpoint — logged at 10:30 when IB closes (83-95% directional, +2)
+  // IB close vs midpoint — directional lean at 10:30 (+1, reduced from +2 to avoid overlap with break confirmation)
   if (ibCloseMid === 'above') {
     if (resolvedDir === 'long' || resolvedDir === 'neutral') {
-      midBoost += 2;
-      signals.push('📊 IB closed ABOVE midpoint — 83.5% upside breakout probability (+2).');
+      midBoost += 1;
+      signals.push('📊 IB closed ABOVE midpoint — 83.5% upside breakout probability (+1).');
     } else {
       midBoost -= 1;
       signals.push('📊 IB closed ABOVE midpoint — conflicts with short bias (-1 conflict).');
     }
   } else if (ibCloseMid === 'below') {
     if (resolvedDir === 'short' || resolvedDir === 'neutral') {
-      midBoost += 2;
-      signals.push('📊 IB closed BELOW midpoint — 94.9% downside breakout probability (+2).');
+      midBoost += 1;
+      signals.push('📊 IB closed BELOW midpoint — 94.9% downside breakout probability (+1).');
     } else {
       midBoost -= 1;
       signals.push('📊 IB closed BELOW midpoint — conflicts with long bias (-1 conflict).');
