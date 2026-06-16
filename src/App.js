@@ -128,29 +128,31 @@ function computeBias(bi) {
   // ── Step 5: Same-day IB inputs ──
   let ibBoost = 0;
 
-  // IB formed last — which side formed last leans opposite (52-57%, +1)
-  // Combined with IB close vs midpoint (logged at 10:30 in mid-session): 74-84% accuracy
+  // IB formed last — whichever side formed last tends to break in that direction (52-57%)
+  // High formed last = bullish lean (price made high last, momentum upward)
+  // Low formed last = bearish lean (price made low last, momentum downward)
+  // Combined with IB close vs midpoint: 74-84% accuracy
   if (ibFormedLast === 'high') {
-    // High formed last = bearish lean (market rejected up, low breaks more likely)
-    if (resolvedDir === 'short') {
-      ibBoost += 1;
-      signals.push('📐 IB HIGH formed last — late rejection of highs, downside leans more likely (+1).');
-    } else if (resolvedDir === 'long') {
-      ibBoost -= 1;
-      signals.push('📐 IB HIGH formed last — late rejection conflicts with long bias (-1).');
-    } else {
-      signals.push('📐 IB HIGH formed last — mild bearish lean on neutral day.');
-    }
-  } else if (ibFormedLast === 'low') {
-    // Low formed last = bullish lean (market rejected down, high breaks more likely)
+    // High formed last = bullish lean (market pushed up last)
     if (resolvedDir === 'long') {
       ibBoost += 1;
-      signals.push('📐 IB LOW formed last — late rejection of lows, upside leans more likely (+1).');
+      signals.push('📐 IB HIGH formed last — final push was upward, upside breakout more likely (+1).');
     } else if (resolvedDir === 'short') {
       ibBoost -= 1;
-      signals.push('📐 IB LOW formed last — late rejection conflicts with short bias (-1).');
+      signals.push('📐 IB HIGH formed last — final push upward conflicts with short bias (-1).');
     } else {
-      signals.push('📐 IB LOW formed last — mild bullish lean on neutral day.');
+      signals.push('📐 IB HIGH formed last — mild bullish lean on neutral day.');
+    }
+  } else if (ibFormedLast === 'low') {
+    // Low formed last = bearish lean (market pushed down last)
+    if (resolvedDir === 'short') {
+      ibBoost += 1;
+      signals.push('📐 IB LOW formed last — final push was downward, downside breakout more likely (+1).');
+    } else if (resolvedDir === 'long') {
+      ibBoost -= 1;
+      signals.push('📐 IB LOW formed last — final push downward conflicts with long bias (-1).');
+    } else {
+      signals.push('📐 IB LOW formed last — mild bearish lean on neutral day.');
     }
   }
 
@@ -1197,7 +1199,7 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
           ]}
           value={biasInputs.ibFormedLast}
           onChange={set('ibFormedLast')}
-          colors={{high:C.red,low:C.green}}
+          colors={{high:C.green,low:C.red}}
         />
       </div>
 
