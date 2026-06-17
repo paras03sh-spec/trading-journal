@@ -866,26 +866,40 @@ function Lightbox({src,onClose}){
 const btnStyle={background:'#1e1e1e',border:`1px solid ${C.border}`,borderRadius:7,color:C.textSub,width:34,height:34,cursor:'pointer',fontSize:16,fontFamily:'inherit',fontWeight:600,display:'flex',alignItems:'center',justifyContent:'center'};
 
 // ─── Image Slot ───────────────────────────────────────────────────────────────
-function ImageSlot({label,value,onChange,accent}){
+function ImageSlot({label,value,onChange,accent,userId}){
   const[drag,setDrag]=useState(false);
   const[lightbox,setLightbox]=useState(false);
   const[pasteActive,setPasteActive]=useState(false);
+  const[uploading,setUploading]=useState(false);
   const fileRef=useRef();
   const zoneRef=useRef();
 
-  const processFile=useCallback((file)=>{
+  const uploadFile=useCallback(async(file)=>{
     if(!file||!file.type.startsWith('image/'))return;
-    const reader=new FileReader();
-    reader.onload=(e)=>onChange(e.target.result);
-    reader.readAsDataURL(file);
-  },[onChange]);
+    setUploading(true);
+    try{
+      // Delete old image from storage if it's a storage URL
+      if(value&&value.includes('journal-images')){
+        const path=value.split('/journal-images/')[1];
+        if(path)await supabase.storage.from('journal-images').remove([path]);
+      }
+      const ext=file.name.split('.').pop()||'jpg';
+      const uid=userId||'anon';
+      const path=`${uid}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+      const{error}=await supabase.storage.from('journal-images').upload(path,file,{upsert:false,contentType:file.type});
+      if(error){console.error('Upload error:',error);return;}
+      const{data}=supabase.storage.from('journal-images').getPublicUrl(path);
+      onChange(data.publicUrl);
+    }catch(e){console.error(e);}
+    finally{setUploading(false);}
+  },[onChange,value,userId]);
 
   const processClipboard=useCallback((clipData)=>{
     if(!clipData?.items)return;
     for(const item of clipData.items){
-      if(item.type.startsWith('image/')){processFile(item.getAsFile());break;}
+      if(item.type.startsWith('image/')){uploadFile(item.getAsFile());break;}
     }
-  },[processFile]);
+  },[uploadFile]);
 
   useEffect(()=>{
     if(!pasteActive)return;
@@ -901,6 +915,15 @@ function ImageSlot({label,value,onChange,accent}){
     return()=>{window.removeEventListener('paste',handler,true);window.removeEventListener('mousedown',outside);};
   },[pasteActive,processClipboard]);
 
+  const handleDelete=async(e)=>{
+    e.stopPropagation();
+    if(value&&value.includes('journal-images')){
+      const path=value.split('/journal-images/')[1];
+      if(path)await supabase.storage.from('journal-images').remove([path]);
+    }
+    onChange('');
+  };
+
   const borderCol=pasteActive?C.yellow:drag?C.green:value?C.border:`${C.border}`;
   const accentCol=accent||C.blue;
 
@@ -913,10 +936,10 @@ function ImageSlot({label,value,onChange,accent}){
         </div>
         <div
           ref={zoneRef}
-          onClick={()=>{if(value){return;}setPasteActive(true);}}
+          onClick={()=>{if(value||uploading){return;}setPasteActive(true);}}
           onDragOver={(e)=>{e.preventDefault();setDrag(true);}}
           onDragLeave={()=>setDrag(false)}
-          onDrop={(e)=>{e.preventDefault();setDrag(false);processFile(e.dataTransfer.files[0]);}}
+          onDrop={(e)=>{e.preventDefault();setDrag(false);uploadFile(e.dataTransfer.files[0]);}}
           style={{
             border:`1.5px ${value?'solid':'dashed'} ${borderCol}`,
             borderRadius:10,minHeight:value?'auto':82,
@@ -926,14 +949,19 @@ function ImageSlot({label,value,onChange,accent}){
             transition:'all 0.15s',position:'relative',
           }}
         >
-          {value?(
+          {uploading?(
+            <div style={{textAlign:'center',padding:'14px 10px'}}>
+              <div style={{fontSize:18,marginBottom:5}}>⏳</div>
+              <div style={{color:C.textMut,fontSize:11}}>Uploading...</div>
+            </div>
+          ):value?(
             <>
               <img src={value} alt={label} onClick={(e)=>{e.stopPropagation();setLightbox(true);}}
                 style={{width:'100%',display:'block',borderRadius:9,cursor:'zoom-in'}}/>
               <div style={{position:'absolute',top:7,right:7,display:'flex',gap:6}}>
                 <button onClick={(e)=>{e.stopPropagation();setLightbox(true);}}
                   style={{background:'#000000bb',border:`1px solid ${C.border}`,borderRadius:6,color:C.textSub,fontSize:11,padding:'4px 9px',cursor:'pointer'}}>⤢</button>
-                <button onClick={(e)=>{e.stopPropagation();onChange('');}}
+                <button onClick={handleDelete}
                   style={{background:'#000000bb',border:`1px solid ${C.border}`,borderRadius:6,color:C.red,fontSize:11,padding:'4px 8px',cursor:'pointer'}}>✕</button>
               </div>
             </>
@@ -955,9 +983,9 @@ function ImageSlot({label,value,onChange,accent}){
               )}
             </div>
           )}
-          <input ref={fileRef} type="file" accept="image/*" style={{display:'none'}} onChange={(e)=>processFile(e.target.files[0])}/>
+          <input ref={fileRef} type="file" accept="image/*" style={{display:'none'}} onChange={(e)=>uploadFile(e.target.files[0])}/>
         </div>
-        {!value&&!pasteActive&&(
+        {!value&&!pasteActive&&!uploading&&(
           <button onClick={()=>fileRef.current.click()} style={{marginTop:4,background:'none',border:'none',color:C.textDim,fontSize:10,cursor:'pointer',fontFamily:'inherit',padding:'2px 0'}}>browse files</button>
         )}
       </div>
@@ -1549,7 +1577,7 @@ function MentalStatePanel({data, onChange}){
   );
 }
 
-function PreMarketTab({data,onChange,isMobile}){
+function PreMarketTab({data,onChange,isMobile,userId}){
   const set=k=>v=>onChange({...data,[k]:v});
 
   const esInputs = data.esInputs || emptyBiasInputs();
@@ -1634,8 +1662,8 @@ function PreMarketTab({data,onChange,isMobile}){
       <div style={{marginTop:20}}>
         <div style={{fontSize:10,color:C.textSub,marginBottom:10,letterSpacing:'0.1em',textTransform:'uppercase',fontWeight:600}}>Charts</div>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:16}}>
-          <ImageSlot label="TPO" value={imgTPO} onChange={set(imgTPOKey)} accent={accentColor}/>
-          <ImageSlot label="15min" value={img15} onChange={set(img15Key)} accent={accentColor}/>
+          <ImageSlot label="TPO" value={imgTPO} onChange={set(imgTPOKey)} accent={accentColor} userId={userId}/>
+          <ImageSlot label="15min" value={img15} onChange={set(img15Key)} accent={accentColor} userId={userId}/>
         </div>
       </div>
     </div>
@@ -1729,10 +1757,6 @@ function PreMarketTab({data,onChange,isMobile}){
         )}
       </div>
 
-      {/* ── KEY LEVELS ── */}
-      <Divider label="Key Levels"/>
-      <ImageSlot label="Key Levels Chart — upload your screenshot with levels marked" value={data.keyLevelsImg||''} onChange={set('keyLevelsImg')} accent={C.teal}/>
-
       {/* ── MENTAL STATE ── */}
       <Divider label="Mental State"/>
       <MentalStatePanel data={mentalData} onChange={d=>onChange({...data,...d})}/>
@@ -1741,7 +1765,7 @@ function PreMarketTab({data,onChange,isMobile}){
 }
 
 // ─── Trade Card ───────────────────────────────────────────────────────────────
-function TradeCard({index,trade,onChange,onRemove,isMobile}){
+function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
   const pnl=calcPnL(trade.ticker,trade.contracts,trade.points);
   const risk=calcRisk(trade.ticker,trade.contracts,trade.sl);
   const rr=risk>0?(Math.abs(pnl)/risk).toFixed(2):'—';
@@ -1815,6 +1839,8 @@ function TradeCard({index,trade,onChange,onRemove,isMobile}){
                 {label:'Single Prints',value:'SinglePrints',col:C.yellow},
                 {label:'ETH VWAP',value:'ETHVWAP',col:C.red},
                 {label:'RTH VWAP',value:'RTHVWAP',col:C.green},
+                {label:'Large Trade',value:'LargeTrade',col:C.purple},
+                {label:'Hourly Sweep',value:'HourlySweep',col:C.orange},
               ].map(o=>{
                 const active=(trade.confluences||[]).includes(o.value);
                 const toggle=()=>{
@@ -1834,8 +1860,8 @@ function TradeCard({index,trade,onChange,onRemove,isMobile}){
           </div>
           <Divider label="Entry Charts"/>
           <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
-            <ImageSlot label="1min Chart" value={trade.img1} onChange={set('img1')} accent={C.teal}/>
-            <ImageSlot label="15min Chart" value={trade.img15} onChange={set('img15')} accent={C.blue}/>
+            <ImageSlot label="1min Chart" value={trade.img1} onChange={set('img1')} accent={C.teal} userId={userId}/>
+            <ImageSlot label="15min Chart" value={trade.img15} onChange={set('img15')} accent={C.blue} userId={userId}/>
           </div>
           <Divider label="Result"/>
           <div style={{marginBottom:16}}>
@@ -1924,7 +1950,7 @@ function SummaryBar({trades}){
   );
 }
 
-function TradesTab({trades,onChange,isMobile}){
+function TradesTab({trades,onChange,isMobile,userId}){
   const update=(i,t)=>onChange(trades.map((x,j)=>j===i?t:x));
   const remove=(i)=>onChange(trades.filter((_,j)=>j!==i));
   const add=()=>onChange([...trades,newTrade()]);
@@ -1932,7 +1958,7 @@ function TradesTab({trades,onChange,isMobile}){
     <div>
       <SummaryBar trades={trades}/>
       {trades.map((t,i)=>(
-        <TradeCard key={i} index={i} trade={t} onChange={nt=>update(i,nt)} onRemove={()=>remove(i)} isMobile={isMobile}/>
+        <TradeCard key={i} index={i} trade={t} onChange={nt=>update(i,nt)} onRemove={()=>remove(i)} isMobile={isMobile} userId={userId}/>
       ))}
       <button onClick={add} style={{
         width:'100%',padding:'13px',marginTop:8,
@@ -1948,7 +1974,7 @@ function TradesTab({trades,onChange,isMobile}){
 }
 
 // ─── EOD Tab ─────────────────────────────────────────────────────────────────
-function EODTab({data,onChange,trades,date,isMobile}){
+function EODTab({data,onChange,trades,date,isMobile,userId}){
   const set=k=>v=>onChange({...data,[k]:v});
   const total=trades.reduce((s,t)=>s+calcPnL(t.ticker,t.contracts,t.points),0);
   const esPts=trades.filter(t=>['ES','MES'].includes(t.ticker)).reduce((s,t)=>s+(parseFloat(t.points)||0),0);
@@ -2039,14 +2065,14 @@ ${data.review}`}]
 
       <InstrumentLabel name="ES" color={C.blue}/>
       <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:20}}>
-        <ImageSlot label="15min — Full Day" value={data.img15ES} onChange={set('img15ES')} accent={C.blue}/>
-        <ImageSlot label="TPO — Full Day" value={data.imgTPOES} onChange={set('imgTPOES')} accent={C.blue}/>
+        <ImageSlot label="15min — Full Day" value={data.img15ES} onChange={set('img15ES')} accent={C.blue} userId={userId}/>
+        <ImageSlot label="TPO — Full Day" value={data.imgTPOES} onChange={set('imgTPOES')} accent={C.blue} userId={userId}/>
       </div>
 
       <InstrumentLabel name="NQ" color={C.purple}/>
       <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:8}}>
-        <ImageSlot label="15min — Full Day" value={data.img15NQ} onChange={set('img15NQ')} accent={C.purple}/>
-        <ImageSlot label="TPO — Full Day" value={data.imgTPONQ} onChange={set('imgTPONQ')} accent={C.purple}/>
+        <ImageSlot label="15min — Full Day" value={data.img15NQ} onChange={set('img15NQ')} accent={C.purple} userId={userId}/>
+        <ImageSlot label="TPO — Full Day" value={data.imgTPONQ} onChange={set('imgTPONQ')} accent={C.purple} userId={userId}/>
       </div>
 
       <Divider label="Review"/>
@@ -2404,8 +2430,8 @@ export default function App(){
             <div style={{textAlign:'center',color:C.textMut,fontSize:13,padding:'60px 0'}}>Loading...</div>
           ):(
             <>
-              {tab===0&&<PreMarketTab data={dayData.pre} onChange={updatePre} isMobile={isMobile}/>}
-              {tab===1&&<TradesTab trades={dayData.trades} onChange={updateTrades} isMobile={isMobile}/>}
+              {tab===0&&<PreMarketTab data={dayData.pre} onChange={updatePre} isMobile={isMobile} userId={user?.id}/>}
+              {tab===1&&<TradesTab trades={dayData.trades} onChange={updateTrades} isMobile={isMobile} userId={user?.id}/>}
               {tab===2&&<EODTab data={{...dayData.eod,
                 dailyBias:dayData.pre.dailyBias,
                 alignmentBias:dayData.pre.alignmentBias,
@@ -2421,7 +2447,7 @@ export default function App(){
                 mentalStress:dayData.pre.mentalStress,
                 mentalConfidence:dayData.pre.mentalConfidence,
                 mentalExterior:dayData.pre.mentalExterior,
-              }} onChange={updateEod} trades={dayData.trades} date={selectedDate} isMobile={isMobile}/> }
+              }} onChange={updateEod} trades={dayData.trades} date={selectedDate} isMobile={isMobile} userId={user?.id}/> }
             </>
           )}
         </div>
