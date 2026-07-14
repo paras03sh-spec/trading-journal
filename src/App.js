@@ -1584,7 +1584,28 @@ function PreMarketTab({data,onChange,isMobile,userId}){
   const nqInputs = data.nqInputs || emptyBiasInputs();
   const esResult = computeBias(esInputs);
   const nqResult = computeBias(nqInputs);
-  const alignment = computeAlignment(esResult, nqResult);
+
+  // Compute mid-session updates for each instrument
+  const esMidSession = computeMidSession(esInputs, esResult);
+  const nqMidSession = computeMidSession(nqInputs, nqResult);
+
+  // Build effective results: use live updated bias/conviction when mid-session has fired
+  const esEffective = esMidSession
+    ? { ...esResult, bias: esMidSession.updatedBias || esResult.bias, conviction: esMidSession.updatedConviction || esResult.conviction }
+    : esResult;
+  const nqEffective = nqMidSession
+    ? { ...nqResult, bias: nqMidSession.updatedBias || nqResult.bias, conviction: nqMidSession.updatedConviction || nqResult.conviction }
+    : nqResult;
+
+  // Detect when one instrument upgraded but the other hasn't confirmed
+  const esUpgraded = esMidSession && esMidSession.effect === 'upgrade';
+  const nqUpgraded = nqMidSession && nqMidSession.effect === 'upgrade';
+  const esLiveEdgeConflict = ['balance_edge_above','balance_edge_below','middle_of_balance'].includes(esInputs.liveEdgeContext);
+  const nqLiveEdgeConflict = ['balance_edge_above','balance_edge_below','middle_of_balance'].includes(nqInputs.liveEdgeContext);
+  const oneSidedUpgrade = (esUpgraded && nqLiveEdgeConflict && !nqUpgraded) || (nqUpgraded && esLiveEdgeConflict && !esUpgraded);
+  const conflictingInstrument = (esUpgraded && nqLiveEdgeConflict && !nqUpgraded) ? 'NQ' : 'ES';
+
+  const alignment = computeAlignment(esEffective, nqEffective);
 
   const handleESChange = (newInputs) => {
     const result = computeBias(newInputs);
@@ -1740,13 +1761,34 @@ function PreMarketTab({data,onChange,isMobile,userId}){
             </div>
             <div style={{height:1,background:alignment.color+'22',marginBottom:14}}/>
             <div style={{fontSize:13,color:C.textSub,lineHeight:1.8,marginBottom:14}}>{alignment.action}</div>
+
+            {/* ── CONFLICT WARNING: one instrument upgraded, other is two-sided ── */}
+            {oneSidedUpgrade && (
+              <div style={{
+                background: C.orange+'18',
+                border: `1.5px solid ${C.orange}55`,
+                borderRadius: 10,
+                padding: '10px 14px',
+                marginBottom: 12,
+              }}>
+                <div style={{fontSize:12,fontWeight:700,color:C.orange,marginBottom:4}}>
+                  ⚡ {conflictingInstrument} unconfirmed — downgrade to HALF SIZE
+                </div>
+                <div style={{fontSize:11,color:C.textSub,lineHeight:1.6}}>
+                  {conflictingInstrument} live edge is two-sided (balance edge or middle of balance) — it has not confirmed the break direction. One instrument leading without the other confirming = mild alignment only. Use half size ($150 risk) until {conflictingInstrument} confirms.
+                </div>
+              </div>
+            )}
+
             <div style={{
               padding:'10px 14px',borderRadius:10,
               background:C.surface,border:`1px solid ${C.border}`,
               display:'flex',alignItems:'center',gap:10,
             }}>
               <div style={{fontSize:11,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:600,flexShrink:0}}>Sizing</div>
-              <div style={{fontSize:13,color:C.text,fontWeight:600}}>{alignment.sizing}</div>
+              <div style={{fontSize:13,color:C.text,fontWeight:600}}>
+                {oneSidedUpgrade ? `Half size only — $150 risk. ${conflictingInstrument} has not confirmed.` : alignment.sizing}
+              </div>
             </div>
           </div>
         ) : (
