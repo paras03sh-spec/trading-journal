@@ -705,11 +705,6 @@ function emptyDay(){
       keyLevelsImg:'',
       esPlan:'',
       nqPlan:'',
-      pwHigh:'',
-      pwLow:'',
-      pwCurrentPrice:'',
-      ibHighRef:'',
-      ibLowRef:'',
       mentalSleep:'',
       mentalStress:'',
       mentalConfidence:'',
@@ -1763,116 +1758,101 @@ function PreMarketTab({data,onChange,isMobile,userId}){
       </div>
 
       {/* ── PRIOR WEEK MIDPOINT ── */}
-      <Divider label="Weekly Context"/>
-      <div style={{marginBottom:20}}>
-        <div style={{fontSize:11,color:C.textMut,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600,marginBottom:10}}>Prior Week Midpoint</div>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:10}}>
-          <div>
-            <div style={{fontSize:11,color:C.textSub,marginBottom:5}}>Prior Week High</div>
-            <input type="number" placeholder="e.g. 5050"
-              value={data.pwHigh||''} onChange={e=>set('pwHigh')(e.target.value)}
-              style={{width:'100%',padding:'9px 12px',borderRadius:10,border:`1.5px solid ${C.border}`,background:C.bg,color:C.text,fontSize:13,fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}/>
-          </div>
-          <div>
-            <div style={{fontSize:11,color:C.textSub,marginBottom:5}}>Prior Week Low</div>
-            <input type="number" placeholder="e.g. 4950"
-              value={data.pwLow||''} onChange={e=>set('pwLow')(e.target.value)}
-              style={{width:'100%',padding:'9px 12px',borderRadius:10,border:`1.5px solid ${C.border}`,background:C.bg,color:C.text,fontSize:13,fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}/>
-          </div>
-          <div>
-            <div style={{fontSize:11,color:C.textSub,marginBottom:5}}>Current Price</div>
-            <input type="number" placeholder="e.g. 5010"
-              value={data.pwCurrentPrice||''} onChange={e=>set('pwCurrentPrice')(e.target.value)}
-              style={{width:'100%',padding:'9px 12px',borderRadius:10,border:`1.5px solid ${C.border}`,background:C.bg,color:C.text,fontSize:13,fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}/>
-          </div>
-        </div>
-        {(()=>{
-          const hi=parseFloat(data.pwHigh);
-          const lo=parseFloat(data.pwLow);
-          const cur=parseFloat(data.pwCurrentPrice);
-          if(!hi||!lo||!cur||hi<=lo) return null;
-          const mid=((hi+lo)/2).toFixed(2);
-          const aboveMid=cur>parseFloat(mid);
-          const pct=(((cur-lo)/(hi-lo))*100).toFixed(0);
-          const nearExtreme=parseInt(pct)<=25||parseInt(pct)>=75;
-          const prob=nearExtreme?'86–96%':'73–78%';
-          const target=aboveMid?'Prior Week HIGH':'Prior Week LOW';
-          const targetColor=aboveMid?C.green:C.red;
+      <Divider label="Prior Week Midpoint"/>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:20}}>
+        {[{inst:'ES',prefix:'es'},{inst:'NQ',prefix:'nq'}].map(({inst,prefix})=>{
+          const hi=parseFloat(data[prefix+'PwHigh']);
+          const lo=parseFloat(data[prefix+'PwLow']);
+          const cur=parseFloat(data[prefix+'PwCur']);
+          const valid=hi&&lo&&cur&&hi>lo;
+          const mid=valid?((hi+lo)/2).toFixed(2):null;
+          const aboveMid=valid&&cur>parseFloat(mid);
+          const pct=valid?(((cur-lo)/(hi-lo))*100).toFixed(0):null;
+          const nearExtreme=valid&&(parseInt(pct)<=25||parseInt(pct)>=75);
+          const prob=nearExtreme?"86–96%":"73–78%";
+          const target=aboveMid?`${inst} Prior Week HIGH`:`${inst} Prior Week LOW`;
+          const col=aboveMid?C.green:C.red;
           return(
-            <div style={{background:targetColor+'10',border:`1.5px solid ${targetColor}44`,borderRadius:12,padding:'14px 16px'}}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8,flexWrap:'wrap',gap:8}}>
-                <div style={{fontSize:13,fontWeight:700,color:targetColor}}>
-                  {aboveMid?'🟢':'🔴'} Price {aboveMid?'above':'below'} prior week midpoint ({mid})
+            <div key={inst} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:"16px"}}>
+              <div style={{fontSize:12,fontWeight:700,color:C.text,marginBottom:12}}>{inst}</div>
+              <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:12}}>
+                {[["Prior Week High",prefix+"PwHigh","e.g. 5050"],["Prior Week Low",prefix+"PwLow","e.g. 4950"],["Current Price",prefix+"PwCur","e.g. 5010"]].map(([label,key,ph])=>(
+                  <div key={key}>
+                    <div style={{fontSize:11,color:C.textSub,marginBottom:4}}>{label}</div>
+                    <input type="number" placeholder={ph} value={data[key]||""}
+                      onChange={e=>onChange({...data,[key]:e.target.value})}
+                      style={{width:"100%",padding:"8px 11px",borderRadius:9,border:`1.5px solid ${C.border}`,background:C.bg,color:C.text,fontSize:13,fontFamily:"inherit",outline:"none",boxSizing:"border-box"}}/>
+                  </div>
+                ))}
+              </div>
+              {valid?(
+                <div style={{background:col+"10",border:`1.5px solid ${col}44`,borderRadius:10,padding:"10px 12px"}}>
+                  <div style={{fontSize:12,fontWeight:700,color:col,marginBottom:4}}>
+                    {aboveMid?"🟢":"🔴"} {aboveMid?"Above":"Below"} midpoint ({mid})
+                  </div>
+                  <div style={{fontSize:11,color:C.textSub,lineHeight:1.6}}>
+                    <span style={{color:col,fontWeight:700}}>{prob}</span> {target} tested this week.
+                    {nearExtreme&&<span style={{color:C.yellow,fontWeight:600}}> ⚡ Near extreme.</span>}
+                  </div>
                 </div>
-                <div style={{fontSize:11,color:C.textMut}}>Position: {pct}% of range {nearExtreme?'⚡ near extreme':''}</div>
-              </div>
-              <div style={{fontSize:13,color:C.textSub,lineHeight:1.6}}>
-                <span style={{color:targetColor,fontWeight:700}}>{prob} probability</span> that <span style={{color:targetColor,fontWeight:600}}>{target}</span> gets tested this week.
-                {nearExtreme&&<span style={{color:C.yellow,fontWeight:600}}> Near extreme — higher probability band applies.</span>}
-              </div>
+              ):(
+                <div style={{fontSize:11,color:C.textMut,textAlign:"center",padding:"10px 0"}}>Enter levels to see weekly target</div>
+              )}
             </div>
           );
-        })()}
+        })}
       </div>
 
-      {/* ── IB RETEST CROSSOVER REFERENCE ── */}
-      <Divider label="IB Retest Crossover (Runner Management)"/>
-      <div style={{marginBottom:20}}>
-        <div style={{fontSize:11,color:C.textMut,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600,marginBottom:10}}>IB Range</div>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
-          <div>
-            <div style={{fontSize:11,color:C.textSub,marginBottom:5}}>IB High</div>
-            <input type="number" placeholder="e.g. 5020"
-              value={data.ibHighRef||''} onChange={e=>set('ibHighRef')(e.target.value)}
-              style={{width:'100%',padding:'9px 12px',borderRadius:10,border:`1.5px solid ${C.border}`,background:C.bg,color:C.text,fontSize:13,fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}/>
-          </div>
-          <div>
-            <div style={{fontSize:11,color:C.textSub,marginBottom:5}}>IB Low</div>
-            <input type="number" placeholder="e.g. 5000"
-              value={data.ibLowRef||''} onChange={e=>set('ibLowRef')(e.target.value)}
-              style={{width:'100%',padding:'9px 12px',borderRadius:10,border:`1.5px solid ${C.border}`,background:C.bg,color:C.text,fontSize:13,fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}/>
-          </div>
-        </div>
-        {(()=>{
-          const ibH=parseFloat(data.ibHighRef);
-          const ibL=parseFloat(data.ibLowRef);
-          if(!ibH||!ibL||ibH<=ibL) return null;
-          const ibRange=ibH-ibL;
-          const threshold40=(ibRange*0.4).toFixed(2);
-          const upTarget=(ibH+parseFloat(threshold40)).toFixed(2);
-          const downTarget=(ibL-parseFloat(threshold40)).toFixed(2);
+      {/* ── IB RETEST CROSSOVER ── */}
+      <Divider label="IB Retest Crossover — Runner Management"/>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:20}}>
+        {[{inst:"ES",prefix:"es"},{inst:"NQ",prefix:"nq"}].map(({inst,prefix})=>{
+          const ibH=parseFloat(data[prefix+"IbHighRef"]);
+          const ibL=parseFloat(data[prefix+"IbLowRef"]);
+          const valid=ibH&&ibL&&ibH>ibL;
+          const ibRange=valid?(ibH-ibL):null;
+          const threshold=valid?(ibRange*0.4).toFixed(2):null;
+          const upHold=valid?(ibH+parseFloat(threshold)).toFixed(2):null;
+          const downHold=valid?(ibL-parseFloat(threshold)).toFixed(2):null;
           return(
-            <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:'14px 16px'}}>
-              <div style={{fontSize:12,fontWeight:700,color:C.text,marginBottom:10}}>IB Range: {ibRange.toFixed(2)} pts — 40% threshold: {threshold40} pts</div>
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
-                <div style={{background:C.green+'10',border:`1px solid ${C.green}33`,borderRadius:10,padding:'10px 12px'}}>
-                  <div style={{fontSize:11,color:C.green,fontWeight:700,marginBottom:4}}>⬆ LONG — Hold runner if...</div>
-                  <div style={{fontSize:12,color:C.textSub,lineHeight:1.6}}>Price extended to <span style={{color:C.green,fontWeight:600}}>less than {upTarget}</span><br/>
-                  (under 40% past IBH)<br/>
-                  <span style={{color:C.green,fontWeight:700}}>71% continuation on retest ✓</span></div>
-                </div>
-                <div style={{background:C.red+'10',border:`1px solid ${C.red}33`,borderRadius:10,padding:'10px 12px'}}>
-                  <div style={{fontSize:11,color:C.red,fontWeight:700,marginBottom:4}}>⬆ LONG — Take profits if...</div>
-                  <div style={{fontSize:12,color:C.textSub,lineHeight:1.6}}>Price extended to <span style={{color:C.red,fontWeight:600}}>{upTarget} or beyond</span><br/>
-                  (40%+ past IBH)<br/>
-                  <span style={{color:C.red,fontWeight:700}}>Retest more likely reversal ✗</span></div>
-                </div>
-                <div style={{background:C.green+'10',border:`1px solid ${C.green}33`,borderRadius:10,padding:'10px 12px'}}>
-                  <div style={{fontSize:11,color:C.green,fontWeight:700,marginBottom:4}}>⬇ SHORT — Hold runner if...</div>
-                  <div style={{fontSize:12,color:C.textSub,lineHeight:1.6}}>Price extended to <span style={{color:C.green,fontWeight:600}}>more than {downTarget}</span><br/>
-                  (under 40% past IBL)<br/>
-                  <span style={{color:C.green,fontWeight:700}}>71% continuation on retest ✓</span></div>
-                </div>
-                <div style={{background:C.red+'10',border:`1px solid ${C.red}33`,borderRadius:10,padding:'10px 12px'}}>
-                  <div style={{fontSize:11,color:C.red,fontWeight:700,marginBottom:4}}>⬇ SHORT — Take profits if...</div>
-                  <div style={{fontSize:12,color:C.textSub,lineHeight:1.6}}>Price extended to <span style={{color:C.red,fontWeight:600}}>{downTarget} or below</span><br/>
-                  (40%+ past IBL)<br/>
-                  <span style={{color:C.red,fontWeight:700}}>Retest more likely reversal ✗</span></div>
-                </div>
+            <div key={inst} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:"16px"}}>
+              <div style={{fontSize:12,fontWeight:700,color:C.text,marginBottom:12}}>{inst}</div>
+              <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:12}}>
+                {[[`${inst} IB High`,prefix+"IbHighRef","e.g. 5020"],[`${inst} IB Low`,prefix+"IbLowRef","e.g. 5000"]].map(([label,key,ph])=>(
+                  <div key={key}>
+                    <div style={{fontSize:11,color:C.textSub,marginBottom:4}}>{label}</div>
+                    <input type="number" placeholder={ph} value={data[key]||""}
+                      onChange={e=>onChange({...data,[key]:e.target.value})}
+                      style={{width:"100%",padding:"8px 11px",borderRadius:9,border:`1.5px solid ${C.border}`,background:C.bg,color:C.text,fontSize:13,fontFamily:"inherit",outline:"none",boxSizing:"border-box"}}/>
+                  </div>
+                ))}
               </div>
+              {valid?(
+                <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                  <div style={{fontSize:11,color:C.textMut,marginBottom:2}}>Range: {ibRange.toFixed(2)} pts | 40% threshold: {threshold} pts</div>
+                  <div style={{background:C.green+"10",border:`1px solid ${C.green}33`,borderRadius:9,padding:"8px 10px"}}>
+                    <div style={{fontSize:11,fontWeight:700,color:C.green,marginBottom:3}}>⬆ LONG — Hold runner</div>
+                    <div style={{fontSize:11,color:C.textSub}}>Extended less than <b>{upHold}</b> → 71% continuation on retest ✓</div>
+                  </div>
+                  <div style={{background:C.red+"10",border:`1px solid ${C.red}33`,borderRadius:9,padding:"8px 10px"}}>
+                    <div style={{fontSize:11,fontWeight:700,color:C.red,marginBottom:3}}>⬆ LONG — Take profits</div>
+                    <div style={{fontSize:11,color:C.textSub}}>Extended to <b>{upHold}</b> or beyond → retest likely reversal ✗</div>
+                  </div>
+                  <div style={{background:C.green+"10",border:`1px solid ${C.green}33`,borderRadius:9,padding:"8px 10px"}}>
+                    <div style={{fontSize:11,fontWeight:700,color:C.green,marginBottom:3}}>⬇ SHORT — Hold runner</div>
+                    <div style={{fontSize:11,color:C.textSub}}>Extended more than <b>{downHold}</b> → 71% continuation on retest ✓</div>
+                  </div>
+                  <div style={{background:C.red+"10",border:`1px solid ${C.red}33`,borderRadius:9,padding:"8px 10px"}}>
+                    <div style={{fontSize:11,fontWeight:700,color:C.red,marginBottom:3}}>⬇ SHORT — Take profits</div>
+                    <div style={{fontSize:11,color:C.textSub}}>Extended to <b>{downHold}</b> or below → retest likely reversal ✗</div>
+                  </div>
+                </div>
+              ):(
+                <div style={{fontSize:11,color:C.textMut,textAlign:"center",padding:"10px 0"}}>Enter IB levels to see runner guidance</div>
+              )}
             </div>
           );
-        })()}
+        })}
       </div>
 
       {/* ── MENTAL STATE ── */}
