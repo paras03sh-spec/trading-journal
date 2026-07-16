@@ -705,6 +705,11 @@ function emptyDay(){
       keyLevelsImg:'',
       esPlan:'',
       nqPlan:'',
+      pwHigh:'',
+      pwLow:'',
+      pwCurrentPrice:'',
+      ibHighRef:'',
+      ibLowRef:'',
       mentalSleep:'',
       mentalStress:'',
       mentalConfidence:'',
@@ -1584,28 +1589,7 @@ function PreMarketTab({data,onChange,isMobile,userId}){
   const nqInputs = data.nqInputs || emptyBiasInputs();
   const esResult = computeBias(esInputs);
   const nqResult = computeBias(nqInputs);
-
-  // Compute mid-session updates for each instrument
-  const esMidSession = computeMidSession(esInputs, esResult);
-  const nqMidSession = computeMidSession(nqInputs, nqResult);
-
-  // Build effective results: use live updated bias/conviction when mid-session has fired
-  const esEffective = esMidSession
-    ? { ...esResult, bias: esMidSession.updatedBias || esResult.bias, conviction: esMidSession.updatedConviction || esResult.conviction }
-    : esResult;
-  const nqEffective = nqMidSession
-    ? { ...nqResult, bias: nqMidSession.updatedBias || nqResult.bias, conviction: nqMidSession.updatedConviction || nqResult.conviction }
-    : nqResult;
-
-  // Detect when one instrument upgraded but the other hasn't confirmed
-  const esUpgraded = esMidSession && esMidSession.effect === 'upgrade';
-  const nqUpgraded = nqMidSession && nqMidSession.effect === 'upgrade';
-  const esLiveEdgeConflict = ['balance_edge_above','balance_edge_below','middle_of_balance'].includes(esInputs.liveEdgeContext);
-  const nqLiveEdgeConflict = ['balance_edge_above','balance_edge_below','middle_of_balance'].includes(nqInputs.liveEdgeContext);
-  const oneSidedUpgrade = (esUpgraded && nqLiveEdgeConflict && !nqUpgraded) || (nqUpgraded && esLiveEdgeConflict && !esUpgraded);
-  const conflictingInstrument = (esUpgraded && nqLiveEdgeConflict && !nqUpgraded) ? 'NQ' : 'ES';
-
-  const alignment = computeAlignment(esEffective, nqEffective);
+  const alignment = computeAlignment(esResult, nqResult);
 
   const handleESChange = (newInputs) => {
     const result = computeBias(newInputs);
@@ -1761,34 +1745,13 @@ function PreMarketTab({data,onChange,isMobile,userId}){
             </div>
             <div style={{height:1,background:alignment.color+'22',marginBottom:14}}/>
             <div style={{fontSize:13,color:C.textSub,lineHeight:1.8,marginBottom:14}}>{alignment.action}</div>
-
-            {/* ── CONFLICT WARNING: one instrument upgraded, other is two-sided ── */}
-            {oneSidedUpgrade && (
-              <div style={{
-                background: C.orange+'18',
-                border: `1.5px solid ${C.orange}55`,
-                borderRadius: 10,
-                padding: '10px 14px',
-                marginBottom: 12,
-              }}>
-                <div style={{fontSize:12,fontWeight:700,color:C.orange,marginBottom:4}}>
-                  ⚡ {conflictingInstrument} unconfirmed — downgrade to HALF SIZE
-                </div>
-                <div style={{fontSize:11,color:C.textSub,lineHeight:1.6}}>
-                  {conflictingInstrument} live edge is two-sided (balance edge or middle of balance) — it has not confirmed the break direction. One instrument leading without the other confirming = mild alignment only. Use half size ($150 risk) until {conflictingInstrument} confirms.
-                </div>
-              </div>
-            )}
-
             <div style={{
               padding:'10px 14px',borderRadius:10,
               background:C.surface,border:`1px solid ${C.border}`,
               display:'flex',alignItems:'center',gap:10,
             }}>
               <div style={{fontSize:11,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:600,flexShrink:0}}>Sizing</div>
-              <div style={{fontSize:13,color:C.text,fontWeight:600}}>
-                {oneSidedUpgrade ? `Half size only — $150 risk. ${conflictingInstrument} has not confirmed.` : alignment.sizing}
-              </div>
+              <div style={{fontSize:13,color:C.text,fontWeight:600}}>{alignment.sizing}</div>
             </div>
           </div>
         ) : (
@@ -1797,6 +1760,119 @@ function PreMarketTab({data,onChange,isMobile,userId}){
             <div style={{fontSize:14,color:C.textMut}}>Fill in ES and NQ bias inputs above to see the alignment assessment</div>
           </div>
         )}
+      </div>
+
+      {/* ── PRIOR WEEK MIDPOINT ── */}
+      <Divider label="Weekly Context"/>
+      <div style={{marginBottom:20}}>
+        <div style={{fontSize:11,color:C.textMut,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600,marginBottom:10}}>Prior Week Midpoint</div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:10}}>
+          <div>
+            <div style={{fontSize:11,color:C.textSub,marginBottom:5}}>Prior Week High</div>
+            <input type="number" placeholder="e.g. 5050"
+              value={data.pwHigh||''} onChange={e=>set('pwHigh')(e.target.value)}
+              style={{width:'100%',padding:'9px 12px',borderRadius:10,border:`1.5px solid ${C.border}`,background:C.bg,color:C.text,fontSize:13,fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}/>
+          </div>
+          <div>
+            <div style={{fontSize:11,color:C.textSub,marginBottom:5}}>Prior Week Low</div>
+            <input type="number" placeholder="e.g. 4950"
+              value={data.pwLow||''} onChange={e=>set('pwLow')(e.target.value)}
+              style={{width:'100%',padding:'9px 12px',borderRadius:10,border:`1.5px solid ${C.border}`,background:C.bg,color:C.text,fontSize:13,fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}/>
+          </div>
+          <div>
+            <div style={{fontSize:11,color:C.textSub,marginBottom:5}}>Current Price</div>
+            <input type="number" placeholder="e.g. 5010"
+              value={data.pwCurrentPrice||''} onChange={e=>set('pwCurrentPrice')(e.target.value)}
+              style={{width:'100%',padding:'9px 12px',borderRadius:10,border:`1.5px solid ${C.border}`,background:C.bg,color:C.text,fontSize:13,fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}/>
+          </div>
+        </div>
+        {(()=>{
+          const hi=parseFloat(data.pwHigh);
+          const lo=parseFloat(data.pwLow);
+          const cur=parseFloat(data.pwCurrentPrice);
+          if(!hi||!lo||!cur||hi<=lo) return null;
+          const mid=((hi+lo)/2).toFixed(2);
+          const aboveMid=cur>parseFloat(mid);
+          const pct=(((cur-lo)/(hi-lo))*100).toFixed(0);
+          const nearExtreme=parseInt(pct)<=25||parseInt(pct)>=75;
+          const prob=nearExtreme?'86–96%':'73–78%';
+          const target=aboveMid?'Prior Week HIGH':'Prior Week LOW';
+          const targetColor=aboveMid?C.green:C.red;
+          return(
+            <div style={{background:targetColor+'10',border:`1.5px solid ${targetColor}44`,borderRadius:12,padding:'14px 16px'}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8,flexWrap:'wrap',gap:8}}>
+                <div style={{fontSize:13,fontWeight:700,color:targetColor}}>
+                  {aboveMid?'🟢':'🔴'} Price {aboveMid?'above':'below'} prior week midpoint ({mid})
+                </div>
+                <div style={{fontSize:11,color:C.textMut}}>Position: {pct}% of range {nearExtreme?'⚡ near extreme':''}</div>
+              </div>
+              <div style={{fontSize:13,color:C.textSub,lineHeight:1.6}}>
+                <span style={{color:targetColor,fontWeight:700}}>{prob} probability</span> that <span style={{color:targetColor,fontWeight:600}}>{target}</span> gets tested this week.
+                {nearExtreme&&<span style={{color:C.yellow,fontWeight:600}}> Near extreme — higher probability band applies.</span>}
+              </div>
+            </div>
+          );
+        })()}
+      </div>
+
+      {/* ── IB RETEST CROSSOVER REFERENCE ── */}
+      <Divider label="IB Retest Crossover (Runner Management)"/>
+      <div style={{marginBottom:20}}>
+        <div style={{fontSize:11,color:C.textMut,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600,marginBottom:10}}>IB Range</div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
+          <div>
+            <div style={{fontSize:11,color:C.textSub,marginBottom:5}}>IB High</div>
+            <input type="number" placeholder="e.g. 5020"
+              value={data.ibHighRef||''} onChange={e=>set('ibHighRef')(e.target.value)}
+              style={{width:'100%',padding:'9px 12px',borderRadius:10,border:`1.5px solid ${C.border}`,background:C.bg,color:C.text,fontSize:13,fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}/>
+          </div>
+          <div>
+            <div style={{fontSize:11,color:C.textSub,marginBottom:5}}>IB Low</div>
+            <input type="number" placeholder="e.g. 5000"
+              value={data.ibLowRef||''} onChange={e=>set('ibLowRef')(e.target.value)}
+              style={{width:'100%',padding:'9px 12px',borderRadius:10,border:`1.5px solid ${C.border}`,background:C.bg,color:C.text,fontSize:13,fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}/>
+          </div>
+        </div>
+        {(()=>{
+          const ibH=parseFloat(data.ibHighRef);
+          const ibL=parseFloat(data.ibLowRef);
+          if(!ibH||!ibL||ibH<=ibL) return null;
+          const ibRange=ibH-ibL;
+          const threshold40=(ibRange*0.4).toFixed(2);
+          const upTarget=(ibH+parseFloat(threshold40)).toFixed(2);
+          const downTarget=(ibL-parseFloat(threshold40)).toFixed(2);
+          return(
+            <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:'14px 16px'}}>
+              <div style={{fontSize:12,fontWeight:700,color:C.text,marginBottom:10}}>IB Range: {ibRange.toFixed(2)} pts — 40% threshold: {threshold40} pts</div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                <div style={{background:C.green+'10',border:`1px solid ${C.green}33`,borderRadius:10,padding:'10px 12px'}}>
+                  <div style={{fontSize:11,color:C.green,fontWeight:700,marginBottom:4}}>⬆ LONG — Hold runner if...</div>
+                  <div style={{fontSize:12,color:C.textSub,lineHeight:1.6}}>Price extended to <span style={{color:C.green,fontWeight:600}}>less than {upTarget}</span><br/>
+                  (under 40% past IBH)<br/>
+                  <span style={{color:C.green,fontWeight:700}}>71% continuation on retest ✓</span></div>
+                </div>
+                <div style={{background:C.red+'10',border:`1px solid ${C.red}33`,borderRadius:10,padding:'10px 12px'}}>
+                  <div style={{fontSize:11,color:C.red,fontWeight:700,marginBottom:4}}>⬆ LONG — Take profits if...</div>
+                  <div style={{fontSize:12,color:C.textSub,lineHeight:1.6}}>Price extended to <span style={{color:C.red,fontWeight:600}}>{upTarget} or beyond</span><br/>
+                  (40%+ past IBH)<br/>
+                  <span style={{color:C.red,fontWeight:700}}>Retest more likely reversal ✗</span></div>
+                </div>
+                <div style={{background:C.green+'10',border:`1px solid ${C.green}33`,borderRadius:10,padding:'10px 12px'}}>
+                  <div style={{fontSize:11,color:C.green,fontWeight:700,marginBottom:4}}>⬇ SHORT — Hold runner if...</div>
+                  <div style={{fontSize:12,color:C.textSub,lineHeight:1.6}}>Price extended to <span style={{color:C.green,fontWeight:600}}>more than {downTarget}</span><br/>
+                  (under 40% past IBL)<br/>
+                  <span style={{color:C.green,fontWeight:700}}>71% continuation on retest ✓</span></div>
+                </div>
+                <div style={{background:C.red+'10',border:`1px solid ${C.red}33`,borderRadius:10,padding:'10px 12px'}}>
+                  <div style={{fontSize:11,color:C.red,fontWeight:700,marginBottom:4}}>⬇ SHORT — Take profits if...</div>
+                  <div style={{fontSize:12,color:C.textSub,lineHeight:1.6}}>Price extended to <span style={{color:C.red,fontWeight:600}}>{downTarget} or below</span><br/>
+                  (40%+ past IBL)<br/>
+                  <span style={{color:C.red,fontWeight:700}}>Retest more likely reversal ✗</span></div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       {/* ── MENTAL STATE ── */}
