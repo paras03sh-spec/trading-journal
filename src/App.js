@@ -197,7 +197,7 @@ function computeBias(bi) {
       sizing = 'Standard size. Normal stops. Take clean setups only (~60-65%).';
     } else if (absScore >= 1) {
       conviction = 'low';
-      sizing = 'Reduced size. Tighter stops. Base-rate edge only (~55-58%).';
+      sizing = 'Reduced size. Tighter stops. Low conviction — take only cleanest setups.';
     } else {
       conviction = 'neutral';
       sizing = 'Score too low — treat as neutral. Fade extremes only.';
@@ -372,10 +372,10 @@ function computeMidSession(bi, preBias) {
     return applyLiveEdge({
       updatedBias: newBias,
       updatedConviction: conviction,
-      verdict: `Neutral day upgraded to ${newBias} by IB break ${ibBreakDir}.`,
+      verdict: `IB break ${ibBreakDir === 'high' ? 'HIGH' : 'LOW'} held — ${ibBreakTiming === 'c_period' ? 'C-period' : 'D/E period'} confirmed.`,
       action: cvdDiverging
         ? 'CVD diverging — be cautious. Time acceptance is there but delta is not. Reduce size.'
-        : `IB accepted ${ibBreakDir}. Look for ${newBias === 'bullish' ? 'long' : 'short'} setups on pullbacks to IB ${ibBreakDir === 'high' ? 'high' : 'low'} as support/resistance.`,
+        : `IB break ${ibBreakDir} held — candle closed ${ibBreakDir === 'high' ? 'above IBH' : 'below IBL'}. ${ibBreakTiming === 'c_period' ? 'C-period — strongest signal. 45.5% reach 100% extension.' : 'D/E period — confirmed but lower extension probability.'} Look for pullback entries in break direction.`,
       color: newBias === 'bullish' ? C.green : C.red,
       effect: 'upgrade',
     }, liveEdgeContext);
@@ -387,10 +387,10 @@ function computeMidSession(bi, preBias) {
     return applyLiveEdge({
       updatedBias: preBias.bias,
       updatedConviction: conviction,
-      verdict: `IB break ${ibBreakDir} confirms ${preBias.bias} bias.`,
+      verdict: `IB break ${ibBreakDir === 'high' ? 'HIGH' : 'LOW'} held — ${ibBreakTiming === 'c_period' ? 'C-period' : 'D/E period'} confirmed.`,
       action: cvdDiverging
         ? 'Time accepted but CVD diverging. Confirmation is partial. Standard size, not full press.'
-        : `Full confirmation. Press the ${preBias.bias === 'bullish' ? 'long' : 'short'} bias. IB ${ibBreakDir === 'high' ? 'high' : 'low'} is now your support/resistance. Hold runners.`,
+        : `IB break confirmed — candle closed ${ibBreakDir === 'high' ? 'above IBH' : 'below IBL'}. ${ibBreakTiming === 'c_period' ? 'C-period — 45.5% reach 100% extension. Hold runners toward 2pm.' : 'D/E period — lower extension probability. Take partials earlier.'} Bias confirmed.`,
       color: preBias.bias === 'bullish' ? C.green : C.red,
       effect: 'confirmed',
     }, liveEdgeContext);
