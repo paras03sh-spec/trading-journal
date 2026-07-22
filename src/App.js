@@ -34,343 +34,178 @@ function getMonthDays(year,month){
 // ─── Bias Engine ──────────────────────────────────────────────────────────────
 function computeBias(bi) {
   const {
-    prevDayCandle,      // 'green'|'red'|'inside'|''
-    insideDayCount,     // number
-    profileShape,       // 'B'|'b'|'P'|'D'|'normal'|'balanced_no_shape'|'wide_range_no_shape'|''
-    prevHighQuality,    // 'excess'|'normal'|''
-    prevLowQuality,     // 'excess'|'normal'|''
-    pocMigration,       // 'rising'|'flat'|'falling'|''
-    ibSize,             // 'short'|'medium'|'large'|''
-    ibFormedLast,       // 'high'|'low'|'' — which side formed last (opposite leans, +1)
-    vaOverlap,          // 'heavy'|'partial'|'none'|''
-    liveEdgeContext,    // 'balance_edge_above'|'balance_edge_below'|'failed_breakout_above'|'failed_breakout_below'|'expansion_above'|'expansion_below'|'middle_of_balance'|''
-    ibCloseMid,         // 'above'|'below'|'' — IB close vs midpoint at 10:30 (mid-session input, +2)
-    ibBreakDir,         // 'high'|'low'|'none'|''
-    ibOppositeBreak,    // 'no'|'yes_no_accept'|'yes_accepted'|''
-    ibSecondBreak,      // 'high'|'low'|'' — second break direction (+2, 68-72%)
-    ibTimeAcceptance,   // 'yes'|'no'|''
-    ibBreakTiming,      // 'c_period'|'d_e_period'|'afternoon'|'' — when break occurred (+1/0/-1)
-    ibRetrace,          // 'shallow'|'deep'|'' — retracement depth (shallow +1 93.8%, deep -2)
-    ibCVD,              // 'agreeing'|'flat'|'diverging'|''
-    pdhPdlBreak,        // 'pdh_held'|'pdl_held'|'pdh_snapped'|'pdl_snapped'|''
+    ibSize,            // 'short'|'medium'|'large'|''
+    liveEdgeContext,   // 'balance_edge_above'|'balance_edge_below'|'failed_breakout_above'|'failed_breakout_below'|'expansion_above'|'expansion_below'|'middle_of_balance'|''
+    ibCloseMid,        // 'above'|'below'|''
+    ibBreakDir,        // 'high'|'low'|'none'|''
+    ibOppositeBreak,   // 'no'|'yes_no_accept'|'yes_accepted'|''
+    ibSecondBreak,     // 'high'|'low'|''
+    ibTimeAcceptance,  // 'yes'|'no'|''
+    ibBreakTiming,     // 'c_period'|'d_e_period'|'afternoon'|''
+    ibRetrace,         // 'shallow'|'deep'|''
+    ibCVD,             // 'agreeing'|'flat'|'diverging'|''
   } = bi;
 
   let signals = [];
+  let score = 0;
 
-  // ── Step 1: Prior day candle (base direction) ──
-  let baseDir = null;
-  if (parseInt(insideDayCount) >= 2) {
-    baseDir = 'neutral';
-    signals.push(`⚪ ${insideDayCount}+ consecutive inside days — balance mode, fade extremes only`);
-  } else if (prevDayCandle === 'green') {
-    baseDir = 'long';
-    signals.push('🟢 Prior day green — long bias base (~55-58% base rate)');
-  } else if (prevDayCandle === 'red') {
-    baseDir = 'short';
-    signals.push('🔴 Prior day red — short bias base (~58-62%, down clusters harder)');
-  } else if (prevDayCandle === 'inside') {
-    baseDir = 'neutral';
-    signals.push('⚪ Inside day — neutral, fade extremes');
-  }
-
-  if (baseDir === null) return { bias: '', conviction: '', sizing: '', signals: [], color: C.textMut };
-
-  // ── Step 2: Profile shape (±2 primary, ±1 secondary) ──
-  let profileScore = 0;
-  if (profileShape === 'D') {
-    if (prevDayCandle === 'green') { profileScore = 2; signals.push('📈 D-shape trend up — strongest continuation signal (+2)'); }
-    else if (prevDayCandle === 'red') { profileScore = -2; signals.push('📉 D-shape trend down — strongest continuation signal (-2)'); }
-    else { signals.push('📊 D-shape noted — needs a directional candle to confirm'); }
-  } else if (profileShape === 'B') {
-    profileScore = 2; signals.push('📈 B-shape — buyers won both auctions, long reinforced (+2)');
-  } else if (profileShape === 'b') {
-    profileScore = 2; signals.push('📈 b-shape — trapped shorts below, long reinforced (+2)');
-  } else if (profileShape === 'P') {
-    profileScore = -2; signals.push('📉 P-shape — spike rejected, value built low, short reinforced (-2)');
-  } else if (profileShape === 'normal') {
-    signals.push('⚪ Normal bell — no extra conviction, candle bias stands');
-  } else if (profileShape === 'balanced_no_shape') {
-    signals.push('⚪ Balanced / No Shape — market found equilibrium, no directional conviction. Prior value area unreliable.');
-  } else if (profileShape === 'wide_range_no_shape') {
-    signals.push('⚠️ Wide Range / No Shape — huge range, reversal, closed mid. Reversal point is the key level.');
-  }
-
-  // ── Step 4: POC migration (±1, multi-session context) ──
-  if (pocMigration === 'rising') {
-    profileScore += 1; signals.push('↗ Rising POC (3-5 sessions) — accumulation, long backing (+1)');
-  } else if (pocMigration === 'falling') {
-    profileScore -= 1; signals.push('↘ Falling POC (3-5 sessions) — distribution, short backing (-1)');
-  } else if (pocMigration === 'flat') {
-    signals.push('➡ Flat POC — balanced, reduce trend conviction');
-  }
-
-  // ── Resolve structural direction ──
-  let resolvedDir = baseDir;
-  if (baseDir === 'long' && profileScore <= -2) {
-    resolvedDir = 'neutral';
-    signals.push('⚡ Profile strongly conflicts with green candle — downgraded to neutral');
-  } else if (baseDir === 'short' && profileScore >= 2) {
-    resolvedDir = 'neutral';
-    signals.push('⚡ Profile strongly conflicts with red candle — downgraded to neutral');
-  } else if (baseDir === 'neutral' && profileScore >= 2) {
-    resolvedDir = 'long';
-    signals.push('⚡ Strong profile overrides inside/neutral candle — long from structure');
-  } else if (baseDir === 'neutral' && profileScore <= -2) {
-    resolvedDir = 'short';
-    signals.push('⚡ Strong profile overrides inside/neutral candle — short from structure');
-  }
-
-  // structural agreement score — how strongly structure backs the direction
-  let structuralAgreement = 0;
-  if (resolvedDir === 'long') structuralAgreement = Math.max(0, profileScore);
-  else if (resolvedDir === 'short') structuralAgreement = Math.max(0, -profileScore);
-
-  // ── Step 5: Same-day IB inputs ──
-  let ibBoost = 0;
-
-  // IB formed last — whichever side formed last tends to break in that direction (52-57%)
-  // High formed last = bullish lean (price made high last, momentum upward)
-  // Low formed last = bearish lean (price made low last, momentum downward)
-  // Combined with IB close vs midpoint: 74-84% accuracy
-  if (ibFormedLast === 'high') {
-    // High formed last = bullish lean (market pushed up last)
-    if (resolvedDir === 'long') {
-      ibBoost += 1;
-      signals.push('📐 IB HIGH formed last — final push was upward, upside breakout more likely (+1).');
-    } else if (resolvedDir === 'short') {
-      ibBoost -= 1;
-      signals.push('📐 IB HIGH formed last — final push upward conflicts with short bias (-1).');
-    } else {
-      signals.push('📐 IB HIGH formed last — mild bullish lean on neutral day.');
-    }
-  } else if (ibFormedLast === 'low') {
-    // Low formed last = bearish lean (market pushed down last)
-    if (resolvedDir === 'short') {
-      ibBoost += 1;
-      signals.push('📐 IB LOW formed last — final push was downward, downside breakout more likely (+1).');
-    } else if (resolvedDir === 'long') {
-      ibBoost -= 1;
-      signals.push('📐 IB LOW formed last — final push downward conflicts with long bias (-1).');
-    } else {
-      signals.push('📐 IB LOW formed last — mild bearish lean on neutral day.');
-    }
-  }
-
-  // IB size
+  // ── IB Size (stat-backed: short ~75-80% trending, large = fade) ──
+  let ibSizeBoost = 0;
   if (ibSize === 'short') {
-    ibBoost += 1;
-    signals.push('📐 Short IB (<50% ATR) — trending day likely (~75-80% after confirmed break), lean into bias (+1)');
-  } else if (ibSize === 'medium') {
-    signals.push('📐 Medium IB — no extra info, carry bias, use VP levels for execution');
+    ibSizeBoost = 1;
+    signals.push('📐 Short IB (<50% ATR) — trending day likely ~75-80% after confirmed break (+1)');
   } else if (ibSize === 'large') {
-    ibBoost -= 2;
-    signals.push('📐 Large IB (>100% ATR) — market already moved. Fade posture: sell IB high, buy IB low. Conviction reduced (-2).');
+    ibSizeBoost = -2;
+    signals.push('📐 Large IB (>100% ATR) — market already moved. Fade posture. Conviction reduced (-2).');
+  } else if (ibSize === 'medium') {
+    signals.push('📐 Medium IB — no extra info, carry mid-session signals.');
+  }
+  score += ibSizeBoost;
+
+  // ── IB Close vs Midpoint (strongest pre-break stat) ──
+  // above mid: 83.5% upside break | below mid: 94.9% downside break
+  let midCloseBias = null;
+  if (ibCloseMid === 'above') {
+    score += 1;
+    midCloseBias = 'long';
+    signals.push('📊 IB closed ABOVE midpoint — 83.5% upside breakout probability (+1).');
+  } else if (ibCloseMid === 'below') {
+    score -= 1;
+    midCloseBias = 'short';
+    signals.push('📊 IB closed BELOW midpoint — 94.9% downside breakout probability (-1).');
   }
 
-  // VA overlap — regime context only, not scored
-  // Use to identify balance vs trending regime for edge context selection
-  if (vaOverlap === 'heavy') {
-    signals.push('🔁 Multi-day heavy VA overlap — balance regime. Fade extremes, expect rotation. Use edge context accordingly.');
-  } else if (vaOverlap === 'partial') {
-    signals.push('↔ Partial VA overlap — transitional. One side attempting to break out. Watch which side gets rejected.');
-  } else if (vaOverlap === 'none') {
-    signals.push('➡ No VA overlap — trending/expansion regime. Follow the bias direction, hold runners, don\'t fade.');
-  }
-
-  // ── Step 6: Live multi-day balance edge (additive, no override) ──
-  // Edge above/below = 0 (two-sided, wait for resolution)
-  // Failed breakout above/below = ±2 (trapped participants, direction known)
-  // Expansion above/below = ±2 (new directional phase confirmed)
-  // Middle = 0 (signal decayed)
+  // ── Live Edge Context (structural signal, ±2) ──
   let edgeBoost = 0;
-  if (liveEdgeContext === 'balance_edge_above') {
-    edgeBoost = 0;
-    signals.push('⚖️ Balance edge ABOVE — price at high edge of range. Two-sided: breakout above OR failed expansion back down. No score — wait for resolution, rely on other inputs.');
-  } else if (liveEdgeContext === 'balance_edge_below') {
-    edgeBoost = 0;
-    signals.push('⚖️ Balance edge BELOW — price at low edge of range. Two-sided: breakout below OR failed expansion back up. No score — wait for resolution, rely on other inputs.');
-  } else if (liveEdgeContext === 'failed_breakout_above') {
+  if (liveEdgeContext === 'failed_breakout_above') {
     edgeBoost = -2;
-    signals.push('❌ Failed breakout ABOVE — broke above balance high, came back inside. Trapped longs. Bears in control (-2).');
+    signals.push('❌ Failed breakout ABOVE — broke above balance high, came back. Trapped longs. Bears in control (-2).');
   } else if (liveEdgeContext === 'failed_breakout_below') {
     edgeBoost = 2;
-    signals.push('❌ Failed breakout BELOW — broke below balance low, came back inside. Trapped shorts. Bulls in control (+2).');
+    signals.push('❌ Failed breakout BELOW — broke below balance low, came back. Trapped shorts. Bulls in control (+2).');
   } else if (liveEdgeContext === 'expansion_above') {
     edgeBoost = 2;
-    signals.push('📈 Expansion ABOVE — clear acceptance above balance high. Bulls in control, new directional phase (+2).');
+    signals.push('📈 Expansion ABOVE — accepted above balance high. Bulls in control (+2).');
   } else if (liveEdgeContext === 'expansion_below') {
     edgeBoost = -2;
-    signals.push('📉 Expansion BELOW — clear acceptance below balance low. Bears in control, new directional phase (-2).');
+    signals.push('📉 Expansion BELOW — accepted below balance low. Bears in control (-2).');
+  } else if (liveEdgeContext === 'balance_edge_above') {
+    signals.push('⚖️ Balance edge ABOVE — two-sided. Wait for resolution. No score.');
+  } else if (liveEdgeContext === 'balance_edge_below') {
+    signals.push('⚖️ Balance edge BELOW — two-sided. Wait for resolution. No score.');
   } else if (liveEdgeContext === 'middle_of_balance') {
-    edgeBoost = 0;
-    signals.push('⚖️ Middle of balance — signal decayed, no directional edge. Fade extremes only.');
+    signals.push('⚖️ Middle of balance — signal decayed. Fade extremes only.');
   }
+  score += edgeBoost;
 
-  // Edge establishes direction on neutral days if strong enough
-  if (edgeBoost >= 2 && resolvedDir === 'neutral') {
-    resolvedDir = 'long'; structuralAgreement = 0;
-    signals.push('⚡ Failed breakout below / expansion above establishes long from neutral.');
-  } else if (edgeBoost <= -2 && resolvedDir === 'neutral') {
-    resolvedDir = 'short'; structuralAgreement = 0;
-    signals.push('⚡ Failed breakout above / expansion below establishes short from neutral.');
-  }
+  // ── IB Break (mid-session confirmation) ──
+  let breakBoost = 0;
 
-  // ── Step 7: Mid-session IB break (additive, no override) ──
-  let midBoost = 0;
-
-  // IB close vs midpoint — directional lean at 10:30 (+1, reduced from +2 to avoid overlap with break confirmation)
-  if (ibCloseMid === 'above') {
-    if (resolvedDir === 'long' || resolvedDir === 'neutral') {
-      midBoost += 1;
-      signals.push('📊 IB closed ABOVE midpoint — 83.5% upside breakout probability (+1).');
-    } else {
-      midBoost -= 1;
-      signals.push('📊 IB closed ABOVE midpoint — conflicts with short bias (-1 conflict).');
-    }
-  } else if (ibCloseMid === 'below') {
-    if (resolvedDir === 'short' || resolvedDir === 'neutral') {
-      midBoost += 1;
-      signals.push('📊 IB closed BELOW midpoint — 94.9% downside breakout probability (+1).');
-    } else {
-      midBoost -= 1;
-      signals.push('📊 IB closed BELOW midpoint — conflicts with long bias (-1 conflict).');
-    }
-  }
-
-  // Both sides scenario — check first
   if (ibOppositeBreak === 'yes_accepted') {
-    // Both sides accepted = double distribution
-    // BUT if we know which broke second, that direction wins 68-72%
     if (ibSecondBreak === 'high') {
-      midBoost = 2;
-      signals.push('🔼 Double break — second break was HIGH. Second break wins 68-72% (+2 bullish).');
+      breakBoost = 2;
+      signals.push('🔼 Double break — second break HIGH. Second break wins 68-72% (+2 bullish).');
     } else if (ibSecondBreak === 'low') {
-      midBoost = -2;
-      signals.push('🔽 Double break — second break was LOW. Second break wins 68-72% (-2 bearish).');
+      breakBoost = -2;
+      signals.push('🔽 Double break — second break LOW. Second break wins 68-72% (-2 bearish).');
     } else {
-      midBoost = 0;
-      signals.push('⚠️ Both IB sides accepted — double distribution. Log which side broke second for directional edge.');
+      signals.push('⚠️ Both IB sides accepted — log which broke second for directional edge.');
     }
   } else if (ibOppositeBreak === 'yes_no_accept') {
-    midBoost = 0;
-    signals.push('⚠️ Both sides tested but neither held — chop. Neutral.');
+    signals.push('⚠️ Both sides tested, neither held — chop. Neutral.');
   } else {
-    // Single sided break — merged timing + held into one score
-    // C-period break + held = ±2 (strongest, 45.5% reach 100% extension)
-    // D/E or afternoon break + held = ±1 (weaker, lower extension probability)
-    // Snapped back = ∓1 (failed break, mild reversal)
+    // Single sided break
     if (ibBreakDir === 'high' && ibTimeAcceptance === 'yes') {
       if (ibBreakTiming === 'c_period') {
-        midBoost = 2;
-        signals.push('🔼 IB broke HIGH + held C-period (10:30-11:00) — strongest confirmation. 45.5% reach 100% extension (+2).');
-        signals.push('🌙 Noon Curve: 82% probability PM session extends to new high. Historical PM extreme ~2:04pm — consider holding toward 2pm.');
+        breakBoost = 2;
+        signals.push('🔼 IB broke HIGH + candle closed above — C-period. 45.5% reach 100% extension (+2).');
+        signals.push('🌙 Noon Curve: 82% probability PM session extends to new high. PM extreme ~2:04pm.');
       } else {
-        midBoost = 1;
-        signals.push(`🔼 IB broke HIGH + held ${ibBreakTiming === 'afternoon' ? 'afternoon (12:00+)' : 'D/E period (11:00-12:00)'} — confirmed but lower extension probability (+1).`);
+        breakBoost = 1;
+        signals.push('🔼 IB broke HIGH + candle closed above — ' + (ibBreakTiming === 'afternoon' ? 'Afternoon' : 'D/E period') + '. Lower extension probability (+1).');
       }
     } else if (ibBreakDir === 'low' && ibTimeAcceptance === 'yes') {
       if (ibBreakTiming === 'c_period') {
-        midBoost = -2;
-        signals.push('🔽 IB broke LOW + held C-period (10:30-11:00) — strongest confirmation. 45.5% reach 100% extension (-2).');
-        signals.push('🌙 Noon Curve: 72% probability PM session extends to new low. Historical PM extreme ~2:04pm — consider holding toward 2pm.');
+        breakBoost = -2;
+        signals.push('🔽 IB broke LOW + candle closed below — C-period. 45.5% reach 100% extension (-2).');
+        signals.push('🌙 Noon Curve: 72% probability PM session extends to new low. PM extreme ~2:04pm.');
       } else {
-        midBoost = -1;
-        signals.push(`🔽 IB broke LOW + held ${ibBreakTiming === 'afternoon' ? 'afternoon (12:00+)' : 'D/E period (11:00-12:00)'} — confirmed but lower extension probability (-1).`);
+        breakBoost = -1;
+        signals.push('🔽 IB broke LOW + candle closed below — ' + (ibBreakTiming === 'afternoon' ? 'Afternoon' : 'D/E period') + '. Lower extension probability (-1).');
       }
     } else if (ibBreakDir === 'high' && ibTimeAcceptance === 'no') {
-      midBoost = -1;
+      breakBoost = -1;
       signals.push('↩ IB broke HIGH but snapped back — higher prices rejected, mild bearish lean (-1).');
     } else if (ibBreakDir === 'low' && ibTimeAcceptance === 'no') {
-      midBoost = 1;
+      breakBoost = 1;
       signals.push('↪ IB broke LOW but snapped back — lower prices rejected, mild bullish lean (+1).');
     } else if (ibBreakDir === 'none') {
-      signals.push('➡ No clean IB break — original bias carries.');
+      signals.push('➡ No clean IB break — mid-session signals only.');
     }
 
-    // CVD modifier on single sided breaks only
-    if (midBoost !== 0 && ibCVD === 'agreeing') {
-      midBoost += midBoost > 0 ? 1 : -1;
-      signals.push('📊 CVD agreeing with break — delta confirms (+1 in break direction).');
-    } else if (midBoost !== 0 && ibCVD === 'diverging') {
-      midBoost += midBoost > 0 ? -1 : 1;
-      signals.push('📊 CVD diverging — delta not confirming, potential trap (dampened).');
+    // CVD modifier on single sided held breaks only
+    if (ibTimeAcceptance === 'yes' && breakBoost !== 0) {
+      if (ibCVD === 'agreeing') {
+        breakBoost += breakBoost > 0 ? 1 : -1;
+        signals.push('📊 CVD agreeing with break — delta confirms (+1 in break direction).');
+      } else if (ibCVD === 'diverging') {
+        breakBoost += breakBoost > 0 ? -1 : 1;
+        signals.push('📊 CVD diverging — delta not confirming, potential trap (dampened).');
+      }
     }
 
     // Retracement depth after held break
     if (ibTimeAcceptance === 'yes' && ibRetrace) {
       if (ibRetrace === 'shallow') {
-        midBoost += midBoost > 0 ? 1 : -1;
-        signals.push('📐 Shallow retracement (<25% back into IB) — 93.8% continuation, zero double break days (+1).');
+        breakBoost += breakBoost > 0 ? 1 : -1;
+        signals.push('📐 Shallow retracement (<25% back into IB) — 93.8% continuation (+1).');
       } else if (ibRetrace === 'deep') {
-        midBoost = midBoost > 0 ? midBoost - 2 : midBoost + 2;
-        signals.push('📐 Deep retracement (>50% back into IB) — breakout signal largely dead. 24.8% close in original direction. Double break likely (-2).');
+        breakBoost += breakBoost > 0 ? -2 : 2;
+        signals.push('📐 Deep retracement (>50% back into IB) — 24.8% close in break direction. Double break likely (-2).');
       }
     }
   }
 
-  // PDH/PDL break during session
-  // Held: PDH +1 bullish (81% close), PDL -1 bearish (66% close)
-  // Snapped back: PDH -1 mild bearish (failed upside), PDL +1 mild bullish (failed downside)
-  if (pdhPdlBreak === 'pdh_held') {
-    if (resolvedDir === 'long' || resolvedDir === 'neutral') {
-      midBoost += 1;
-      signals.push('📈 PDH broke + held — 81% bullish session close (+1).');
-    } else {
-      signals.push('📈 PDH broke + held — conflicts with short bias. Watch for reversal.');
-    }
-  } else if (pdhPdlBreak === 'pdl_held') {
-    if (resolvedDir === 'short' || resolvedDir === 'neutral') {
-      midBoost -= 1;
-      signals.push('📉 PDL broke + held — 66% bearish session close (-1).');
-    } else {
-      signals.push('📉 PDL broke + held — conflicts with long bias. Watch for reversal.');
-    }
-  } else if (pdhPdlBreak === 'pdh_snapped') {
-    midBoost -= 1;
-    signals.push('↩ PDH broke but snapped back — failed upside, mild bearish lean (-1).');
-  } else if (pdhPdlBreak === 'pdl_snapped') {
-    midBoost += 1;
-    signals.push('↪ PDL broke but snapped back — failed downside, mild bullish lean (+1).');
+  score += breakBoost;
+
+  // ── Determine bias direction from score + midClose anchor ──
+  let bias, conviction, sizing, color;
+
+  // Determine direction
+  let direction = null;
+  if (score > 0) direction = 'long';
+  else if (score < 0) direction = 'short';
+  else {
+    // Tiebreak: use IB close vs midpoint as anchor
+    if (midCloseBias === 'long') direction = 'long';
+    else if (midCloseBias === 'short') direction = 'short';
+    else direction = null;
   }
 
-  // Shallow retracement signal note (94% continuation — informational only, not scored)
-  // User can note this in trade notes — no UI input needed
-
-  // ── Conviction scoring (fully additive, directionally aware) ──
-  // edgeBoost and midBoost are directional — positive = bullish, negative = bearish
-  // Agreement with resolvedDir adds, conflict subtracts
-  const edgeContrib = resolvedDir === 'long' ? edgeBoost : resolvedDir === 'short' ? -edgeBoost : 0;
-  const midContrib = resolvedDir === 'long' ? midBoost : resolvedDir === 'short' ? -midBoost : 0;
-  const score = structuralAgreement + ibBoost + edgeContrib + midContrib;
-
-  let conviction, sizing, biasLabel, color;
-
-  if (resolvedDir === 'neutral') {
-    conviction = 'neutral';
-    sizing = 'Fade extremes only. No trend trades. Half size max.';
-    biasLabel = 'neutral';
-    color = C.yellow;
+  if (!direction) {
+    bias = 'neutral'; conviction = 'neutral'; color = C.yellow;
+    sizing = 'Neutral — fade extremes only. Half size max.';
   } else {
-    biasLabel = resolvedDir === 'long' ? 'bullish' : 'bearish';
-    color = resolvedDir === 'long' ? C.green : C.red;
-    if (score >= 5) {
+    bias = direction === 'long' ? 'bullish' : 'bearish';
+    color = direction === 'long' ? C.green : C.red;
+    const absScore = Math.abs(score);
+    if (absScore >= 5) {
       conviction = 'high';
       sizing = 'Full size. Hold runners. High-probability alignment (~68-75%).';
-    } else if (score >= 3) {
+    } else if (absScore >= 3) {
       conviction = 'medium';
       sizing = 'Standard size. Normal stops. Take clean setups only (~60-65%).';
-    } else if (score >= 1) {
+    } else if (absScore >= 1) {
       conviction = 'low';
       sizing = 'Reduced size. Tighter stops. Base-rate edge only (~55-58%).';
     } else {
       conviction = 'neutral';
-      sizing = 'Score too low or conflicting — treat as neutral. Fade extremes only.';
-      biasLabel = 'neutral';
-      color = C.yellow;
+      sizing = 'Score too low — treat as neutral. Fade extremes only.';
+      bias = 'neutral'; color = C.yellow;
     }
   }
 
-  return { bias: biasLabel, conviction, sizing, signals, color };
+  return { bias, conviction, sizing, signals, color, score };
 }
 
 function emptyBiasInputs() {
@@ -705,12 +540,7 @@ function emptyDay(){
       keyLevelsImg:'',
       esPlan:'',
       nqPlan:'',
-      mentalSleep:'',
-      mentalStress:'',
-      mentalConfidence:'',
-      mentalExterior:'',
       dayType:'',
-      weeklyContext:'',
     },
     trades:[newTrade()],
     eod:{emotions:'',well:'',fix:'',review:'',
@@ -1133,54 +963,12 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
         Pre-Market Inputs
       </div>
 
-      {/* Prior day candle */}
-      <div style={{marginBottom:18}}>
-        <SectionLabel>Prior day body (close vs open, no wicks)</SectionLabel>
-        <Pills
-          options={[
-            {label:'🟢 Green close',value:'green'},
-            {label:'🔴 Red close',value:'red'},
-            {label:'⚪ Inside day',value:'inside'},
-          ]}
-          value={biasInputs.prevDayCandle}
-          onChange={set('prevDayCandle')}
-          colors={{green:C.green,red:C.red,inside:'#aaa'}}
-        />
-      </div>
 
-      {/* Inside day count — only show if inside or if count > 0 */}
-      {(biasInputs.prevDayCandle === 'inside' || parseInt(biasInputs.insideDayCount) > 0) && (
-        <div style={{marginBottom:18}}>
-          <SectionLabel>Consecutive inside days</SectionLabel>
-          <Pills
-            options={[{label:'1',value:'1'},{label:'2',value:'2'},{label:'3+',value:'3'}]}
-            value={biasInputs.insideDayCount}
-            onChange={set('insideDayCount')}
-            colors={{1:C.yellow,2:C.orange,3:C.red}}
-          />
-        </div>
-      )}
-
-      {/* TPO distribution */}
-      {/* POC migration */}
-      <div style={{marginBottom:18}}>
-        <SectionLabel>POC migration (last 3–5 sessions)</SectionLabel>
-        <Pills
-          options={[
-            {label:'↗ Rising',value:'rising'},
-            {label:'➡ Flat',value:'flat'},
-            {label:'↘ Falling',value:'falling'},
-          ]}
-          value={biasInputs.pocMigration}
-          onChange={set('pocMigration')}
-          colors={{rising:C.green,flat:'#aaa',falling:C.red}}
-        />
-      </div>
 
       {/* ── SECTION B: Same-day inputs (10:30 check) ── */}
       <div style={{fontSize:11,color:C.purple,letterSpacing:'0.1em',textTransform:'uppercase',fontWeight:700,marginBottom:16,display:'flex',alignItems:'center',gap:8}}>
         <div style={{width:3,height:14,background:C.purple,borderRadius:2}}/>
-        Same-Day Inputs (10:30 EST)
+        10:30 EST Inputs
       </div>
 
       {/* IB size */}
@@ -1199,37 +987,9 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
         
       </div>
 
-      {/* VA overlap — regime context, not scored */}
-      <div style={{marginBottom:18,padding:'12px 14px',background:C.surface,borderRadius:12,border:`1px solid ${C.border}`}}>
-        <div style={{fontSize:11,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700,marginBottom:8}}>
-          Multi-Day VA Overlap — Regime Context (not scored)
-        </div>
-        <Pills
-          options={[
-            {label:'Heavy overlap (2+ sessions)',value:'heavy'},
-            {label:'Partial overlap',value:'partial'},
-            {label:'No overlap',value:'none'},
-          ]}
-          value={biasInputs.vaOverlap}
-          onChange={set('vaOverlap')}
-          colors={{heavy:C.yellow,partial:'#aaa',none:C.blue}}
-        />
-        
-      </div>
 
-      {/* IB formed last — which side formed last leans opposite */}
-      <div style={{marginBottom:18}}>
-        <SectionLabel>Which side of IB formed LAST?</SectionLabel>
-        <Pills
-          options={[
-            {label:'⬆ HIGH formed last',value:'high'},
-            {label:'⬇ LOW formed last',value:'low'},
-          ]}
-          value={biasInputs.ibFormedLast}
-          onChange={set('ibFormedLast')}
-          colors={{high:C.green,low:C.red}}
-        />
-      </div>
+
+
 
       <div style={{height:1,background:C.surface2,margin:'28px 0 24px'}}/>
       <div style={{fontSize:11,color:C.orange,letterSpacing:'0.1em',textTransform:'uppercase',fontWeight:700,marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
@@ -1411,52 +1171,9 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
         </div>
       </div>
 
-      {/* PDH/PDL break during session */}
-      <div style={{marginTop:16,marginBottom:4}}>
-        <SectionLabel>PDH / PDL interaction during session</SectionLabel>
-        
-        <Pills
-          options={[
-            {label:'📈 PDH broke + held',value:'pdh_held'},
-            {label:'📉 PDL broke + held',value:'pdl_held'},
-            {label:'↩ PDH broke + snapped back',value:'pdh_snapped'},
-            {label:'↪ PDL broke + snapped back',value:'pdl_snapped'},
-          ]}
-          value={biasInputs.pdhPdlBreak}
-          onChange={set('pdhPdlBreak')}
-          colors={{pdh_held:C.green,pdl_held:C.red,pdh_snapped:C.red,pdl_snapped:C.green}}
-        />
-        
-      </div>
 
-      {/* Profile shape — context only, no scoring */}
-      <div style={{marginTop:20,marginBottom:4,padding:'14px 16px',background:C.surface,borderRadius:12,border:`1px solid ${C.border}`}}>
-        <div style={{fontSize:11,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700,marginBottom:10}}>
-          Prior Day Profile Shape — Reference Only (not scored)
-        </div>
-        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-          {[
-            {label:'D — Trend',value:'D',col:C.purple},
-            {label:'B — Double dist.',value:'B',col:C.green},
-            {label:'b — Trapped shorts',value:'b',col:C.teal},
-            {label:'P — Spike rejected',value:'P',col:C.red},
-            {label:'Normal bell',value:'normal',col:'#aaa'},
-            {label:'Balanced / No Shape',value:'balanced_no_shape',col:'#aaa'},
-            {label:'Wide Range / No Shape',value:'wide_range_no_shape',col:C.yellow},
-          ].map(o=>{
-            const active=biasInputs.profileShape===o.value;
-            return(
-              <button key={o.value} onClick={()=>set('profileShape')(active?'':o.value)} style={{
-                padding:'5px 11px',borderRadius:20,fontSize:11,fontFamily:'inherit',cursor:'pointer',
-                border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
-                background:active?o.col+'22':'transparent',
-                color:active?o.col:C.textMut,fontWeight:active?700:400,transition:'all 0.15s',
-              }}>{o.label}</button>
-            );
-          })}
-        </div>
-        
-      </div>
+
+
 
       {/* Mid-session output card */}
       {displayResult.midSession && (
@@ -1507,75 +1224,7 @@ function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
 }
 
 // ─── Pre-Market Tab ───────────────────────────────────────────────────────────
-function MentalStatePanel({data, onChange}){
-  const set = k => v => onChange({...data, [k]: v === data[k] ? '' : v});
 
-  const mentalWarnings = [];
-  if (data.mentalSleep === 'poor' || data.mentalSleep === 'terrible') mentalWarnings.push('poor sleep');
-  if (data.mentalStress === 'elevated' || data.mentalStress === 'high') mentalWarnings.push('elevated stress');
-  if (data.mentalConfidence === 'shaky') mentalWarnings.push('shaky confidence');
-  if (data.mentalExterior === 'personal' || data.mentalExterior === 'distracted') mentalWarnings.push('external distractions');
-  const hasWarning = mentalWarnings.length >= 2;
-  const hasSevere = data.mentalSleep === 'terrible' || data.mentalStress === 'high' || data.mentalConfidence === 'shaky';
-
-  return(
-    <div>
-      {/* Sleep */}
-      <div style={{marginBottom:14}}>
-        <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Sleep</div>
-        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-          {[{v:'great',l:'Great 7-8h',c:C.green},{v:'ok',l:'OK 5-6h',c:C.teal},{v:'poor',l:'Poor 3-4h',c:C.orange},{v:'terrible',l:'Terrible <3h',c:C.red}].map(o=>{
-            const active=data.mentalSleep===o.v;
-            return <button key={o.v} onClick={()=>set('mentalSleep')(o.v)} style={{padding:'6px 14px',borderRadius:20,border:active?`1.5px solid ${o.c}`:`1.5px solid ${C.border}`,background:active?o.c+'22':'transparent',color:active?o.c:C.textMut,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:active?700:400,transition:'all 0.15s'}}>{o.l}</button>;
-          })}
-        </div>
-      </div>
-      {/* Stress */}
-      <div style={{marginBottom:14}}>
-        <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Stress</div>
-        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-          {[{v:'calm',l:'Calm',c:C.green},{v:'mild',l:'Mild',c:C.teal},{v:'elevated',l:'Elevated',c:C.orange},{v:'high',l:'High',c:C.red}].map(o=>{
-            const active=data.mentalStress===o.v;
-            return <button key={o.v} onClick={()=>set('mentalStress')(o.v)} style={{padding:'6px 14px',borderRadius:20,border:active?`1.5px solid ${o.c}`:`1.5px solid ${C.border}`,background:active?o.c+'22':'transparent',color:active?o.c:C.textMut,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:active?700:400,transition:'all 0.15s'}}>{o.l}</button>;
-          })}
-        </div>
-      </div>
-      {/* Confidence */}
-      <div style={{marginBottom:14}}>
-        <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Confidence</div>
-        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-          {[{v:'sharp',l:'Sharp',c:C.green},{v:'normal',l:'Normal',c:C.teal},{v:'cautious',l:'Cautious',c:C.yellow},{v:'shaky',l:'Shaky',c:C.red}].map(o=>{
-            const active=data.mentalConfidence===o.v;
-            return <button key={o.v} onClick={()=>set('mentalConfidence')(o.v)} style={{padding:'6px 14px',borderRadius:20,border:active?`1.5px solid ${o.c}`:`1.5px solid ${C.border}`,background:active?o.c+'22':'transparent',color:active?o.c:C.textMut,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:active?700:400,transition:'all 0.15s'}}>{o.l}</button>;
-          })}
-        </div>
-      </div>
-      {/* Exterior */}
-      <div style={{marginBottom:14}}>
-        <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>External Factors</div>
-        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-          {[{v:'clear',l:'All clear',c:C.green},{v:'news_day',l:'Major news day',c:C.yellow},{v:'personal',l:'Personal stuff',c:C.orange},{v:'distracted',l:'Distracted',c:C.red}].map(o=>{
-            const active=data.mentalExterior===o.v;
-            return <button key={o.v} onClick={()=>set('mentalExterior')(o.v)} style={{padding:'6px 14px',borderRadius:20,border:active?`1.5px solid ${o.c}`:`1.5px solid ${C.border}`,background:active?o.c+'22':'transparent',color:active?o.c:C.textMut,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:active?700:400,transition:'all 0.15s'}}>{o.l}</button>;
-          })}
-        </div>
-      </div>
-      {/* Warning */}
-      {(hasWarning || hasSevere) && (
-        <div style={{background:C.red+'12',border:`1px solid ${C.red}44`,borderRadius:10,padding:'12px 14px',marginTop:4}}>
-          <div style={{fontSize:12,color:C.red,fontWeight:700,marginBottom:4}}>
-            ⚠ {hasSevere ? 'Severe impairment detected' : 'Multiple risk factors'}
-          </div>
-          <div style={{fontSize:11,color:C.textSub,lineHeight:1.6}}>
-            {hasSevere
-              ? 'Consider not trading today. If you do trade — minimum size, maximum 2 trades, stop at first loss.'
-              : `${mentalWarnings.join(' + ')} detected. Reduce size by 50%. Tighter daily max loss. Take only A+ setups.`}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 function PreMarketTab({data,onChange,isMobile,userId}){
   const set=k=>v=>onChange({...data,[k]:v});
@@ -1600,13 +1249,6 @@ function PreMarketTab({data,onChange,isMobile,userId}){
     const align = computeAlignment(newEsResult, result);
     onChange({...data, nqInputs: newInputs, nqComputedBias: result.bias,
       dailyBias: align?.combined || result.bias, alignmentBias: align?.combined || ''});
-  };
-
-  const mentalData = {
-    mentalSleep: data.mentalSleep||'',
-    mentalStress: data.mentalStress||'',
-    mentalConfidence: data.mentalConfidence||'',
-    mentalExterior: data.mentalExterior||'',
   };
 
   // Instrument column component
@@ -1757,107 +1399,6 @@ function PreMarketTab({data,onChange,isMobile,userId}){
         )}
       </div>
 
-      {/* ── PRIOR WEEK MIDPOINT ── */}
-      <Divider label="Prior Week Midpoint"/>
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:20}}>
-        {[{inst:'ES',prefix:'es'},{inst:'NQ',prefix:'nq'}].map(({inst,prefix})=>{
-          const hi=parseFloat(data[prefix+'PwHigh']);
-          const lo=parseFloat(data[prefix+'PwLow']);
-          const cur=parseFloat(data[prefix+'PwCur']);
-          const valid=hi&&lo&&cur&&hi>lo;
-          const mid=valid?((hi+lo)/2).toFixed(2):null;
-          const aboveMid=valid&&cur>parseFloat(mid);
-          const pct=valid?(((cur-lo)/(hi-lo))*100).toFixed(0):null;
-          const nearExtreme=valid&&(parseInt(pct)<=25||parseInt(pct)>=75);
-          const prob=nearExtreme?"86–96%":"73–78%";
-          const target=aboveMid?`${inst} Prior Week HIGH`:`${inst} Prior Week LOW`;
-          const col=aboveMid?C.green:C.red;
-          return(
-            <div key={inst} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:"16px"}}>
-              <div style={{fontSize:12,fontWeight:700,color:C.text,marginBottom:12}}>{inst}</div>
-              <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:12}}>
-                {[["Prior Week High",prefix+"PwHigh","e.g. 5050"],["Prior Week Low",prefix+"PwLow","e.g. 4950"],["Current Price",prefix+"PwCur","e.g. 5010"]].map(([label,key,ph])=>(
-                  <div key={key}>
-                    <div style={{fontSize:11,color:C.textSub,marginBottom:4}}>{label}</div>
-                    <input type="number" placeholder={ph} value={data[key]||""}
-                      onChange={e=>onChange({...data,[key]:e.target.value})}
-                      style={{width:"100%",padding:"8px 11px",borderRadius:9,border:`1.5px solid ${C.border}`,background:C.bg,color:C.text,fontSize:13,fontFamily:"inherit",outline:"none",boxSizing:"border-box"}}/>
-                  </div>
-                ))}
-              </div>
-              {valid?(
-                <div style={{background:col+"10",border:`1.5px solid ${col}44`,borderRadius:10,padding:"10px 12px"}}>
-                  <div style={{fontSize:12,fontWeight:700,color:col,marginBottom:4}}>
-                    {aboveMid?"🟢":"🔴"} {aboveMid?"Above":"Below"} midpoint ({mid})
-                  </div>
-                  <div style={{fontSize:11,color:C.textSub,lineHeight:1.6}}>
-                    <span style={{color:col,fontWeight:700}}>{prob}</span> {target} tested this week.
-                    {nearExtreme&&<span style={{color:C.yellow,fontWeight:600}}> ⚡ Near extreme.</span>}
-                  </div>
-                </div>
-              ):(
-                <div style={{fontSize:11,color:C.textMut,textAlign:"center",padding:"10px 0"}}>Enter levels to see weekly target</div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {/* ── IB RETEST CROSSOVER ── */}
-      <Divider label="IB Retest Crossover — Runner Management"/>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:20}}>
-        {[{inst:"ES",prefix:"es"},{inst:"NQ",prefix:"nq"}].map(({inst,prefix})=>{
-          const ibH=parseFloat(data[prefix+"IbHighRef"]);
-          const ibL=parseFloat(data[prefix+"IbLowRef"]);
-          const valid=ibH&&ibL&&ibH>ibL;
-          const ibRange=valid?(ibH-ibL):null;
-          const threshold=valid?(ibRange*0.4).toFixed(2):null;
-          const upHold=valid?(ibH+parseFloat(threshold)).toFixed(2):null;
-          const downHold=valid?(ibL-parseFloat(threshold)).toFixed(2):null;
-          return(
-            <div key={inst} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:"16px"}}>
-              <div style={{fontSize:12,fontWeight:700,color:C.text,marginBottom:12}}>{inst}</div>
-              <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:12}}>
-                {[[`${inst} IB High`,prefix+"IbHighRef","e.g. 5020"],[`${inst} IB Low`,prefix+"IbLowRef","e.g. 5000"]].map(([label,key,ph])=>(
-                  <div key={key}>
-                    <div style={{fontSize:11,color:C.textSub,marginBottom:4}}>{label}</div>
-                    <input type="number" placeholder={ph} value={data[key]||""}
-                      onChange={e=>onChange({...data,[key]:e.target.value})}
-                      style={{width:"100%",padding:"8px 11px",borderRadius:9,border:`1.5px solid ${C.border}`,background:C.bg,color:C.text,fontSize:13,fontFamily:"inherit",outline:"none",boxSizing:"border-box"}}/>
-                  </div>
-                ))}
-              </div>
-              {valid?(
-                <div style={{display:"flex",flexDirection:"column",gap:8}}>
-                  <div style={{fontSize:11,color:C.textMut,marginBottom:2}}>Range: {ibRange.toFixed(2)} pts | 40% threshold: {threshold} pts</div>
-                  <div style={{background:C.green+"10",border:`1px solid ${C.green}33`,borderRadius:9,padding:"8px 10px"}}>
-                    <div style={{fontSize:11,fontWeight:700,color:C.green,marginBottom:3}}>⬆ LONG — Hold runner</div>
-                    <div style={{fontSize:11,color:C.textSub}}>Extended less than <b>{upHold}</b> → 71% continuation on retest ✓</div>
-                  </div>
-                  <div style={{background:C.red+"10",border:`1px solid ${C.red}33`,borderRadius:9,padding:"8px 10px"}}>
-                    <div style={{fontSize:11,fontWeight:700,color:C.red,marginBottom:3}}>⬆ LONG — Take profits</div>
-                    <div style={{fontSize:11,color:C.textSub}}>Extended to <b>{upHold}</b> or beyond → retest likely reversal ✗</div>
-                  </div>
-                  <div style={{background:C.green+"10",border:`1px solid ${C.green}33`,borderRadius:9,padding:"8px 10px"}}>
-                    <div style={{fontSize:11,fontWeight:700,color:C.green,marginBottom:3}}>⬇ SHORT — Hold runner</div>
-                    <div style={{fontSize:11,color:C.textSub}}>Extended more than <b>{downHold}</b> → 71% continuation on retest ✓</div>
-                  </div>
-                  <div style={{background:C.red+"10",border:`1px solid ${C.red}33`,borderRadius:9,padding:"8px 10px"}}>
-                    <div style={{fontSize:11,fontWeight:700,color:C.red,marginBottom:3}}>⬇ SHORT — Take profits</div>
-                    <div style={{fontSize:11,color:C.textSub}}>Extended to <b>{downHold}</b> or below → retest likely reversal ✗</div>
-                  </div>
-                </div>
-              ):(
-                <div style={{fontSize:11,color:C.textMut,textAlign:"center",padding:"10px 0"}}>Enter IB levels to see runner guidance</div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      {/* ── MENTAL STATE ── */}
-      <Divider label="Mental State"/>
-      <MentalStatePanel data={mentalData} onChange={d=>onChange({...data,...d})}/>
     </div>
   );
 }
@@ -2089,8 +1630,8 @@ function EODTab({data,onChange,trades,date,isMobile,userId}){
   const esIn=data.esInputs||{};
   const nqIn=data.nqInputs||{};
   const biasStr = `ES: ${data.esComputedBias||'—'} | NQ: ${data.nqComputedBias||'—'} | Alignment: ${data.alignmentBias||data.dailyBias||'—'}`;
-  const mentalStr = [data.mentalSleep&&`Sleep: ${data.mentalSleep}`,data.mentalStress&&`Stress: ${data.mentalStress}`,data.mentalConfidence&&`Confidence: ${data.mentalConfidence}`,data.mentalExterior&&`External: ${data.mentalExterior}`].filter(Boolean).join(' · ')||'—';
-  const biasInputStr=(ins,label)=>`${label} Inputs: Candle=${ins.prevDayCandle||'—'} Shape=${ins.profileShape||'—'}(ref) POC=${ins.pocMigration||'—'} IBSize=${ins.ibSize||'—'} IBFormedLast=${ins.ibFormedLast||'—'} VAOverlap=${ins.vaOverlap||'—'} | Mid: IBCloseMid=${ins.ibCloseMid||'—'} IBBreak=${ins.ibBreakDir||'—'} TimeAccept=${ins.ibTimeAcceptance||'—'} BreakTiming=${ins.ibBreakTiming||'—'} Retrace=${ins.ibRetrace||'—'} CVD=${ins.ibCVD||'—'} OppBreak=${ins.ibOppositeBreak||'—'} SecondBreak=${ins.ibSecondBreak||'—'} PDH/PDL=${ins.pdhPdlBreak||'—'} LiveEdge=${ins.liveEdgeContext||'—'}`;
+
+  const biasInputStr=(ins,label)=>`${label} Inputs: IBSize=${ins.ibSize||'—'} | Mid: IBCloseMid=${ins.ibCloseMid||'—'} IBBreak=${ins.ibBreakDir||'—'} TimeAccept=${ins.ibTimeAcceptance||'—'} BreakTiming=${ins.ibBreakTiming||'—'} Retrace=${ins.ibRetrace||'—'} CVD=${ins.ibCVD||'—'} OppBreak=${ins.ibOppositeBreak||'—'} SecondBreak=${ins.ibSecondBreak||'—'} LiveEdge=${ins.liveEdgeContext||'—'}`;
   const prompt=`Review my trading journal for ${date}.
 Bias — ${biasStr}
 ${biasInputStr(data.esInputs||{},'ES')}
@@ -2098,8 +1639,6 @@ ${biasInputStr(data.nqInputs||{},'NQ')}
 ES Plan: ${data.esPlan||'—'}
 NQ Plan: ${data.nqPlan||'—'}
 Day Type: ${data.dayType||'—'}
-Weekly Context: ${data.weeklyContext||'—'}
-Mental State: ${mentalStr}
 Trades (${trades.length}):
 ${trades.map((t,i)=>{const r=calcRisk(t.ticker,t.contracts,t.sl);const p=calcPnL(t.ticker,t.contracts,t.points);const rr=r>0?(Math.abs(p)/r).toFixed(2):'—';const hold=calcHoldTime(t.entryTime,t.exitTime)||'—';const win=sessionWindow(t.entryTime)||'—';return`Trade ${i+1}: ${t.ticker}|${t.direction||'—'}|${t.contracts}c|SL ${t.sl}pts(per contract)|Setup:${t.plan}|Confluences:${(t.confluences||[]).join(',')||'none'}|Result:${t.result}|TotalPoints:${t.points}|P&L:$${p.toFixed(0)}|Risk:$${r.toFixed(0)}|RR:${rr}R|Entry:${t.entryTime||'—'}EST(${win})|Exit:${t.exitTime||'—'}EST|Hold:${hold}|Emotions:${t.emotions||'—'}|Notes:${t.notes||'—'}`}).join('\n')}
 Total P&L: $${total.toFixed(0)} | ES Points: ${esPts.toFixed(1)} | NQ Points: ${nqPts.toFixed(1)}
@@ -2540,11 +2079,7 @@ export default function App(){
                 esPlan:dayData.pre.esPlan,
                 nqPlan:dayData.pre.nqPlan,
                 dayType:dayData.pre.dayType,
-                weeklyContext:dayData.pre.weeklyContext,
-                mentalSleep:dayData.pre.mentalSleep,
-                mentalStress:dayData.pre.mentalStress,
-                mentalConfidence:dayData.pre.mentalConfidence,
-                mentalExterior:dayData.pre.mentalExterior,
+
               }} onChange={updateEod} trades={dayData.trades} date={selectedDate} isMobile={isMobile} userId={user?.id}/> }
             </>
           )}
