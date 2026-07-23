@@ -281,7 +281,7 @@ function applyLiveEdge(result, liveEdgeContext) {
 }
 
 function computeMidSession(bi, preBias) {
-  const { ibBreakDir, ibTimeAcceptance, ibCVD, ibOppositeBreak, liveEdgeContext } = bi;
+  const { ibBreakDir, ibTimeAcceptance, ibCVD, ibOppositeBreak, liveEdgeContext, ibBreakTiming } = bi;
 
   // Nothing entered yet
   if (!ibBreakDir) return null;
