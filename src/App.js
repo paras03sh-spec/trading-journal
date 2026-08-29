@@ -83,26 +83,19 @@ const OPENING_OPTIONS = [
 const DIRECTION_OPTIONS = [
   {label:'Long', value:'long'}, {label:'Short', value:'short'},
 ];
-const MONTHLY_LEVELS = [
-  {label:'M DVAH', value:'m_dvah'},   // Monthly Developing Value Area High
-  {label:'M DVAL', value:'m_dval'},   // Monthly Developing Value Area Low
-  {label:'M PVAH', value:'m_pvah'},   // Monthly Prior Value Area High
-  {label:'M PVAL', value:'m_pval'},   // Monthly Prior Value Area Low
-  {label:'M Extreme Deviation Band', value:'m_extreme_dev'},
+const COMPOSITE_BALANCE_EXTREME = [
+  {label:'M DVAH', value:'m_dvah'}, {label:'M DVAL', value:'m_dval'},
+  {label:'M PVAH', value:'m_pvah'}, {label:'M PVAL', value:'m_pval'},
 ];
-const WEEKLY_LEVELS = [
-  {label:'W DVAH', value:'w_dvah'},   // Weekly Developing Value Area High
-  {label:'W DVAL', value:'w_dval'},   // Weekly Developing Value Area Low
-  {label:'W PVAH', value:'w_pvah'},   // Weekly Prior Value Area High
-  {label:'W PVAL', value:'w_pval'},   // Weekly Prior Value Area Low
-  {label:'W Extreme Deviation Band', value:'w_extreme_dev'},
+const M_EXTREME_DEV_BAND = [
+  {label:'W DVAH', value:'w_dvah'}, {label:'W DVAL', value:'w_dval'},
+  {label:'W PVAH', value:'w_pvah'}, {label:'W PVAL', value:'w_pval'},
 ];
-const PRIOR_DAY_LEVELS = [
-  {label:'PDVAH', value:'pdvah'},     // Prior Day Value Area High
-  {label:'PDVAL', value:'pdval'},     // Prior Day Value Area Low
+const W_EXTREME_DEV_BAND = [
+  {label:'PDVAH', value:'pdvah'}, {label:'PDVAL', value:'pdval'},
 ];
 
-function newTrade(){return{ticker:'',direction:'',contracts:'',sl:'',plan:'',confluences:[],triggers:[],attempt:'',stContext:'',htfContext:'',openingType:'',monthlyLevel:[],weeklyLevel:[],priorDayLevel:[],mfe:'',mae:'',result:'',points:'',entryTime:'',exitTime:'',emotions:'',notes:'',img1:'',img15:'',partials:[],avgEntry:'',multiEntry:false,open:true};}
+function newTrade(){return{ticker:'',direction:'',contracts:'',sl:'',plan:'',confluences:[],triggers:[],attempt:'',stContext:'',htfContext:'',openingType:'',compositeBalanceExtreme:[],mExtremeDevBand:[],wExtremeDevBand:[],mfe:'',mae:'',result:'',points:'',entryTime:'',exitTime:'',emotions:'',notes:'',img1:'',img15:'',partials:[],avgEntry:'',multiEntry:false,open:true};}
 
 // Generate 5-min interval time options for 10:30am - 4:00pm EST
 function timeOptions(){
@@ -565,9 +558,9 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
             }}/>
           </div>
           {[
-            ['Composite Profile — Monthly', 'monthlyLevel', MONTHLY_LEVELS],
-            ['Composite Profile — Weekly', 'weeklyLevel', WEEKLY_LEVELS],
-            ['Prior Day Value Area', 'priorDayLevel', PRIOR_DAY_LEVELS],
+            ['Composite Profile Balance Extreme', 'compositeBalanceExtreme', COMPOSITE_BALANCE_EXTREME],
+            ['M Extreme Deviation Band', 'mExtremeDevBand', M_EXTREME_DEV_BAND],
+            ['W Extreme Deviation Band', 'wExtremeDevBand', W_EXTREME_DEV_BAND],
           ].map(([label, field, opts])=>(
             <div key={field} style={{marginBottom:16}}>
               <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>{label}</div>
@@ -1205,7 +1198,7 @@ function extractAllTrades(days){
         rr:t.result==='W'?rr:(t.result==='L'?-1:0),
         rawRR:rr, result:t.result,
         setup:t.plan||'—', confluences:t.confluences||[], triggers:t.triggers||[],
-        attempt:t.attempt||'—', stContext:t.stContext||'—', htfContext:t.htfContext||'—', openingType:t.openingType||'—', monthlyLevel:t.monthlyLevel||[], weeklyLevel:t.weeklyLevel||[], priorDayLevel:t.priorDayLevel||[],
+        attempt:t.attempt||'—', stContext:t.stContext||'—', htfContext:t.htfContext||'—', openingType:t.openingType||'—', compositeBalanceExtreme:t.compositeBalanceExtreme||[], mExtremeDevBand:t.mExtremeDevBand||[], wExtremeDevBand:t.wExtremeDevBand||[],
         entryTime:t.entryTime||'', exitTime:t.exitTime||'',
         session:sessionWindow(t.entryTime)||'—',
         hold:calcHoldTime(t.entryTime,t.exitTime)||'',
@@ -1506,9 +1499,9 @@ const DIMENSIONS = {
   stContext:{label:'Short-Term Context', get:t=>t.stContext, options:ST_OPTIONS},
   htfContext:{label:'HTF Context', get:t=>t.htfContext, options:HTF_OPTIONS},
   openingType:{label:'Opening Type', get:t=>t.openingType, options:OPENING_OPTIONS},
-  monthlyLevel:{label:'Monthly Composite Level', get:t=>t.monthlyLevel, multi:true, options:MONTHLY_LEVELS},
-  weeklyLevel:{label:'Weekly Composite Level', get:t=>t.weeklyLevel, multi:true, options:WEEKLY_LEVELS},
-  priorDayLevel:{label:'Prior Day Value Area', get:t=>t.priorDayLevel, multi:true, options:PRIOR_DAY_LEVELS},
+  compositeBalanceExtreme:{label:'Composite Profile Balance Extreme', get:t=>t.compositeBalanceExtreme, multi:true, options:COMPOSITE_BALANCE_EXTREME},
+  mExtremeDevBand:{label:'M Extreme Deviation Band', get:t=>t.mExtremeDevBand, multi:true, options:M_EXTREME_DEV_BAND},
+  wExtremeDevBand:{label:'W Extreme Deviation Band', get:t=>t.wExtremeDevBand, multi:true, options:W_EXTREME_DEV_BAND},
   direction:{label:'Direction', get:t=>t.direction, options:DIRECTION_OPTIONS},
   ticker:{label:'Instrument', get:t=>t.ticker}, // no static list — genuinely data-driven (whatever you've traded)
   session:{label:'Session', get:t=>t.session, options:[{label:'IB Period',value:'IB Period'},{label:'C-period',value:'C-period'},{label:'D-period',value:'D-period'},{label:'Afternoon',value:'Afternoon'}]}, // derived from entry time
@@ -1793,11 +1786,11 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
   const SECTIONS=[
     ['equity','Equity & Drawdown'],
     ['setup','Setup'],['trigger','Entry Trigger'],['attempt','Entry Attempt'],
-    ['stContext','Short-Term Context'],['htfContext','HTF Context'],['openingType','Opening Type'],['monthlyLevel','Monthly Level'],['weeklyLevel','Weekly Level'],['priorDayLevel','Prior Day VA'],['direction','Direction'],
+    ['stContext','Short-Term Context'],['htfContext','HTF Context'],['openingType','Opening Type'],['compositeBalanceExtreme','Balance Extreme'],['mExtremeDevBand','M Dev Band'],['wExtremeDevBand','W Dev Band'],['direction','Direction'],
     ['pivot','Cross / Pivot'],['time','Time & Session'],['rolling','Rolling Windows'],['whatif','What-If'],['log','Trade Log'],
   ];
 
-  const dimSectionKeys=['setup','trigger','attempt','stContext','htfContext','openingType','monthlyLevel','weeklyLevel','priorDayLevel','direction'];
+  const dimSectionKeys=['setup','trigger','attempt','stContext','htfContext','openingType','compositeBalanceExtreme','mExtremeDevBand','wExtremeDevBand','direction'];
 
   return(
     <div>
@@ -1974,7 +1967,7 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
             <BigStat label={`PF (last ${rollWin})`} val={cur.count?(cur.pf>=99?'∞':cur.pf.toFixed(2)):'—'} col={cur.pf>=1.5?C.green:cur.pf>=1?C.yellow:C.red} sub={`lifetime: ${all.pf>=99?'∞':all.pf.toFixed(2)}`}/>
             <BigStat label="Trend" val={cur.count?(cur.expectancy>=all.expectancy?'Improving ↗':'Decaying ↘'):'—'} col={cur.expectancy>=all.expectancy?C.green:C.red}/>
           </div>
-          {['setup','trigger','attempt','stContext','htfContext','openingType','monthlyLevel','weeklyLevel','priorDayLevel','direction'].map(dk=>{
+          {['setup','trigger','attempt','stContext','htfContext','openingType','compositeBalanceExtreme','mExtremeDevBand','wExtremeDevBand','direction'].map(dk=>{
             const rows=groupByDims(windowTrades,[dk],1).map(r=>{
               const lifetime=groupByDims(seqAll,[dk],1).find(x=>x.label===r.label);
               return{...r,lifeExp:lifetime?lifetime.expectancy:0,delta:r.expectancy-(lifetime?lifetime.expectancy:0)};
@@ -2067,18 +2060,18 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
             {key:'stContext',label:'ST',fmt:v=>v==='—'?'—':pretty(v).replace(' ST','')},
             {key:'htfContext',label:'HTF',fmt:v=>v==='—'?'—':pretty(v).replace(' HTF','')},
             {key:'openingType',label:'Open',fmt:v=>v==='—'?'—':v==='ir_iv'?'IR-IV':v==='ir_ov'?'IR-OV':'OR-OV'},
-            {key:'monthlyStr',label:'Monthly Lvl',align:'left'},
-            {key:'weeklyStr',label:'Weekly Lvl',align:'left'},
-            {key:'pdvaStr',label:'PDVA',align:'left'},
+            {key:'balExtStr',label:'Balance Extreme',align:'left'},
+            {key:'mDevStr',label:'M Dev Band',align:'left'},
+            {key:'wDevStr',label:'W Dev Band',align:'left'},
             {key:'result',label:'R',fmt:v=>v,color:r=>r.result==='W'?C.green:r.result==='L'?C.red:C.yellow,bold:true},
             {key:'pnl',label:'PnL',fmt:v=>(v>=0?'+':'')+'$'+v.toFixed(0),color:r=>r.pnl>=0?C.green:C.red,bold:true},
             {key:'rawRR',label:'RR',fmt:(v,r)=>r.result==='W'?v.toFixed(2)+'R':r.result==='L'?'-1R':'0R'},
             {key:'entryTime',label:'Entry'},
           ]} rows={trades.map(t=>({...t,
             triggersStr:(t.triggers||[]).map(pretty).join(', ')||'—',
-            monthlyStr:(t.monthlyLevel||[]).map(pretty).join(', ')||'—',
-            weeklyStr:(t.weeklyLevel||[]).map(pretty).join(', ')||'—',
-            pdvaStr:(t.priorDayLevel||[]).map(pretty).join(', ')||'—',
+            balExtStr:(t.compositeBalanceExtreme||[]).map(pretty).join(', ')||'—',
+            mDevStr:(t.mExtremeDevBand||[]).map(pretty).join(', ')||'—',
+            wDevStr:(t.wExtremeDevBand||[]).map(pretty).join(', ')||'—',
             __onClick:()=>onJumpToDate&&onJumpToDate(t.date)}))} defaultSort="date" isMobile={isMobile}/>
         </ChartCard>
       )}
@@ -2359,7 +2352,7 @@ function ClaudeTab({userId,isMobile}){
     const insights=insightsFor(trades).map(i=>i.text);
 
     const tradeLines=trades.map(t=>
-      `${t.date}|${t.ticker}|${t.direction}|${t.setup}|${t.result}|${t.contracts}c|SL:${t.sl}|Pts:${t.points}|P&L:$${t.pnl.toFixed(0)}|RR:${t.rawRR.toFixed(2)}|Entry:${t.entryTime}(${t.session}/${session3(t.entryTime)})|Attempt:${t.attempt}|Triggers:${t.triggers.join(',')}|ST:${t.stContext}|HTF:${t.htfContext}|Open:${t.openingType}|MoLvl:${(t.monthlyLevel||[]).join(',')}|WkLvl:${(t.weeklyLevel||[]).join(',')}|PDVA:${(t.priorDayLevel||[]).join(',')}|MFE:${t.mfe||0}|MAE:${t.mae||0}|Notes:${t.notes.slice(0,100)}`
+      `${t.date}|${t.ticker}|${t.direction}|${t.setup}|${t.result}|${t.contracts}c|SL:${t.sl}|Pts:${t.points}|P&L:$${t.pnl.toFixed(0)}|RR:${t.rawRR.toFixed(2)}|Entry:${t.entryTime}(${t.session}/${session3(t.entryTime)})|Attempt:${t.attempt}|Triggers:${t.triggers.join(',')}|ST:${t.stContext}|HTF:${t.htfContext}|Open:${t.openingType}|BalExt:${(t.compositeBalanceExtreme||[]).join(',')}|MDevBand:${(t.mExtremeDevBand||[]).join(',')}|WDevBand:${(t.wExtremeDevBand||[]).join(',')}|MFE:${t.mfe||0}|MAE:${t.mae||0}|Notes:${t.notes.slice(0,100)}`
     ).join('\n');
     const reviews=days.filter(d=>d.data?.eod?.review).map(d=>`${d.date}: ${d.data.eod.review.slice(0,300)}`).join('\n');
 
