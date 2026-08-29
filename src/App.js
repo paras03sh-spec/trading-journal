@@ -1191,12 +1191,17 @@ function extractAllTrades(days){
       const pnl=points*pv;
       const risk=sl*pv*contracts;
       const ptsPerC=contracts?points/contracts:0;
-      const rr=sl?Math.abs(ptsPerC)/sl:0;
+      // Real signed R-multiple: points-per-contract ÷ SL, sign comes naturally
+      // from the points (positive=win, negative=loss). This reflects what
+      // ACTUALLY happened — slippage, a wider/tighter stop than planned — not
+      // an assumed flat -1R on every loss.
+      const rr=sl?ptsPerC/sl:0;
+      const mfeR = (t.mfe && sl) ? parseFloat(t.mfe)/sl : null; // max R that was available on the table
       out.push({
         date:row.date, ticker:t.ticker, direction:t.direction||'—',
         contracts, points, sl, pnl, risk,
-        rr:t.result==='W'?rr:(t.result==='L'?-1:0),
-        rawRR:rr, result:t.result,
+        rr:rr, // real signed R for every trade — no more hardcoded -1 for losses
+        rawRR:rr, mfeR, result:t.result,
         setup:t.plan||'—', confluences:t.confluences||[], triggers:t.triggers||[],
         attempt:t.attempt||'—', stContext:t.stContext||'—', htfContext:t.htfContext||'—', openingType:t.openingType||'—', compositeBalanceExtreme:t.compositeBalanceExtreme||[], mExtremeDevBand:t.mExtremeDevBand||[], wExtremeDevBand:t.wExtremeDevBand||[],
         entryTime:t.entryTime||'', exitTime:t.exitTime||'',
@@ -1277,6 +1282,16 @@ function computeStats(trades){
 
   const dowNames=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
+  const withR=closed.filter(t=>t.rawRR!=null&&t.sl>0);
+  const allR=withR.map(t=>t.rawRR);
+  const avgR=allR.length?allR.reduce((s,v)=>s+v,0)/allR.length:0;
+  const stdR=allR.length>1?Math.sqrt(allR.reduce((s,v)=>s+(v-avgR)**2,0)/allR.length):0;
+  // Cumulative R curve — chronological, per-trade (not per-day like $ equity,
+  // since R is meant to be compared trade-to-trade, position-size-normalized)
+  const seqR=[...withR].sort((a,b)=>(a.date+a.entryTime).localeCompare(b.date+b.entryTime));
+  let cumR=0;
+  const rCurve=seqR.map((t,i)=>{cumR+=t.rawRR;return{date:String(i+1),val:+cumR.toFixed(2)};});
+
   return {
     totalTrades:closed.length, wins:wins.length, losses:losses.length,
     be:closed.filter(t=>t.result==='BE').length,
@@ -1293,6 +1308,7 @@ function computeStats(trades){
     byHtfContext:breakdown(t=>t.htfContext),
     byOpeningType:breakdown(t=>t.openingType),
     rrList:wins.map(t=>t.rawRR),
+    allR, avgR, stdR, rCurve,
   };
 }
 
@@ -1398,6 +1414,31 @@ function RRHistogram({rrList,height=140}){
           <span style={{fontSize:11,color:C.textSub,fontWeight:700}}>{counts[i]||''}</span>
           <div style={{width:'100%',maxWidth:44,height:`${counts[i]/max*70}%`,minHeight:counts[i]?4:0,background:C.teal,borderRadius:'4px 4px 0 0',opacity:0.85}}/>
           <span style={{fontSize:10,color:C.textMut}}>{b.l}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Full-population R-multiple histogram — wins AND losses, real signed R
+// (not the win-only, always-positive version above). This is what shows
+// whether your losses are actually controlled at ~-1R or bleeding wider.
+function RMultipleHistogram({allR,height=160}){
+  if(!allR||allR.length===0)return <div style={{height,display:'flex',alignItems:'center',justifyContent:'center',color:C.textDim,fontSize:12}}>No R data yet — needs SL entered on closed trades</div>;
+  const buckets=[
+    {l:'<-2R',min:-999,max:-2},{l:'-2 to -1R',min:-2,max:-1},{l:'-1 to 0R',min:-1,max:0},
+    {l:'0-1R',min:0,max:1},{l:'1-2R',min:1,max:2},{l:'2-3R',min:2,max:3},
+    {l:'3-4R',min:3,max:4},{l:'4-5R',min:4,max:5},{l:'5R+',min:5,max:999},
+  ];
+  const counts=buckets.map(b=>allR.filter(r=>r>=b.min&&r<b.max).length);
+  const max=Math.max(...counts,1);
+  return(
+    <div style={{display:'flex',gap:5,alignItems:'flex-end',height,overflowX:'auto'}}>
+      {buckets.map((b,i)=>(
+        <div key={i} style={{flex:1,minWidth:38,display:'flex',flexDirection:'column',alignItems:'center',gap:4,height:'100%',justifyContent:'flex-end'}}>
+          <span style={{fontSize:10.5,color:C.textSub,fontWeight:700}}>{counts[i]||''}</span>
+          <div style={{width:'100%',maxWidth:38,height:`${counts[i]/max*70}%`,minHeight:counts[i]?4:0,background:b.max<=0?C.red:C.green,borderRadius:'4px 4px 0 0',opacity:0.85}}/>
+          <span style={{fontSize:9.5,color:C.textMut,whiteSpace:'nowrap'}}>{b.l}</span>
         </div>
       ))}
     </div>
@@ -1542,7 +1583,12 @@ function metricsFor(trades){
   const total=closed.reduce((s,t)=>s+t.pnl,0);
   const withMfe=closed.filter(t=>t.mfe>0);
   const withMae=closed.filter(t=>t.mae>0);
+  const withMfeR=closed.filter(t=>t.mfeR!=null);
   const capList=withMfe.filter(t=>t.contracts>0).map(t=>Math.max(0,(t.points/t.contracts))/t.mfe);
+  const withR=closed.filter(t=>t.rawRR!=null&&t.sl>0);
+  const avgR=withR.length?withR.reduce((s,t)=>s+t.rawRR,0)/withR.length:0;
+  const stdR=withR.length>1?Math.sqrt(withR.reduce((s,t)=>s+(t.rawRR-avgR)**2,0)/withR.length):0;
+  const avgMfeR=withMfeR.length?withMfeR.reduce((s,t)=>s+t.mfeR,0)/withMfeR.length:0;
   return{
     count:closed.length, wins:w.length, losses:l.length, be:closed.length-w.length-l.length,
     winRate:w.length+l.length>0?w.length/(w.length+l.length)*100:0,
@@ -1553,6 +1599,8 @@ function metricsFor(trades){
     avgMAE:withMae.length?withMae.reduce((s,t)=>s+t.mae,0)/withMae.length:0,
     capture:capList.length?capList.reduce((s,v)=>s+v,0)/capList.length*100:0,
     mfeN:withMfe.length,
+    avgR, stdR, rN:withR.length,
+    avgMfeR, mfeRN:withMfeR.length,
   };
 }
 
@@ -1733,9 +1781,14 @@ function DimSection({dimKey,trades,minN,tagMetric,setTagMetric,isMobile,rollingB
   const dim=DIMENSIONS[dimKey];
   const rows=groupByDims(trades,[dimKey],minN);
   const hasMfe=trades.some(t=>t.mfe>0);
+  const hasR=trades.some(t=>t.sl>0);
   const cols=[...perfColumns(isMobile)];
+  if(hasR){
+    cols.push({key:'avgR',label:'Avg R',fmt:(v,r)=>r.rN?(v>=0?'+':'')+v.toFixed(2)+'R':'—',color:r=>r.avgR>=0?C.green:C.red,bold:true});
+  }
   if(hasMfe){
-    cols.push({key:'avgMFE',label:'Avg MFE',fmt:v=>v?v.toFixed(1):'—',color:()=>C.textSub});
+    cols.push({key:'avgMFE',label:'Avg MFE',fmt:v=>v?v.toFixed(1):'—',color:()=>C.green});
+    cols.push({key:'avgMAE',label:'Avg MAE',fmt:v=>v?v.toFixed(1):'—',color:()=>C.red});
     cols.push({key:'capture',label:'Capture',fmt:(v,r)=>r.mfeN?v.toFixed(0)+'%':'—',color:r=>r.capture>=60?C.green:r.capture>=40?C.yellow:C.textMut});
   }
   return(
@@ -1770,6 +1823,7 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
   const[rollWin,setRollWin]=useState(20);
   const[timeMetric,setTimeMetric]=useState('pnl');
   const[exFilters,setExFilters]=useState({});
+  const[mfeDim,setMfeDim]=useState('setup');
 
   useEffect(()=>{
     let live=true;
@@ -1787,7 +1841,7 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
     ['equity','Equity & Drawdown'],
     ['setup','Setup'],['trigger','Entry Trigger'],['attempt','Entry Attempt'],
     ['stContext','Short-Term Context'],['htfContext','HTF Context'],['openingType','Opening Type'],['compositeBalanceExtreme','Balance Extreme'],['mExtremeDevBand','M Dev Band'],['wExtremeDevBand','W Dev Band'],['direction','Direction'],
-    ['pivot','Cross / Pivot'],['time','Time & Session'],['rolling','Rolling Windows'],['whatif','What-If'],['log','Trade Log'],
+    ['pivot','Cross / Pivot'],['time','Time & Session'],['rolling','Rolling Windows'],['mfemae','MFE / MAE'],['whatif','What-If'],['log','Trade Log'],
   ];
 
   const dimSectionKeys=['setup','trigger','attempt','stContext','htfContext','openingType','compositeBalanceExtreme','mExtremeDevBand','wExtremeDevBand','direction'];
@@ -1824,11 +1878,12 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
       {/* ══ EQUITY & DRAWDOWN ══ */}
       {section==='equity'&&(<>
         <InsightsCard insights={insightsFor(trades)}/>
-        <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(4,1fr)',gap:10,marginBottom:16}}>
+        <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(5,1fr)',gap:10,marginBottom:16}}>
           <BigStat label="Net P&L" val={`${s.totalPnl>=0?'+':''}$${s.totalPnl.toFixed(0)}`} col={s.totalPnl>=0?C.green:C.red}/>
           <BigStat label="Win Rate" val={`${s.winRate.toFixed(1)}%`} col={s.winRate>=50?C.green:s.winRate>=40?C.yellow:C.red} sub={`${s.wins}W · ${s.losses}L · ${s.be}BE`}/>
           <BigStat label="Profit Factor" val={s.profitFactor>=99?'∞':s.profitFactor.toFixed(2)} col={s.profitFactor>=1.5?C.green:s.profitFactor>=1?C.yellow:C.red}/>
           <BigStat label="Expectancy" val={`${s.expectancy>=0?'+':''}$${s.expectancy.toFixed(0)}`} col={s.expectancy>=0?C.green:C.red} sub="per trade"/>
+          <BigStat label="Avg R" val={s.allR.length?`${s.avgR>=0?'+':''}${s.avgR.toFixed(2)}R`:'—'} col={s.avgR>=0?C.green:C.red} sub={s.allR.length?`σ ${s.stdR.toFixed(2)}R`:'needs SL entered'}/>
         </div>
         <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
           <ChartCard title="Equity Curve" sub="Responds live to the tag filters above">
@@ -1839,6 +1894,12 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
           </ChartCard>
           <ChartCard title="Daily P&L"><SvgBarChart series={s.dailyPnl}/></ChartCard>
           <ChartCard title="P&L Calendar"><HeatCalendar dayMap={s.dayMap}/></ChartCard>
+          <ChartCard title="R-Multiple Distribution" sub="Every closed trade, real signed R — not an assumed -1R on losses">
+            <RMultipleHistogram allR={s.allR}/>
+          </ChartCard>
+          <ChartCard title="Cumulative R Curve" sub="Position-size-normalized — shows if your edge is real, independent of contract count">
+            <SvgLineChart series={s.rCurve} color={s.avgR>=0?C.green:C.red} fill={false} fmtY={v=>v.toFixed(1)+'R'}/>
+          </ChartCard>
         </div>
       </>)}
 
@@ -1990,6 +2051,48 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
         </>);
       })()}
 
+      {/* ══ MFE / MAE ══ */}
+      {section==='mfemae'&&(()=>{
+        const withMfe=trades.filter(t=>t.mfe>0||t.mae>0);
+        if(withMfe.length===0)return(
+          <ChartCard title="MFE / MAE" sub="No trades with MFE/MAE data yet">
+            <div style={{color:C.textDim,fontSize:12,textAlign:'center',padding:'20px 0'}}>
+              MFE/MAE auto-fills on Sierra Chart CSV imports (from HighDuringPosition/LowDuringPosition). Import some trades, or enter MFE/MAE manually on a trade card, to see this section populate.
+            </div>
+          </ChartCard>
+        );
+        const rows=groupByDims(withMfe,[mfeDim],1);
+        return(
+          <ChartCard title="MFE / MAE by Tag" sub="Avg MFE = best move in your favor before exit · Avg MAE = worst heat taken · Capture = realized ÷ MFE">
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:16}}>
+              {Object.entries(DIMENSIONS).filter(([k])=>k!=='ticker').map(([k,d])=>(
+                <button key={k} onClick={()=>setMfeDim(k)} style={{
+                  padding:'5px 12px',borderRadius:16,fontSize:11,fontFamily:'inherit',cursor:'pointer',
+                  border:`1.5px solid ${mfeDim===k?C.purple:C.border}`,
+                  background:mfeDim===k?C.purple+'15':'transparent',
+                  color:mfeDim===k?C.purple:C.textMut,fontWeight:mfeDim===k?700:400,
+                }}>{d.label}</button>
+              ))}
+            </div>
+            {rows.length>0?(<>
+              <SortTable columns={[
+                {key:'label',label:'Tag',align:'left',bold:true},
+                {key:'avgMFE',label:'Avg MFE',fmt:v=>v?v.toFixed(1)+' pts':'—',color:()=>C.green,bold:true},
+                {key:'avgMAE',label:'Avg MAE',fmt:v=>v?v.toFixed(1)+' pts':'—',color:()=>C.red,bold:true},
+                {key:'capture',label:'Capture %',fmt:(v,r)=>r.mfeN?v.toFixed(0)+'%':'—',color:r=>r.capture>=60?C.green:r.capture>=40?C.yellow:C.red,bold:true},
+                {key:'avgR',label:'R Captured',fmt:(v,r)=>r.rN?(v>=0?'+':'')+v.toFixed(2)+'R':'—',color:r=>r.avgR>=0?C.green:C.red},
+                {key:'avgMfeR',label:'Max R Available',fmt:(v,r)=>r.mfeRN?v.toFixed(2)+'R':'—',color:()=>C.textSub},
+                {key:'mfeN',label:'N (with MFE)'},
+                {key:'totalPnl',label:'PnL',fmt:v=>(v>=0?'+':'')+'$'+v.toFixed(0),color:r=>r.totalPnl>=0?C.green:C.red},
+              ]} rows={rows} defaultSort="capture" isMobile={isMobile}/>
+              <div style={{marginTop:12,fontSize:11,color:C.textMut}}>R Captured vs Max R Available shows the edge you're leaving on the table in R terms — e.g. capturing +0.8R when 2.1R was on offer.</div>
+            </>):(
+              <div style={{color:C.textDim,fontSize:12,textAlign:'center',padding:'20px 0'}}>No {DIMENSIONS[mfeDim].label} tags on trades with MFE/MAE yet</div>
+            )}
+          </ChartCard>
+        );
+      })()}
+
       {/* ══ WHAT-IF ══ */}
       {section==='whatif'&&(()=>{
         const excluded=t=>{
@@ -2065,7 +2168,7 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
             {key:'wDevStr',label:'W Dev Band',align:'left'},
             {key:'result',label:'R',fmt:v=>v,color:r=>r.result==='W'?C.green:r.result==='L'?C.red:C.yellow,bold:true},
             {key:'pnl',label:'PnL',fmt:v=>(v>=0?'+':'')+'$'+v.toFixed(0),color:r=>r.pnl>=0?C.green:C.red,bold:true},
-            {key:'rawRR',label:'RR',fmt:(v,r)=>r.result==='W'?v.toFixed(2)+'R':r.result==='L'?'-1R':'0R'},
+            {key:'rawRR',label:'RR',fmt:(v,r)=>r.sl>0?(v>=0?'+':'')+v.toFixed(2)+'R':'—',color:r=>r.rawRR>=0?C.green:C.red},
             {key:'entryTime',label:'Entry'},
           ]} rows={trades.map(t=>({...t,
             triggersStr:(t.triggers||[]).map(pretty).join(', ')||'—',
@@ -2341,7 +2444,7 @@ function ClaudeTab({userId,isMobile}){
     // Pre-computed aggregates (ground truth)
     const agg={};
     Object.keys(DIMENSIONS).forEach(k=>{
-      agg[k]=groupByDims(trades,[k],1).map(g=>({tag:g.label,n:g.count,pnl:Math.round(g.totalPnl),wr:Math.round(g.winRate),pf:g.pf>=99?'inf':+g.pf.toFixed(2),exp:Math.round(g.expectancy)}));
+      agg[k]=groupByDims(trades,[k],1).map(g=>({tag:g.label,n:g.count,pnl:Math.round(g.totalPnl),wr:Math.round(g.winRate),pf:g.pf>=99?'inf':+g.pf.toFixed(2),exp:Math.round(g.expectancy),avgR:g.rN?+g.avgR.toFixed(2):null}));
     });
     const topPivots=[];
     const dims=['setup','trigger','htfContext','stContext','attempt','direction','session'];
