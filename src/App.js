@@ -695,7 +695,11 @@ function formatTime(ts) {
 // that overshoots zero closes the current trade AND opens a new one with the
 // flipped remainder, same as any professional tracker treats a reversal.
 function groupFillsIntoTrades(fills) {
-  // fills: [{ticker, side:'Buy'|'Sell', qty:number, price:number, time:ms-or-parseable}]
+  // fills: [{ticker, side:'Buy'|'Sell', qty:number, price:number, time:ms-or-parseable, high?:number, low?:number}]
+  // high/low (optional): Sierra Chart's HighDuringPosition/LowDuringPosition on
+  // each exit fill — the price extreme reached since the previous fill/reset.
+  // Chaining these across a position's fills reconstructs the true trade-level
+  // MFE/MAE without needing tick data. Only present on Sierra Chart imports.
   const byTicker = {};
   fills.forEach(f => {
     if (!f.ticker || !f.qty || !f.price) return;
@@ -707,7 +711,7 @@ function groupFillsIntoTrades(fills) {
   Object.entries(byTicker).forEach(([ticker, list]) => {
     list.sort((a, b) => new Date(a.time) - new Date(b.time));
 
-    let pos = null; // { direction, entryLegs:[], exitLegs:[] }
+    let pos = null; // { direction, entryLegs:[], exitLegs:[], high, low }
 
     const finalize = (open) => {
       if (!pos || pos.entryLegs.length === 0) return;
@@ -720,14 +724,23 @@ function groupFillsIntoTrades(fills) {
         qty: l.qty, price: l.price, time: formatTime(l.time),
         points: +(sign * (l.price - avgEntry)).toFixed(4), // per-contract points for this leg
       }));
+      const result = totalExitQty === 0 ? '' : combinedPoints > 0 ? 'W' : combinedPoints < 0 ? 'L' : 'BE';
+      // MFE/MAE from chained High/LowDuringPosition, if the source data had them
+      let mfe = '', mae = '';
+      if (pos.high != null && pos.low != null) {
+        mfe = (sign === 1 ? pos.high - avgEntry : avgEntry - pos.low).toFixed(2);
+        mae = (sign === 1 ? avgEntry - pos.low : pos.high - avgEntry).toFixed(2);
+      }
       trades.push({
         ...newTrade(),
         ticker,
-        direction: pos.direction,
+        direction: pos.direction === 'Long' ? 'long' : 'short', // matches the Direction pill values ('long'/'short')
         contracts: totalEntryQty.toString(),
         entryTime: formatTime(pos.entryLegs[0].time),
         exitTime: pos.exitLegs.length ? formatTime(pos.exitLegs[pos.exitLegs.length - 1].time) : '',
         points: totalExitQty > 0 ? combinedPoints.toFixed(2) : '',
+        result,
+        mfe, mae,
         avgEntry: avgEntry.toFixed(4),
         multiEntry: pos.entryLegs.length > 1,
         partials,
@@ -736,17 +749,25 @@ function groupFillsIntoTrades(fills) {
       });
     };
 
+    const trackExtremes = (pos, f) => {
+      if (f.high != null) pos.high = pos.high == null ? f.high : Math.max(pos.high, f.high);
+      if (f.low != null) pos.low = pos.low == null ? f.low : Math.min(pos.low, f.low);
+    };
+
     list.forEach(f => {
       const isBuy = f.side === 'Buy';
       if (!pos) {
-        pos = { direction: isBuy ? 'Long' : 'Short', entryLegs: [{ qty: f.qty, price: f.price, time: f.time }], exitLegs: [], remaining: f.qty };
+        pos = { direction: isBuy ? 'Long' : 'Short', entryLegs: [{ qty: f.qty, price: f.price, time: f.time }], exitLegs: [], remaining: f.qty, high: null, low: null };
+        trackExtremes(pos, f);
         return;
       }
       const sameDir = (isBuy && pos.direction === 'Long') || (!isBuy && pos.direction === 'Short');
       if (sameDir) {
         pos.entryLegs.push({ qty: f.qty, price: f.price, time: f.time });
         pos.remaining += f.qty;
+        trackExtremes(pos, f);
       } else {
+        trackExtremes(pos, f);
         if (f.qty <= pos.remaining) {
           pos.exitLegs.push({ qty: f.qty, price: f.price, time: f.time });
           pos.remaining -= f.qty;
@@ -756,7 +777,7 @@ function groupFillsIntoTrades(fills) {
           pos.exitLegs.push({ qty: pos.remaining, price: f.price, time: f.time });
           const leftover = f.qty - pos.remaining;
           finalize(false);
-          pos = { direction: isBuy ? 'Long' : 'Short', entryLegs: [{ qty: leftover, price: f.price, time: f.time }], exitLegs: [], remaining: leftover };
+          pos = { direction: isBuy ? 'Long' : 'Short', entryLegs: [{ qty: leftover, price: f.price, time: f.time }], exitLegs: [], remaining: leftover, high: null, low: null };
         }
       }
     });
@@ -846,9 +867,16 @@ function parseSierraCSV(csvText) {
     const rawPrice = parseFloat(row['fillprice'] || row['price'] || row['entryprice'] || row['exitprice'] || '0');
     const price = normalizeSierraPrice(ticker, rawPrice);
     const time = parseSierraDateTime(row['datetime'] || row['transdatetime'] || row['time'] || '');
+    // MFE/MAE source: Sierra Chart resets these on every fill, recording the
+    // price extreme reached since the prior fill. Blank on the opening fill
+    // (no "during position" history yet) — that's expected, not an error.
+    const rawHigh = parseFloat(row['highduringposition'] || '');
+    const rawLow = parseFloat(row['lowduringposition'] || '');
+    const high = rawHigh > 0 ? normalizeSierraPrice(ticker, rawHigh) : null;
+    const low = rawLow > 0 ? normalizeSierraPrice(ticker, rawLow) : null;
 
     if (!ticker || !side || !qty || !price || !time) continue;
-    fills.push({ ticker, side, qty, price, time });
+    fills.push({ ticker, side, qty, price, time, high, low });
   }
 
   const trades = groupFillsIntoTrades(fills);
