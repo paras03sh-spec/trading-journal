@@ -60,7 +60,7 @@ function emptyDay(){
     eod:{emotions:'',well:'',fix:'',review:''},
   };
 }
-function newTrade(){return{ticker:'',direction:'',contracts:'',sl:'',plan:'',confluences:[],triggers:[],attempt:'',stContext:'',htfContext:'',openingType:'',mfe:'',mae:'',result:'',points:'',entryTime:'',exitTime:'',emotions:'',notes:'',img1:'',img15:'',open:true};}
+function newTrade(){return{ticker:'',direction:'',contracts:'',sl:'',plan:'',confluences:[],triggers:[],attempt:'',stContext:'',htfContext:'',openingType:'',mfe:'',mae:'',result:'',points:'',entryTime:'',exitTime:'',emotions:'',notes:'',img1:'',img15:'',partials:[],avgEntry:'',multiEntry:false,open:true};}
 
 // Generate 5-min interval time options for 10:30am - 4:00pm EST
 function timeOptions(){
@@ -529,6 +529,31 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
               value={trade.result} onChange={set('result')} colors={{W:C.green,L:C.red,BE:C.yellow}}/>
           </div>
           <Input label="Total Points (all contracts combined)" type="number" value={trade.points} onChange={set('points')}/>
+
+          {trade.partials && trade.partials.length > 0 && (
+            <div style={{marginBottom:16,padding:'12px 14px',background:C.surface,border:`1px solid ${C.border}`,borderRadius:12}}>
+              <div style={{fontSize:11,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700,marginBottom:2}}>
+                Partial Exits (from import{trade.multiEntry?' — scaled-in entry':''})
+              </div>
+              {trade.multiEntry && <div style={{fontSize:11,color:C.textSub,marginBottom:8}}>Avg entry: {trade.avgEntry}</div>}
+              <div style={{display:'flex',flexDirection:'column',gap:6,marginTop:8}}>
+                {trade.partials.map((p,i)=>{
+                  const sl=parseFloat(trade.sl);
+                  const rr = sl ? (p.points/sl) : null;
+                  return(
+                    <div key={i} style={{display:'flex',justifyContent:'space-between',fontSize:12,padding:'6px 0',borderBottom:i<trade.partials.length-1?`1px solid ${C.border}`:'none'}}>
+                      <span style={{color:C.textSub}}>Partial {i+1} — {p.qty} @ {p.price} ({p.time})</span>
+                      <span style={{fontWeight:700,color:p.points>=0?C.green:C.red}}>
+                        {p.points>=0?'+':''}{p.points.toFixed(2)}pt{rr!==null?` · ${rr>=0?'+':''}${rr.toFixed(2)}R`:''}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+              {!trade.sl && <div style={{fontSize:11,color:C.textMut,marginTop:8}}>Enter SL above to see per-partial R multiples.</div>}
+            </div>
+          )}
+
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
             <Input label="MFE (pts per contract)" type="number" value={trade.mfe} onChange={set('mfe')}/>
             <Input label="MAE (pts per contract)" type="number" value={trade.mae} onChange={set('mae')}/>
@@ -661,74 +686,106 @@ function formatTime(ts) {
   return `${fh}:${fm}`;
 }
 
-function fillsToTrades(fills, orders) {
-  // Group fills by orderId to match entry/exit
-  const orderMap = {};
-  (orders || []).forEach(o => { orderMap[o.id] = o; });
-
-  // Group fills by contract and side to build trades
-  // Each fill = one leg of a trade
-  const trades = [];
-  const processed = new Set();
-
-  fills.forEach((fill, i) => {
-    if (processed.has(fill.id)) return;
-    const ticker = parseTicker(fill.contractId?.name || fill.contractName || '');
-    const direction = fill.action === 'Buy' ? 'Long' : 'Short';
-    const contracts = Math.abs(fill.qty || 1);
-    const entryPrice = fill.price || 0;
-    const entryTime = formatTime(fill.timestamp);
-
-    // Look for matching exit fill (opposite side, same contract)
-    let exitFill = null;
-    for (let j = i + 1; j < fills.length; j++) {
-      const f2 = fills[j];
-      if (processed.has(f2.id)) continue;
-      const t2 = parseTicker(f2.contractId?.name || f2.contractName || '');
-      if (t2 === ticker && f2.action !== fill.action) {
-        exitFill = f2;
-        processed.add(f2.id);
-        break;
-      }
-    }
-
-    processed.add(fill.id);
-
-    const pv = ticker === 'ES' ? 50 : ticker === 'NQ' ? 20 : ticker === 'MES' ? 5 : ticker === 'MNQ' ? 2 : 0;
-    let points = 0;
-    let exitTime = '';
-
-    if (exitFill) {
-      const exitPrice = exitFill.price || 0;
-      points = direction === 'Long'
-        ? (exitPrice - entryPrice) * contracts
-        : (entryPrice - exitPrice) * contracts;
-      exitTime = formatTime(exitFill.timestamp);
-    }
-
-    trades.push({
-      ...newTrade(),
-      ticker,
-      direction,
-      contracts: contracts.toString(),
-      entryTime,
-      exitTime,
-      points: exitFill ? points.toFixed(2) : '',
-      notes: `Imported from Tradovate. Entry: ${entryPrice}${exitFill ? ' Exit: ' + exitFill.price : ' (no exit matched)'}`,
-      open: true,
-    });
+// ═══ Position-based fill grouping ════════════════════════════════════════════
+// Shared by Tradovate and Sierra Chart import. Tracks running position per
+// instrument (like Tradezella/TradesViz/Edgewonk do) instead of pairing rows
+// 1-to-1. A fill in the SAME direction as an open position scales the entry
+// (weighted-average entry price). A fill in the OPPOSITE direction is a
+// partial (or full) exit. Position hits exactly zero → trade closes. A fill
+// that overshoots zero closes the current trade AND opens a new one with the
+// flipped remainder, same as any professional tracker treats a reversal.
+function groupFillsIntoTrades(fills) {
+  // fills: [{ticker, side:'Buy'|'Sell', qty:number, price:number, time:ms-or-parseable}]
+  const byTicker = {};
+  fills.forEach(f => {
+    if (!f.ticker || !f.qty || !f.price) return;
+    (byTicker[f.ticker] = byTicker[f.ticker] || []).push(f);
   });
 
+  const trades = [];
+
+  Object.entries(byTicker).forEach(([ticker, list]) => {
+    list.sort((a, b) => new Date(a.time) - new Date(b.time));
+
+    let pos = null; // { direction, entryLegs:[], exitLegs:[] }
+
+    const finalize = (open) => {
+      if (!pos || pos.entryLegs.length === 0) return;
+      const sign = pos.direction === 'Long' ? 1 : -1;
+      const totalEntryQty = pos.entryLegs.reduce((s, l) => s + l.qty, 0);
+      const avgEntry = pos.entryLegs.reduce((s, l) => s + l.qty * l.price, 0) / totalEntryQty;
+      const totalExitQty = pos.exitLegs.reduce((s, l) => s + l.qty, 0);
+      const combinedPoints = pos.exitLegs.reduce((s, l) => s + sign * (l.price - avgEntry) * l.qty, 0);
+      const partials = pos.exitLegs.map(l => ({
+        qty: l.qty, price: l.price, time: formatTime(l.time),
+        points: +(sign * (l.price - avgEntry)).toFixed(4), // per-contract points for this leg
+      }));
+      trades.push({
+        ...newTrade(),
+        ticker,
+        direction: pos.direction,
+        contracts: totalEntryQty.toString(),
+        entryTime: formatTime(pos.entryLegs[0].time),
+        exitTime: pos.exitLegs.length ? formatTime(pos.exitLegs[pos.exitLegs.length - 1].time) : '',
+        points: totalExitQty > 0 ? combinedPoints.toFixed(2) : '',
+        avgEntry: avgEntry.toFixed(4),
+        multiEntry: pos.entryLegs.length > 1,
+        partials,
+        notes: `Imported${pos.entryLegs.length > 1 ? ` — scaled in (avg entry ${avgEntry.toFixed(2)})` : ''}${partials.length > 1 ? `, ${partials.length} partial exits` : ''}${open ? ' — position still open, not closed in this data' : ''}.`,
+        open: true,
+      });
+    };
+
+    list.forEach(f => {
+      const isBuy = f.side === 'Buy';
+      if (!pos) {
+        pos = { direction: isBuy ? 'Long' : 'Short', entryLegs: [{ qty: f.qty, price: f.price, time: f.time }], exitLegs: [], remaining: f.qty };
+        return;
+      }
+      const sameDir = (isBuy && pos.direction === 'Long') || (!isBuy && pos.direction === 'Short');
+      if (sameDir) {
+        pos.entryLegs.push({ qty: f.qty, price: f.price, time: f.time });
+        pos.remaining += f.qty;
+      } else {
+        if (f.qty <= pos.remaining) {
+          pos.exitLegs.push({ qty: f.qty, price: f.price, time: f.time });
+          pos.remaining -= f.qty;
+          if (pos.remaining === 0) { finalize(false); pos = null; }
+        } else {
+          // Overshoot: closes current position, flips remainder into a new one
+          pos.exitLegs.push({ qty: pos.remaining, price: f.price, time: f.time });
+          const leftover = f.qty - pos.remaining;
+          finalize(false);
+          pos = { direction: isBuy ? 'Long' : 'Short', entryLegs: [{ qty: leftover, price: f.price, time: f.time }], exitLegs: [], remaining: leftover };
+        }
+      }
+    });
+    if (pos && pos.entryLegs.length) finalize(true); // still open at end of data
+  });
+
+  return trades;
+}
+
+function fillsToTrades(fills, orders) {
+  const norm = (fills || []).map(f => ({
+    ticker: parseTicker(f.contractId?.name || f.contractName || ''),
+    side: f.action === 'Buy' ? 'Buy' : 'Sell',
+    qty: Math.abs(f.qty || 0),
+    price: f.price || 0,
+    time: f.timestamp,
+  }));
+  const trades = groupFillsIntoTrades(norm);
   return trades.length > 0 ? trades : [newTrade()];
 }
 
-// Sierra Chart CSV parser
+// Sierra Chart CSV parser — feeds the same position-tracking engine as
+// Tradovate so multi-leg entries and partial exits group into one trade.
 function parseSierraCSV(csvText) {
   const lines = csvText.trim().split('\n');
   if (lines.length < 2) return [];
   const headers = lines[0].split(',').map(h => h.trim().replace(/"/g,'').toLowerCase());
 
-  const trades = [];
+  const fills = [];
   for (let i = 1; i < lines.length; i++) {
     const cols = lines[i].split(',').map(c => c.trim().replace(/"/g,''));
     if (cols.length < 3) continue;
@@ -736,27 +793,17 @@ function parseSierraCSV(csvText) {
     headers.forEach((h, idx) => { row[h] = cols[idx] || ''; });
 
     const ticker = parseTicker(row['symbol'] || row['contract'] || row['instrument'] || '');
-    const direction = (row['side'] || row['action'] || row['buy/sell'] || '').toLowerCase().includes('buy') ? 'Long' : 'Short';
-    const contracts = row['qty'] || row['quantity'] || row['contracts'] || '1';
-    const entryPrice = row['entry price'] || row['fill price'] || row['price'] || '';
-    const exitPrice = row['exit price'] || row['close price'] || '';
-    const entryTime = row['entry time'] || row['time'] || row['entry'] || '';
-    const exitTime = row['exit time'] || row['exit'] || '';
-    const pnl = row['profit/loss'] || row['p&l'] || row['pnl'] || '';
-    const points = row['points'] || row['ticks'] || '';
+    const sideRaw = (row['side'] || row['action'] || row['buy/sell'] || '').toLowerCase();
+    const side = sideRaw.includes('buy') ? 'Buy' : sideRaw.includes('sell') ? 'Sell' : '';
+    const qty = parseFloat(row['qty'] || row['quantity'] || row['contracts'] || '0');
+    const price = parseFloat(row['fill price'] || row['price'] || row['entry price'] || row['exit price'] || '0');
+    const time = row['fill time'] || row['time'] || row['entry time'] || row['exit time'] || '';
 
-    trades.push({
-      ...newTrade(),
-      ticker,
-      direction,
-      contracts,
-      entryTime: formatTime(entryTime) || entryTime,
-      exitTime: formatTime(exitTime) || exitTime,
-      points,
-      notes: `Imported from Sierra Chart. Entry: ${entryPrice}${exitPrice ? ' Exit: ' + exitPrice : ''} P&L: ${pnl}`,
-      open: true,
-    });
+    if (!ticker || !side || !qty || !price) continue;
+    fills.push({ ticker, side, qty, price, time });
   }
+
+  const trades = groupFillsIntoTrades(fills);
   return trades.length > 0 ? trades : [newTrade()];
 }
 
