@@ -614,46 +614,29 @@ function SummaryBar({trades}){
 
 
 // ─── Tradovate Import ────────────────────────────────────────────────────────
-const TRADOVATE_LIVE_URL = 'https://live.tradovateapi.com/v1';
-const TRADOVATE_DEMO_URL = 'https://demo.tradovateapi.com/v1';
-
-async function tradovateAuth(username, password, appId, appVersion, isDemo) {
-  const url = (isDemo ? TRADOVATE_DEMO_URL : TRADOVATE_LIVE_URL) + '/auth/accesstokenrequest';
-  const res = await fetch(url, {
+// Calls go through our own /api/* Vercel serverless functions, not directly to
+// Tradovate — browsers block direct cross-origin calls to Tradovate's API
+// (CORS), but a server-to-server call from Vercel's backend is unrestricted.
+async function tradovateAuth(username, password, isDemo) {
+  const res = await fetch('/api/tradovate-auth', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      name: username,
-      password,
-      appId: appId || 'Sample App',
-      appVersion: appVersion || '1.0',
-      cid: 8,
-      sec: 'secret',
-      deviceId: 'journal-app',
-    })
+    body: JSON.stringify({ username, password, isDemo }),
   });
-  if (!res.ok) throw new Error('Auth failed: ' + res.status);
-  const data = await res.json();
-  if (!data.accessToken) throw new Error(data.errorText || 'No access token returned');
+  const data = await res.json().catch(()=>({}));
+  if (!res.ok || !data.accessToken) throw new Error(data.error || ('Auth failed: ' + res.status));
   return data.accessToken;
 }
 
-async function tradovateFetchFills(token, isDemo) {
-  const base = isDemo ? TRADOVATE_DEMO_URL : TRADOVATE_LIVE_URL;
-  const res = await fetch(base + '/fill/list', {
-    headers: { 'Authorization': 'Bearer ' + token }
+async function tradovateFetchFillsAndOrders(token, isDemo) {
+  const res = await fetch('/api/tradovate-fills', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ token, isDemo }),
   });
-  if (!res.ok) throw new Error('Fill fetch failed: ' + res.status);
-  return res.json();
-}
-
-async function tradovateFetchOrders(token, isDemo) {
-  const base = isDemo ? TRADOVATE_DEMO_URL : TRADOVATE_LIVE_URL;
-  const res = await fetch(base + '/order/list', {
-    headers: { 'Authorization': 'Bearer ' + token }
-  });
-  if (!res.ok) throw new Error('Order fetch failed: ' + res.status);
-  return res.json();
+  const data = await res.json().catch(()=>({}));
+  if (!res.ok) throw new Error(data.error || ('Fetch failed: ' + res.status));
+  return data; // { fills, orders }
 }
 
 function parseTicker(contractName) {
@@ -788,15 +771,17 @@ function TradovateImportModal({onClose, onImport}) {
   const handleFetch = async () => {
     setLoading(true); setError('');
     try {
-      const token = await tradovateAuth(username, password, 'Journal App', '1.0', isDemo);
-      const [fills, orders] = await Promise.all([
-        tradovateFetchFills(token, isDemo),
-        tradovateFetchOrders(token, isDemo),
-      ]);
+      const token = await tradovateAuth(username, password, isDemo);
+      const { fills, orders } = await tradovateFetchFillsAndOrders(token, isDemo);
+      if (!fills || fills.length === 0) {
+        setError("No fills returned. Tradovate's API only exposes today's fills — yesterday's or older trades won't appear here. Use Sierra Chart CSV import for past days.");
+        setLoading(false);
+        return;
+      }
       const trades = fillsToTrades(fills, orders);
       setPreview(trades);
     } catch(e) {
-      setError(e.message);
+      setError(e.message + (e.message.toLowerCase().includes('fetch') ? ' — check your connection or try again in a moment.' : ''));
     }
     setLoading(false);
   };
@@ -818,7 +803,7 @@ function TradovateImportModal({onClose, onImport}) {
 
         {!preview ? (
           <>
-            <div style={{fontSize:11,color:C.textMut,marginBottom:12}}>Pulls today's fills from your Tradovate account.</div>
+            <div style={{fontSize:11,color:C.textMut,marginBottom:12}}>Pulls <b style={{color:C.textSub}}>today's</b> fills from your Tradovate account. Tradovate's API doesn't expose past days — for older sessions, use Sierra Chart CSV import instead.</div>
 
             <div style={{display:'flex',gap:8,marginBottom:12}}>
               {['Demo','Live'].map(m=>(
