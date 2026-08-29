@@ -60,7 +60,22 @@ function emptyDay(){
     eod:{emotions:'',well:'',fix:'',review:''},
   };
 }
-function newTrade(){return{ticker:'',direction:'',contracts:'',sl:'',plan:'',confluences:[],triggers:[],attempt:'',stContext:'',htfContext:'',openingType:'',mfe:'',mae:'',result:'',points:'',entryTime:'',exitTime:'',emotions:'',notes:'',img1:'',img15:'',partials:[],avgEntry:'',multiEntry:false,open:true};}
+const TRADE_LOCATIONS = [
+  {label:'M DVAH', value:'m_dvah'},   // Monthly Developing Value Area High
+  {label:'M DVAL', value:'m_dval'},   // Monthly Developing Value Area Low
+  {label:'M PVAH', value:'m_pvah'},   // Monthly Prior Value Area High
+  {label:'M PVAL', value:'m_pval'},   // Monthly Prior Value Area Low
+  {label:'M Extreme Deviation Band', value:'m_extreme_dev'},
+  {label:'W DVAH', value:'w_dvah'},   // Weekly Developing Value Area High
+  {label:'W DVAL', value:'w_dval'},   // Weekly Developing Value Area Low
+  {label:'W PVAH', value:'w_pvah'},   // Weekly Prior Value Area High
+  {label:'W PVAL', value:'w_pval'},   // Weekly Prior Value Area Low
+  {label:'W Extreme Deviation Band', value:'w_extreme_dev'},
+  {label:'PDVAH', value:'pdvah'},     // Prior Day Value Area High
+  {label:'PDVAL', value:'pdval'},     // Prior Day Value Area Low
+];
+
+function newTrade(){return{ticker:'',direction:'',contracts:'',sl:'',plan:'',confluences:[],triggers:[],attempt:'',stContext:'',htfContext:'',openingType:'',tradeLocation:[],mfe:'',mae:'',result:'',points:'',entryTime:'',exitTime:'',emotions:'',notes:'',img1:'',img15:'',partials:[],avgEntry:'',multiEntry:false,open:true};}
 
 // Generate 5-min interval time options for 10:30am - 4:00pm EST
 function timeOptions(){
@@ -521,6 +536,26 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
             ]} value={trade.openingType} onChange={set('openingType')} colors={{
               ir_iv:C.blue,ir_ov:C.teal,or_ov:C.purple,
             }}/>
+          </div>
+          <div style={{marginBottom:16}}>
+            <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Trade Location</div>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+              {TRADE_LOCATIONS.map(o=>{
+                const active=(trade.tradeLocation||[]).includes(o.value);
+                const toggle=()=>{
+                  const cur=trade.tradeLocation||[];
+                  set('tradeLocation')(active?cur.filter(x=>x!==o.value):[...cur,o.value]);
+                };
+                return(
+                  <button key={o.value} onClick={toggle} style={{
+                    padding:'5px 11px',borderRadius:20,fontSize:11,fontFamily:'inherit',cursor:'pointer',
+                    border:active?`1.5px solid ${C.teal}`:`1.5px solid ${C.border}`,
+                    background:active?C.teal+'18':'transparent',
+                    color:active?C.teal:C.textMut,fontWeight:active?700:400,transition:'all 0.15s',
+                  }}>{o.label}</button>
+                );
+              })}
+            </div>
           </div>
           <Divider label="Result"/>
           <div style={{marginBottom:16}}>
@@ -1137,7 +1172,7 @@ function extractAllTrades(days){
         rr:t.result==='W'?rr:(t.result==='L'?-1:0),
         rawRR:rr, result:t.result,
         setup:t.plan||'—', confluences:t.confluences||[], triggers:t.triggers||[],
-        attempt:t.attempt||'—', stContext:t.stContext||'—', htfContext:t.htfContext||'—', openingType:t.openingType||'—',
+        attempt:t.attempt||'—', stContext:t.stContext||'—', htfContext:t.htfContext||'—', openingType:t.openingType||'—', tradeLocation:t.tradeLocation||[],
         entryTime:t.entryTime||'', exitTime:t.exitTime||'',
         session:sessionWindow(t.entryTime)||'—',
         hold:calcHoldTime(t.entryTime,t.exitTime)||'',
@@ -1421,6 +1456,9 @@ const PRETTY = {
   bullish_st:'Bullish ST', bearish_st:'Bearish ST', balanced_st:'Balanced ST',
   bullish_htf:'Bullish HTF', bearish_htf:'Bearish HTF',
   ir_iv:'In Range In Value', ir_ov:'In Range Out of Value', or_ov:'Out of Range Out of Value',
+  m_dvah:'M DVAH', m_dval:'M DVAL', m_pvah:'M PVAH', m_pval:'M PVAL', m_extreme_dev:'M Extreme Deviation Band',
+  w_dvah:'W DVAH', w_dval:'W DVAL', w_pvah:'W PVAH', w_pval:'W PVAL', w_extreme_dev:'W Extreme Deviation Band',
+  pdvah:'PDVAH', pdval:'PDVAL',
   long:'Long', short:'Short',
   BPB:'BPB', RPB:'RPB', ROT:'ROT', FADE:'Fade',
   finesse:'Finesse entry', mid_move:'Entered mid-move', no_pivot:'No pivot confirmation', revenge:'Revenge trade', overtrading:'Overtrading after loss', oversized:'Oversized', moved_stop:'Moved stop', early_exit:'Early exit', chased:'Chased extension', no_level:'No level beneath entry',
@@ -1435,6 +1473,7 @@ const DIMENSIONS = {
   stContext:{label:'Short-Term Context', get:t=>t.stContext},
   htfContext:{label:'HTF Context', get:t=>t.htfContext},
   openingType:{label:'Opening Type', get:t=>t.openingType},
+  tradeLocation:{label:'Trade Location', get:t=>t.tradeLocation, multi:true},
   direction:{label:'Direction', get:t=>t.direction},
   ticker:{label:'Instrument', get:t=>t.ticker},
   session:{label:'Session', get:t=>t.session},
@@ -1719,11 +1758,11 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
   const SECTIONS=[
     ['equity','Equity & Drawdown'],
     ['setup','Setup'],['trigger','Entry Trigger'],['attempt','Entry Attempt'],
-    ['stContext','Short-Term Context'],['htfContext','HTF Context'],['openingType','Opening Type'],['direction','Direction'],
+    ['stContext','Short-Term Context'],['htfContext','HTF Context'],['openingType','Opening Type'],['tradeLocation','Trade Location'],['direction','Direction'],
     ['pivot','Cross / Pivot'],['time','Time & Session'],['rolling','Rolling Windows'],['whatif','What-If'],['log','Trade Log'],
   ];
 
-  const dimSectionKeys=['setup','trigger','attempt','stContext','htfContext','openingType','direction'];
+  const dimSectionKeys=['setup','trigger','attempt','stContext','htfContext','openingType','tradeLocation','direction'];
 
   return(
     <div>
@@ -1900,7 +1939,7 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
             <BigStat label={`PF (last ${rollWin})`} val={cur.count?(cur.pf>=99?'∞':cur.pf.toFixed(2)):'—'} col={cur.pf>=1.5?C.green:cur.pf>=1?C.yellow:C.red} sub={`lifetime: ${all.pf>=99?'∞':all.pf.toFixed(2)}`}/>
             <BigStat label="Trend" val={cur.count?(cur.expectancy>=all.expectancy?'Improving ↗':'Decaying ↘'):'—'} col={cur.expectancy>=all.expectancy?C.green:C.red}/>
           </div>
-          {['setup','trigger','attempt','stContext','htfContext','openingType','direction'].map(dk=>{
+          {['setup','trigger','attempt','stContext','htfContext','openingType','tradeLocation','direction'].map(dk=>{
             const rows=groupByDims(windowTrades,[dk],1).map(r=>{
               const lifetime=groupByDims(seqAll,[dk],1).find(x=>x.label===r.label);
               return{...r,lifeExp:lifetime?lifetime.expectancy:0,delta:r.expectancy-(lifetime?lifetime.expectancy:0)};
@@ -2246,7 +2285,7 @@ function ClaudeTab({userId,isMobile}){
     const insights=insightsFor(trades).map(i=>i.text);
 
     const tradeLines=trades.map(t=>
-      `${t.date}|${t.ticker}|${t.direction}|${t.setup}|${t.result}|${t.contracts}c|SL:${t.sl}|Pts:${t.points}|P&L:$${t.pnl.toFixed(0)}|RR:${t.rawRR.toFixed(2)}|Entry:${t.entryTime}(${t.session}/${session3(t.entryTime)})|Attempt:${t.attempt}|Triggers:${t.triggers.join(',')}|ST:${t.stContext}|HTF:${t.htfContext}|Open:${t.openingType}|MFE:${t.mfe||0}|MAE:${t.mae||0}|Notes:${t.notes.slice(0,100)}`
+      `${t.date}|${t.ticker}|${t.direction}|${t.setup}|${t.result}|${t.contracts}c|SL:${t.sl}|Pts:${t.points}|P&L:$${t.pnl.toFixed(0)}|RR:${t.rawRR.toFixed(2)}|Entry:${t.entryTime}(${t.session}/${session3(t.entryTime)})|Attempt:${t.attempt}|Triggers:${t.triggers.join(',')}|ST:${t.stContext}|HTF:${t.htfContext}|Open:${t.openingType}|Loc:${(t.tradeLocation||[]).join(',')}|MFE:${t.mfe||0}|MAE:${t.mae||0}|Notes:${t.notes.slice(0,100)}`
     ).join('\n');
     const reviews=days.filter(d=>d.data?.eod?.review).map(d=>`${d.date}: ${d.data.eod.review.slice(0,300)}`).join('\n');
 
