@@ -2007,9 +2007,38 @@ function ClaudeTab({userId,isMobile}){
   const saveName=()=>{
     const n=(nameDraft||'Claude').trim().slice(0,24)||'Claude';
     setAssistantName(n);
-    try{localStorage.setItem(nameKey,n);}catch(_){}
+    try{
+      localStorage.setItem(nameKey,n);
+      window.dispatchEvent(new CustomEvent('ai-name-changed',{detail:n}));
+    }catch(_){}
     setEditingName(false);
   };
+
+  // ── Usage tracking (rough local estimate, not exact billing) ──
+  const usageKey='journal_usage_'+(userId||'anon');
+  const curMonth=monthId(new Date());
+  const[usage,setUsage]=useState(()=>{
+    try{
+      const saved=JSON.parse(localStorage.getItem(usageKey));
+      if(saved&&saved.month===curMonth)return saved;
+    }catch(_){}
+    return{month:curMonth,messages:0,tokensIn:0,tokensOut:0};
+  });
+  const recordUsage=(tokensIn,tokensOut)=>{
+    setUsage(prev=>{
+      const base=prev.month===curMonth?prev:{month:curMonth,messages:0,tokensIn:0,tokensOut:0};
+      const next={
+        month:curMonth,
+        messages:base.messages+1,
+        tokensIn:base.tokensIn+(tokensIn||0),
+        tokensOut:base.tokensOut+(tokensOut||0),
+      };
+      try{localStorage.setItem(usageKey,JSON.stringify(next));}catch(_){}
+      return next;
+    });
+  };
+  // Sonnet 5 API pricing: $3/M input, $10/M output — token counts are exact (from API response), cost is a close estimate. Check console.anthropic.com for exact billing.
+  const estCost=(usage.tokensIn/1e6*3)+(usage.tokensOut/1e6*10);
   const[days,setDays]=useState(null);
   const[messages,setMessages]=useState(()=>{
     try{const saved=JSON.parse(localStorage.getItem(chatKey));return Array.isArray(saved)?saved:[];}catch(_){return[];}
@@ -2116,6 +2145,7 @@ ${buildContext()}`,
       }
       const text=json.content?.filter(b=>b.type==='text').map(b=>b.text).join('\n');
       setMessages([...newMessages,{role:'assistant',content:text||'Claude returned an empty response — try rephrasing the question.'}]);
+      if(json.usage)recordUsage(json.usage.input_tokens,json.usage.output_tokens);
     }catch(e){
       setMessages([...newMessages,{role:'assistant',content:'Error: could not reach the server — '+e.message}]);
     }
@@ -2171,6 +2201,12 @@ ${buildContext()}`,
         <button onClick={()=>genReview('month')} disabled={thinking} style={{flex:1,padding:'9px',borderRadius:10,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textSub,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600}}>🗓 Monthly Review</button>
         {messages.length>0&&<button onClick={clearChat} disabled={thinking} title="Start a new conversation" style={{padding:'9px 14px',borderRadius:10,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textMut,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600}}>🗑 New</button>}
       </div>
+      {usage.messages>0&&(
+        <div style={{fontSize:11,color:C.textMut,marginBottom:12,display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
+          <span>📊 This month: <b style={{color:C.textSub}}>{usage.messages}</b> message{usage.messages!==1?'s':''} · ~<b style={{color:C.textSub}}>{(usage.tokensIn+usage.tokensOut).toLocaleString()}</b> tokens · ~<b style={{color:estCost>1?C.yellow:C.textSub}}>${estCost.toFixed(3)}</b></span>
+          <span style={{color:C.textDim}}>· estimate — exact billing at console.anthropic.com</span>
+        </div>
+      )}
       <div ref={scrollRef} style={{flex:1,overflowY:'auto',paddingBottom:16}}>
         {messages.length===0&&(
           <div style={{textAlign:'center',padding:'30px 20px'}}>
@@ -2372,6 +2408,11 @@ export default function App(){
     const key='journal_ai_name_'+(user?.id||'anon');
     try{setAiName(localStorage.getItem(key)||'Claude');}catch(_){setAiName('Claude');}
   },[user,tab]);
+  useEffect(()=>{
+    const onRename=e=>setAiName(e.detail||'Claude');
+    window.addEventListener('ai-name-changed',onRename);
+    return()=>window.removeEventListener('ai-name-changed',onRename);
+  },[]);
   const[showCal,setShowCal]=useState(false);
   const saveTimer=useRef(null);
 
