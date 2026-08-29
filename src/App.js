@@ -60,22 +60,26 @@ function emptyDay(){
     eod:{emotions:'',well:'',fix:'',review:''},
   };
 }
-const TRADE_LOCATIONS = [
+const MONTHLY_LEVELS = [
   {label:'M DVAH', value:'m_dvah'},   // Monthly Developing Value Area High
   {label:'M DVAL', value:'m_dval'},   // Monthly Developing Value Area Low
   {label:'M PVAH', value:'m_pvah'},   // Monthly Prior Value Area High
   {label:'M PVAL', value:'m_pval'},   // Monthly Prior Value Area Low
   {label:'M Extreme Deviation Band', value:'m_extreme_dev'},
+];
+const WEEKLY_LEVELS = [
   {label:'W DVAH', value:'w_dvah'},   // Weekly Developing Value Area High
   {label:'W DVAL', value:'w_dval'},   // Weekly Developing Value Area Low
   {label:'W PVAH', value:'w_pvah'},   // Weekly Prior Value Area High
   {label:'W PVAL', value:'w_pval'},   // Weekly Prior Value Area Low
   {label:'W Extreme Deviation Band', value:'w_extreme_dev'},
+];
+const PRIOR_DAY_LEVELS = [
   {label:'PDVAH', value:'pdvah'},     // Prior Day Value Area High
   {label:'PDVAL', value:'pdval'},     // Prior Day Value Area Low
 ];
 
-function newTrade(){return{ticker:'',direction:'',contracts:'',sl:'',plan:'',confluences:[],triggers:[],attempt:'',stContext:'',htfContext:'',openingType:'',tradeLocation:[],mfe:'',mae:'',result:'',points:'',entryTime:'',exitTime:'',emotions:'',notes:'',img1:'',img15:'',partials:[],avgEntry:'',multiEntry:false,open:true};}
+function newTrade(){return{ticker:'',direction:'',contracts:'',sl:'',plan:'',confluences:[],triggers:[],attempt:'',stContext:'',htfContext:'',openingType:'',monthlyLevel:[],weeklyLevel:[],priorDayLevel:[],mfe:'',mae:'',result:'',points:'',entryTime:'',exitTime:'',emotions:'',notes:'',img1:'',img15:'',partials:[],avgEntry:'',multiEntry:false,open:true};}
 
 // Generate 5-min interval time options for 10:30am - 4:00pm EST
 function timeOptions(){
@@ -537,26 +541,32 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
               ir_iv:C.blue,ir_ov:C.teal,or_ov:C.purple,
             }}/>
           </div>
-          <div style={{marginBottom:16}}>
-            <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Trade Location</div>
-            <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-              {TRADE_LOCATIONS.map(o=>{
-                const active=(trade.tradeLocation||[]).includes(o.value);
-                const toggle=()=>{
-                  const cur=trade.tradeLocation||[];
-                  set('tradeLocation')(active?cur.filter(x=>x!==o.value):[...cur,o.value]);
-                };
-                return(
-                  <button key={o.value} onClick={toggle} style={{
-                    padding:'5px 11px',borderRadius:20,fontSize:11,fontFamily:'inherit',cursor:'pointer',
-                    border:active?`1.5px solid ${C.teal}`:`1.5px solid ${C.border}`,
-                    background:active?C.teal+'18':'transparent',
-                    color:active?C.teal:C.textMut,fontWeight:active?700:400,transition:'all 0.15s',
-                  }}>{o.label}</button>
-                );
-              })}
+          {[
+            ['Composite Profile — Monthly', 'monthlyLevel', MONTHLY_LEVELS],
+            ['Composite Profile — Weekly', 'weeklyLevel', WEEKLY_LEVELS],
+            ['Prior Day Value Area', 'priorDayLevel', PRIOR_DAY_LEVELS],
+          ].map(([label, field, opts])=>(
+            <div key={field} style={{marginBottom:16}}>
+              <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>{label}</div>
+              <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                {opts.map(o=>{
+                  const active=(trade[field]||[]).includes(o.value);
+                  const toggle=()=>{
+                    const cur=trade[field]||[];
+                    set(field)(active?cur.filter(x=>x!==o.value):[...cur,o.value]);
+                  };
+                  return(
+                    <button key={o.value} onClick={toggle} style={{
+                      padding:'5px 11px',borderRadius:20,fontSize:11,fontFamily:'inherit',cursor:'pointer',
+                      border:active?`1.5px solid ${C.teal}`:`1.5px solid ${C.border}`,
+                      background:active?C.teal+'18':'transparent',
+                      color:active?C.teal:C.textMut,fontWeight:active?700:400,transition:'all 0.15s',
+                    }}>{o.label}</button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          ))}
           <Divider label="Result"/>
           <div style={{marginBottom:16}}>
             <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Result</div>
@@ -1172,7 +1182,7 @@ function extractAllTrades(days){
         rr:t.result==='W'?rr:(t.result==='L'?-1:0),
         rawRR:rr, result:t.result,
         setup:t.plan||'—', confluences:t.confluences||[], triggers:t.triggers||[],
-        attempt:t.attempt||'—', stContext:t.stContext||'—', htfContext:t.htfContext||'—', openingType:t.openingType||'—', tradeLocation:t.tradeLocation||[],
+        attempt:t.attempt||'—', stContext:t.stContext||'—', htfContext:t.htfContext||'—', openingType:t.openingType||'—', monthlyLevel:t.monthlyLevel||[], weeklyLevel:t.weeklyLevel||[], priorDayLevel:t.priorDayLevel||[],
         entryTime:t.entryTime||'', exitTime:t.exitTime||'',
         session:sessionWindow(t.entryTime)||'—',
         hold:calcHoldTime(t.entryTime,t.exitTime)||'',
@@ -1473,7 +1483,9 @@ const DIMENSIONS = {
   stContext:{label:'Short-Term Context', get:t=>t.stContext},
   htfContext:{label:'HTF Context', get:t=>t.htfContext},
   openingType:{label:'Opening Type', get:t=>t.openingType},
-  tradeLocation:{label:'Trade Location', get:t=>t.tradeLocation, multi:true},
+  monthlyLevel:{label:'Monthly Composite Level', get:t=>t.monthlyLevel, multi:true},
+  weeklyLevel:{label:'Weekly Composite Level', get:t=>t.weeklyLevel, multi:true},
+  priorDayLevel:{label:'Prior Day Value Area', get:t=>t.priorDayLevel, multi:true},
   direction:{label:'Direction', get:t=>t.direction},
   ticker:{label:'Instrument', get:t=>t.ticker},
   session:{label:'Session', get:t=>t.session},
@@ -1758,11 +1770,11 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
   const SECTIONS=[
     ['equity','Equity & Drawdown'],
     ['setup','Setup'],['trigger','Entry Trigger'],['attempt','Entry Attempt'],
-    ['stContext','Short-Term Context'],['htfContext','HTF Context'],['openingType','Opening Type'],['tradeLocation','Trade Location'],['direction','Direction'],
+    ['stContext','Short-Term Context'],['htfContext','HTF Context'],['openingType','Opening Type'],['monthlyLevel','Monthly Level'],['weeklyLevel','Weekly Level'],['priorDayLevel','Prior Day VA'],['direction','Direction'],
     ['pivot','Cross / Pivot'],['time','Time & Session'],['rolling','Rolling Windows'],['whatif','What-If'],['log','Trade Log'],
   ];
 
-  const dimSectionKeys=['setup','trigger','attempt','stContext','htfContext','openingType','tradeLocation','direction'];
+  const dimSectionKeys=['setup','trigger','attempt','stContext','htfContext','openingType','monthlyLevel','weeklyLevel','priorDayLevel','direction'];
 
   return(
     <div>
@@ -1939,7 +1951,7 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
             <BigStat label={`PF (last ${rollWin})`} val={cur.count?(cur.pf>=99?'∞':cur.pf.toFixed(2)):'—'} col={cur.pf>=1.5?C.green:cur.pf>=1?C.yellow:C.red} sub={`lifetime: ${all.pf>=99?'∞':all.pf.toFixed(2)}`}/>
             <BigStat label="Trend" val={cur.count?(cur.expectancy>=all.expectancy?'Improving ↗':'Decaying ↘'):'—'} col={cur.expectancy>=all.expectancy?C.green:C.red}/>
           </div>
-          {['setup','trigger','attempt','stContext','htfContext','openingType','tradeLocation','direction'].map(dk=>{
+          {['setup','trigger','attempt','stContext','htfContext','openingType','monthlyLevel','weeklyLevel','priorDayLevel','direction'].map(dk=>{
             const rows=groupByDims(windowTrades,[dk],1).map(r=>{
               const lifetime=groupByDims(seqAll,[dk],1).find(x=>x.label===r.label);
               return{...r,lifeExp:lifetime?lifetime.expectancy:0,delta:r.expectancy-(lifetime?lifetime.expectancy:0)};
@@ -2285,7 +2297,7 @@ function ClaudeTab({userId,isMobile}){
     const insights=insightsFor(trades).map(i=>i.text);
 
     const tradeLines=trades.map(t=>
-      `${t.date}|${t.ticker}|${t.direction}|${t.setup}|${t.result}|${t.contracts}c|SL:${t.sl}|Pts:${t.points}|P&L:$${t.pnl.toFixed(0)}|RR:${t.rawRR.toFixed(2)}|Entry:${t.entryTime}(${t.session}/${session3(t.entryTime)})|Attempt:${t.attempt}|Triggers:${t.triggers.join(',')}|ST:${t.stContext}|HTF:${t.htfContext}|Open:${t.openingType}|Loc:${(t.tradeLocation||[]).join(',')}|MFE:${t.mfe||0}|MAE:${t.mae||0}|Notes:${t.notes.slice(0,100)}`
+      `${t.date}|${t.ticker}|${t.direction}|${t.setup}|${t.result}|${t.contracts}c|SL:${t.sl}|Pts:${t.points}|P&L:$${t.pnl.toFixed(0)}|RR:${t.rawRR.toFixed(2)}|Entry:${t.entryTime}(${t.session}/${session3(t.entryTime)})|Attempt:${t.attempt}|Triggers:${t.triggers.join(',')}|ST:${t.stContext}|HTF:${t.htfContext}|Open:${t.openingType}|MoLvl:${(t.monthlyLevel||[]).join(',')}|WkLvl:${(t.weeklyLevel||[]).join(',')}|PDVA:${(t.priorDayLevel||[]).join(',')}|MFE:${t.mfe||0}|MAE:${t.mae||0}|Notes:${t.notes.slice(0,100)}`
     ).join('\n');
     const reviews=days.filter(d=>d.data?.eod?.review).map(d=>`${d.date}: ${d.data.eod.review.slice(0,300)}`).join('\n');
 
