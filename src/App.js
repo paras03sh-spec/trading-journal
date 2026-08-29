@@ -781,13 +781,20 @@ function fillsToTrades(fills, orders) {
 // Sierra Chart CSV parser — feeds the same position-tracking engine as
 // Tradovate so multi-leg entries and partial exits group into one trade.
 function parseSierraCSV(csvText) {
-  const lines = csvText.trim().split('\n');
+  const lines = csvText.trim().split('\n').filter(l => l.trim().length > 0);
   if (lines.length < 2) return [];
-  const headers = lines[0].split(',').map(h => h.trim().replace(/"/g,'').toLowerCase());
+  // Sierra Chart's "Save Log As" writes TAB-delimited text; File>>Export can be
+  // comma or tab depending on settings. Auto-detect which one this file uses.
+  const delim = lines[0].includes('\t') ? '\t' : ',';
+  const splitLine = (line) => delim === '\t'
+    ? line.split('\t').map(c => c.trim().replace(/^"|"$/g, ''))
+    : line.split(',').map(c => c.trim().replace(/^"|"$/g, ''));
+
+  const headers = splitLine(lines[0]).map(h => h.toLowerCase());
 
   const fills = [];
   for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].split(',').map(c => c.trim().replace(/"/g,''));
+    const cols = splitLine(lines[i]);
     if (cols.length < 3) continue;
     const row = {};
     headers.forEach((h, idx) => { row[h] = cols[idx] || ''; });
@@ -921,6 +928,10 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId}){
     const reader = new FileReader();
     reader.onload = (ev) => {
       const parsed = parseSierraCSV(ev.target.result);
+      if (parsed.length === 0 || (parsed.length === 1 && !parsed[0].ticker)) {
+        window.alert("Couldn't find any trades in that file. This usually means the column names in your Sierra Chart export don't match what the app expects. Send this file to Claude in your project chat and it'll fix the column mapping.");
+        return;
+      }
       onChange([...trades.filter(t=>t.ticker||t.notes), ...parsed]);
     };
     reader.readAsText(file);
@@ -931,7 +942,7 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId}){
   return(
     <div>
       {showTradovate && <TradovateImportModal onClose={()=>setShowTradovate(false)} onImport={handleTradovateImport}/>}
-      <input ref={fileRef} type="file" accept=".csv" style={{display:'none'}} onChange={handleSierraCSV}/>
+      <input ref={fileRef} type="file" accept=".csv,.txt" style={{display:'none'}} onChange={handleSierraCSV}/>
 
       {/* Import buttons */}
       <div style={{display:'flex',gap:10,marginBottom:16}}>
