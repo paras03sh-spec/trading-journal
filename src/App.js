@@ -1589,6 +1589,12 @@ function metricsFor(trades){
   const avgR=withR.length?withR.reduce((s,t)=>s+t.rawRR,0)/withR.length:0;
   const stdR=withR.length>1?Math.sqrt(withR.reduce((s,t)=>s+(t.rawRR-avgR)**2,0)/withR.length):0;
   const avgMfeR=withMfeR.length?withMfeR.reduce((s,t)=>s+t.mfeR,0)/withMfeR.length:0;
+  // Missed R — computed per-trade (mfeR - realized R) then averaged, not by
+  // subtracting the two separate averages above (those can run over slightly
+  // different trade sets since one needs SL+points, the other needs SL+MFE).
+  const withBoth=closed.filter(t=>t.rawRR!=null&&t.sl>0&&t.mfeR!=null);
+  const missedRList=withBoth.map(t=>t.mfeR-t.rawRR);
+  const avgMissedR=missedRList.length?missedRList.reduce((s,v)=>s+v,0)/missedRList.length:0;
   return{
     count:closed.length, wins:w.length, losses:l.length, be:closed.length-w.length-l.length,
     winRate:w.length+l.length>0?w.length/(w.length+l.length)*100:0,
@@ -1601,6 +1607,7 @@ function metricsFor(trades){
     mfeN:withMfe.length,
     avgR, stdR, rN:withR.length,
     avgMfeR, mfeRN:withMfeR.length,
+    avgMissedR, missedRN:withBoth.length,
   };
 }
 
@@ -1682,6 +1689,23 @@ const perfColumns=(isMobile)=>[
   {key:'pf',label:'PF',fmt:v=>v>=99?'∞':v.toFixed(2),color:r=>r.pf>=1.5?C.green:r.pf>=1?C.yellow:C.red},
   {key:'expectancy',label:'Expect.',fmt:v=>(v>=0?'+':'')+'$'+v.toFixed(0),color:r=>r.expectancy>=0?C.green:C.red},
 ];
+
+// Single shared definition of R/MFE/MAE columns — used by EVERY performance
+// table in the app (per-dimension pages, Pivot, Rolling Windows). Change
+// something here once and it's consistent everywhere, rather than each
+// section defining its own copy that can drift out of sync.
+function extraMetricCols(trades){
+  const hasR=trades.some(t=>t.sl>0);
+  const hasMfe=trades.some(t=>t.mfe>0);
+  const cols=[];
+  if(hasR)cols.push({key:'avgR',label:'Avg R',fmt:(v,r)=>r.rN?(v>=0?'+':'')+v.toFixed(2)+'R':'—',color:r=>r.avgR>=0?C.green:C.red,bold:true});
+  if(hasMfe){
+    cols.push({key:'avgMFE',label:'Avg MFE',fmt:v=>v?v.toFixed(1):'—',color:()=>C.green});
+    cols.push({key:'avgMAE',label:'Avg MAE',fmt:v=>v?v.toFixed(1):'—',color:()=>C.red});
+    cols.push({key:'capture',label:'Capture',fmt:(v,r)=>r.mfeN?v.toFixed(0)+'%':'—',color:r=>r.capture>=60?C.green:r.capture>=40?C.yellow:C.textMut});
+  }
+  return cols;
+}
 
 function HBars({rows,metric}){
   if(rows.length===0)return null;
@@ -1780,17 +1804,7 @@ function FilterBar({allTrades,filters,setFilters,isMobile}){
 function DimSection({dimKey,trades,minN,tagMetric,setTagMetric,isMobile,rollingBase}){
   const dim=DIMENSIONS[dimKey];
   const rows=groupByDims(trades,[dimKey],minN);
-  const hasMfe=trades.some(t=>t.mfe>0);
-  const hasR=trades.some(t=>t.sl>0);
-  const cols=[...perfColumns(isMobile)];
-  if(hasR){
-    cols.push({key:'avgR',label:'Avg R',fmt:(v,r)=>r.rN?(v>=0?'+':'')+v.toFixed(2)+'R':'—',color:r=>r.avgR>=0?C.green:C.red,bold:true});
-  }
-  if(hasMfe){
-    cols.push({key:'avgMFE',label:'Avg MFE',fmt:v=>v?v.toFixed(1):'—',color:()=>C.green});
-    cols.push({key:'avgMAE',label:'Avg MAE',fmt:v=>v?v.toFixed(1):'—',color:()=>C.red});
-    cols.push({key:'capture',label:'Capture',fmt:(v,r)=>r.mfeN?v.toFixed(0)+'%':'—',color:r=>r.capture>=60?C.green:r.capture>=40?C.yellow:C.textMut});
-  }
+  const cols=[...perfColumns(isMobile),...extraMetricCols(trades)];
   return(
     <ChartCard title={`${dim.label} Performance`}>
       <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:14}}>
@@ -1935,7 +1949,7 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
             return(<>
               {small>0&&<div style={{fontSize:11,color:C.yellow,marginBottom:10}}>⚠ {small} combination{small>1?'s':''} below 8 trades — treat as indicative only</div>}
               <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'minmax(0,58%) minmax(0,42%)',gap:24,alignItems:'start'}}>
-                <SortTable columns={perfColumns(isMobile)} rows={rows} defaultSort="totalPnl" isMobile={isMobile}/>
+                <SortTable columns={[...perfColumns(isMobile),...extraMetricCols(trades)]} rows={rows} defaultSort="totalPnl" isMobile={isMobile}/>
                 <HBars rows={rows.slice(0,14)} metric={tagMetric}/>
               </div>
             </>);
@@ -2022,9 +2036,10 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
             ))}
             <div style={{fontSize:11,color:C.textMut,alignSelf:'center'}}>{windowTrades.length<rollWin?`only ${windowTrades.length} closed trades available`:''}</div>
           </div>
-          <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(4,1fr)',gap:10,marginBottom:16}}>
+          <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(5,1fr)',gap:10,marginBottom:16}}>
             <BigStat label={`Win rate (last ${rollWin})`} val={cur.count?cur.winRate.toFixed(0)+'%':'—'} col={cur.winRate>=50?C.green:C.yellow} sub={`lifetime: ${all.winRate.toFixed(0)}%`}/>
             <BigStat label={`Expectancy (last ${rollWin})`} val={cur.count?(cur.expectancy>=0?'+':'')+'$'+cur.expectancy.toFixed(0):'—'} col={cur.expectancy>=0?C.green:C.red} sub={`lifetime: ${(all.expectancy>=0?'+':'')}$${all.expectancy.toFixed(0)}`}/>
+            <BigStat label={`Avg R (last ${rollWin})`} val={cur.rN?(cur.avgR>=0?'+':'')+cur.avgR.toFixed(2)+'R':'—'} col={cur.avgR>=0?C.green:C.red} sub={all.rN?`lifetime: ${(all.avgR>=0?'+':'')}${all.avgR.toFixed(2)}R`:''}/>
             <BigStat label={`PF (last ${rollWin})`} val={cur.count?(cur.pf>=99?'∞':cur.pf.toFixed(2)):'—'} col={cur.pf>=1.5?C.green:cur.pf>=1?C.yellow:C.red} sub={`lifetime: ${all.pf>=99?'∞':all.pf.toFixed(2)}`}/>
             <BigStat label="Trend" val={cur.count?(cur.expectancy>=all.expectancy?'Improving ↗':'Decaying ↘'):'—'} col={cur.expectancy>=all.expectancy?C.green:C.red}/>
           </div>
@@ -2044,6 +2059,7 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
                   {key:'expectancy',label:'Exp (window)',fmt:v=>(v>=0?'+':'')+'$'+v.toFixed(0),color:r=>r.expectancy>=0?C.green:C.red},
                   {key:'lifeExp',label:'Exp (lifetime)',fmt:v=>(v>=0?'+':'')+'$'+v.toFixed(0),color:()=>C.textSub},
                   {key:'delta',label:'Δ',fmt:v=>(v>=0?'+':'')+'$'+v.toFixed(0),color:r=>r.delta>=0?C.green:C.red,bold:true},
+                  ...extraMetricCols(windowTrades),
                 ]} rows={rows} defaultSort="delta" isMobile={isMobile}/>
               </ChartCard>
             );
@@ -2082,10 +2098,11 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
                 {key:'capture',label:'Capture %',fmt:(v,r)=>r.mfeN?v.toFixed(0)+'%':'—',color:r=>r.capture>=60?C.green:r.capture>=40?C.yellow:C.red,bold:true},
                 {key:'avgR',label:'R Captured',fmt:(v,r)=>r.rN?(v>=0?'+':'')+v.toFixed(2)+'R':'—',color:r=>r.avgR>=0?C.green:C.red},
                 {key:'avgMfeR',label:'Max R Available',fmt:(v,r)=>r.mfeRN?v.toFixed(2)+'R':'—',color:()=>C.textSub},
+                {key:'avgMissedR',label:'R Missed',fmt:(v,r)=>r.missedRN?v.toFixed(2)+'R':'—',color:r=>r.avgMissedR<=0.3?C.green:r.avgMissedR<=0.8?C.yellow:C.red,bold:true},
                 {key:'mfeN',label:'N (with MFE)'},
                 {key:'totalPnl',label:'PnL',fmt:v=>(v>=0?'+':'')+'$'+v.toFixed(0),color:r=>r.totalPnl>=0?C.green:C.red},
               ]} rows={rows} defaultSort="capture" isMobile={isMobile}/>
-              <div style={{marginTop:12,fontSize:11,color:C.textMut}}>R Captured vs Max R Available shows the edge you're leaving on the table in R terms — e.g. capturing +0.8R when 2.1R was on offer.</div>
+              <div style={{marginTop:12,fontSize:11,color:C.textMut}}>R Missed = Max R Available − R Captured, averaged per trade. Green ≤0.3R, yellow ≤0.8R, red beyond that — the tags in red are where you're leaving the most edge on the table.</div>
             </>):(
               <div style={{color:C.textDim,fontSize:12,textAlign:'center',padding:'20px 0'}}>No {DIMENSIONS[mfeDim].label} tags on trades with MFE/MAE yet</div>
             )}
@@ -2139,10 +2156,11 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
               );
             })}
             <div style={{fontSize:12,color:C.textSub,margin:'14px 0'}}>Removing <b style={{color:C.red}}>{removedN}</b> of {trades.length} trades</div>
-            <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(4,1fr)',gap:10,marginBottom:16}}>
+            <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(5,1fr)',gap:10,marginBottom:16}}>
               <D label="Net P&L" a={sA.totalPnl} b={sB.totalPnl} fmt={v=>(v>=0?'+':'')+'$'+v.toFixed(0)}/>
               <D label="Profit Factor" a={sA.profitFactor} b={sB.profitFactor} fmt={v=>v>=99?'∞':v.toFixed(2)}/>
               <D label="Expectancy" a={sA.expectancy} b={sB.expectancy} fmt={v=>(v>=0?'+':'')+'$'+v.toFixed(0)}/>
+              <D label="Avg R" a={sA.avgR} b={sB.avgR} fmt={v=>(v>=0?'+':'')+v.toFixed(2)+'R'}/>
               <D label="Max Drawdown" a={sA.maxDD} b={sB.maxDD} fmt={v=>'-$'+v.toFixed(0)} invert/>
             </div>
             <SvgDualLine a={sA.equity} b={sB.equity} colA={C.textMut} colB={C.teal} labelA="Actual" labelB="What-if"/>
@@ -2169,6 +2187,8 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
             {key:'result',label:'R',fmt:v=>v,color:r=>r.result==='W'?C.green:r.result==='L'?C.red:C.yellow,bold:true},
             {key:'pnl',label:'PnL',fmt:v=>(v>=0?'+':'')+'$'+v.toFixed(0),color:r=>r.pnl>=0?C.green:C.red,bold:true},
             {key:'rawRR',label:'RR',fmt:(v,r)=>r.sl>0?(v>=0?'+':'')+v.toFixed(2)+'R':'—',color:r=>r.rawRR>=0?C.green:C.red},
+            {key:'mfe',label:'MFE',fmt:v=>v?parseFloat(v).toFixed(1):'—',color:()=>C.green},
+            {key:'mae',label:'MAE',fmt:v=>v?parseFloat(v).toFixed(1):'—',color:()=>C.red},
             {key:'entryTime',label:'Entry'},
           ]} rows={trades.map(t=>({...t,
             triggersStr:(t.triggers||[]).map(pretty).join(', ')||'—',
@@ -2444,7 +2464,7 @@ function ClaudeTab({userId,isMobile}){
     // Pre-computed aggregates (ground truth)
     const agg={};
     Object.keys(DIMENSIONS).forEach(k=>{
-      agg[k]=groupByDims(trades,[k],1).map(g=>({tag:g.label,n:g.count,pnl:Math.round(g.totalPnl),wr:Math.round(g.winRate),pf:g.pf>=99?'inf':+g.pf.toFixed(2),exp:Math.round(g.expectancy),avgR:g.rN?+g.avgR.toFixed(2):null}));
+      agg[k]=groupByDims(trades,[k],1).map(g=>({tag:g.label,n:g.count,pnl:Math.round(g.totalPnl),wr:Math.round(g.winRate),pf:g.pf>=99?'inf':+g.pf.toFixed(2),exp:Math.round(g.expectancy),avgR:g.rN?+g.avgR.toFixed(2):null,missedR:g.missedRN?+g.avgMissedR.toFixed(2):null}));
     });
     const topPivots=[];
     const dims=['setup','trigger','htfContext','stContext','attempt','direction','session'];
