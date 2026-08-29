@@ -2065,16 +2065,10 @@ ${reviews}`;
   const callClaude=async(newMessages)=>{
     setThinking(true);
     try{
-      const res=await fetch('https://api.anthropic.com/v1/messages',{
+      const res=await fetch('/api/claude',{
         method:'POST',
-        headers:{
-          'Content-Type':'application/json',
-          'x-api-key':process.env.REACT_APP_ANTHROPIC_API_KEY||'',
-          'anthropic-version':'2023-06-01',
-          'anthropic-dangerous-direct-browser-access':'true',
-        },
+        headers:{'Content-Type':'application/json'},
         body:JSON.stringify({
-          model:'claude-sonnet-4-20250514',
           max_tokens:2500,
           system:`You are a natural-language analytics engine over this trader's real journal data. STRICT RULES:
 1. GROUNDING: Every number you state must come from the PRE-COMPUTED AGGREGATES or be computed from the RAW TRADES lines below. Never estimate or invent. If the data can't answer, say so.
@@ -2090,10 +2084,15 @@ ${buildContext()}`,
         })
       });
       const json=await res.json();
-      const text=json.content?.filter(b=>b.type==='text').map(b=>b.text).join('\n')||'(no response)';
-      setMessages([...newMessages,{role:'assistant',content:text}]);
+      if(!res.ok){
+        setMessages([...newMessages,{role:'assistant',content:'Error: '+(json.error||'Claude request failed ('+res.status+')')}]);
+        setThinking(false);
+        return;
+      }
+      const text=json.content?.filter(b=>b.type==='text').map(b=>b.text).join('\n');
+      setMessages([...newMessages,{role:'assistant',content:text||'Claude returned an empty response — try rephrasing the question.'}]);
     }catch(e){
-      setMessages([...newMessages,{role:'assistant',content:'Error: '+e.message+'. Check REACT_APP_ANTHROPIC_API_KEY in Vercel env vars.'}]);
+      setMessages([...newMessages,{role:'assistant',content:'Error: could not reach the server — '+e.message}]);
     }
     setThinking(false);
   };
