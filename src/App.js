@@ -1997,8 +1997,11 @@ function weekId(d){const y=d.getFullYear();const start=new Date(y,0,1);return y+
 function monthId(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');}
 
 function ClaudeTab({userId,isMobile}){
+  const chatKey='journal_chat_'+(userId||'anon');
   const[days,setDays]=useState(null);
-  const[messages,setMessages]=useState([]);
+  const[messages,setMessages]=useState(()=>{
+    try{const saved=JSON.parse(localStorage.getItem(chatKey));return Array.isArray(saved)?saved:[];}catch(_){return[];}
+  });
   const[input,setInput]=useState('');
   const[thinking,setThinking]=useState(false);
   const scrollRef=useRef();
@@ -2010,8 +2013,18 @@ function ClaudeTab({userId,isMobile}){
   },[userId]);
 
   useEffect(()=>{
+    try{localStorage.setItem(chatKey,JSON.stringify(messages));}catch(_){}
+  },[messages,chatKey]);
+
+  useEffect(()=>{
     if(scrollRef.current)scrollRef.current.scrollTop=scrollRef.current.scrollHeight;
   },[messages,thinking]);
+
+  const clearChat=()=>{
+    if(messages.length&&!window.confirm('Clear this conversation? This can\'t be undone.'))return;
+    setMessages([]);
+    try{localStorage.removeItem(chatKey);}catch(_){}
+  };
 
   const now=new Date();
   const weeklyDue=now.getDay()>=5&&localStorage.getItem('wk_review')!==weekId(now);
@@ -2144,6 +2157,7 @@ ${buildContext()}`,
       <div style={{display:'flex',gap:8,marginBottom:12}}>
         <button onClick={()=>genReview('week')} disabled={thinking} style={{flex:1,padding:'9px',borderRadius:10,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textSub,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600}}>📅 Weekly Review</button>
         <button onClick={()=>genReview('month')} disabled={thinking} style={{flex:1,padding:'9px',borderRadius:10,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textSub,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600}}>🗓 Monthly Review</button>
+        {messages.length>0&&<button onClick={clearChat} disabled={thinking} title="Start a new conversation" style={{padding:'9px 14px',borderRadius:10,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textMut,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600}}>🗑 New</button>}
       </div>
       <div ref={scrollRef} style={{flex:1,overflowY:'auto',paddingBottom:16}}>
         {messages.length===0&&(
