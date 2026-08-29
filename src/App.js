@@ -65,9 +65,9 @@ function newTrade(){return{ticker:'',direction:'',contracts:'',sl:'',plan:'',con
 // Generate 5-min interval time options for 10:30am - 4:00pm EST
 function timeOptions(){
   const opts=[];
-  for(let h=10;h<=16;h++){
+  for(let h=9;h<=16;h++){
     for(let m=0;m<60;m+=5){
-      if(h===10&&m<30)continue; // start at 10:30
+      if(h===9&&m<30)continue; // start at 9:30 — full RTH open
       if(h===16&&m>0)break;     // end at 16:00
       const hh=String(h).padStart(2,'0');
       const mm=String(m).padStart(2,'0');
@@ -670,7 +670,10 @@ async function tradovateFetchFillsAndOrders(token, isDemo) {
 
 function parseTicker(contractName) {
   if (!contractName) return '';
-  const n = contractName.toUpperCase();
+  let n = contractName.toUpperCase();
+  // Sim/demo accounts often prefix the symbol, e.g. "[Sim]MNQU26_FUT_CME" —
+  // strip any leading bracketed tag before matching the instrument root.
+  n = n.replace(/^\[[^\]]*\]\s*/, '');
   if (n.startsWith('MESM') || n.startsWith('MESU') || n.startsWith('MESH') || n.startsWith('MESZ') || n === 'MES') return 'MES';
   if (n.startsWith('MNQM') || n.startsWith('MNQU') || n.startsWith('MNQH') || n.startsWith('MNQZ') || n === 'MNQ') return 'MNQ';
   if (n.startsWith('ESM') || n.startsWith('ESU') || n.startsWith('ESH') || n.startsWith('ESZ') || n === 'ES') return 'ES';
