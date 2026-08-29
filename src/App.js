@@ -2267,10 +2267,41 @@ function ClaudeTab({userId,isMobile}){
     if(scrollRef.current)scrollRef.current.scrollTop=scrollRef.current.scrollHeight;
   },[messages,thinking]);
 
+  // ── Conversation history (multiple saved threads, browsable) ──
+  const historyKey='journal_chat_history_'+(userId||'anon');
+  const[history,setHistory]=useState(()=>{
+    try{const saved=JSON.parse(localStorage.getItem(historyKey));return Array.isArray(saved)?saved:[];}catch(_){return[];}
+  });
+  const[showHistory,setShowHistory]=useState(false);
+  const saveHistoryList=(list)=>{
+    setHistory(list);
+    try{localStorage.setItem(historyKey,JSON.stringify(list));}catch(_){}
+  };
+  const deriveTitle=(msgs)=>{
+    const firstUser=msgs.find(m=>m.role==='user');
+    if(!firstUser)return 'Conversation';
+    const t=firstUser.content.trim().replace(/\s+/g,' ');
+    return t.length>44?t.slice(0,44)+'…':t;
+  };
+  const archiveCurrent=()=>{
+    if(messages.length===0)return;
+    const entry={id:Date.now().toString(),title:deriveTitle(messages),updatedAt:Date.now(),messages};
+    saveHistoryList([entry,...history].slice(0,50)); // keep last 50 threads
+  };
   const clearChat=()=>{
-    if(messages.length&&!window.confirm('Clear this conversation? This can\'t be undone.'))return;
+    if(messages.length&&!window.confirm('Start a new conversation? This one will be saved to History.'))return;
+    archiveCurrent();
     setMessages([]);
     try{localStorage.removeItem(chatKey);}catch(_){}
+  };
+  const openHistoryItem=(item)=>{
+    archiveCurrent();
+    setMessages(item.messages);
+    setShowHistory(false);
+  };
+  const deleteHistoryItem=(id,e)=>{
+    e.stopPropagation();
+    saveHistoryList(history.filter(h=>h.id!==id));
   };
 
   const now=new Date();
@@ -2402,10 +2433,32 @@ ${buildContext()}`,
           <button onClick={()=>genReview(weeklyDue?'week':'month')} style={{padding:'7px 14px',borderRadius:9,border:'none',background:C.teal,color:'#fff',fontSize:12,fontFamily:'inherit',fontWeight:700,cursor:'pointer'}}>Generate now</button>
         </div>
       )}
-      <div style={{display:'flex',gap:8,marginBottom:12}}>
+      <div style={{display:'flex',gap:8,marginBottom:12,position:'relative'}}>
         <button onClick={()=>genReview('week')} disabled={thinking} style={{flex:1,padding:'9px',borderRadius:10,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textSub,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600}}>📅 Weekly Review</button>
         <button onClick={()=>genReview('month')} disabled={thinking} style={{flex:1,padding:'9px',borderRadius:10,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textSub,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600}}>🗓 Monthly Review</button>
+        <button onClick={()=>setShowHistory(!showHistory)} title="Browse past conversations" style={{padding:'9px 14px',borderRadius:10,border:`1.5px solid ${showHistory?C.teal:C.border}`,background:showHistory?C.teal+'15':'transparent',color:showHistory?C.teal:C.textMut,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600}}>🕐 History{history.length>0?` (${history.length})`:''}</button>
         {messages.length>0&&<button onClick={clearChat} disabled={thinking} title="Start a new conversation" style={{padding:'9px 14px',borderRadius:10,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textMut,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600}}>🗑 New</button>}
+        {showHistory&&(
+          <div style={{position:'absolute',top:'110%',right:0,left:isMobile?0:'auto',width:isMobile?'100%':380,maxHeight:400,overflowY:'auto',background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,boxShadow:'0 8px 24px rgba(0,0,0,0.25)',zIndex:20,padding:8}}>
+            {history.length===0?(
+              <div style={{padding:'20px 14px',textAlign:'center',fontSize:12,color:C.textMut}}>No past conversations yet. Hit "New" after chatting to save this one and start fresh.</div>
+            ):history.map(h=>(
+              <div key={h.id} onClick={()=>openHistoryItem(h)} style={{
+                padding:'10px 12px',borderRadius:9,cursor:'pointer',marginBottom:4,
+                display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,
+              }}
+                onMouseEnter={e=>e.currentTarget.style.background=C.surface2}
+                onMouseLeave={e=>e.currentTarget.style.background='transparent'}
+              >
+                <div style={{minWidth:0}}>
+                  <div style={{fontSize:12,color:C.text,fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{h.title}</div>
+                  <div style={{fontSize:10,color:C.textMut,marginTop:2}}>{new Date(h.updatedAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})} · {h.messages.length} messages</div>
+                </div>
+                <span onClick={e=>deleteHistoryItem(h.id,e)} title="Delete" style={{color:C.textMut,fontSize:14,cursor:'pointer',flexShrink:0,padding:'2px 6px'}}>×</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       {usage.messages>0&&(
         <div style={{fontSize:11,color:C.textMut,marginBottom:12,display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
