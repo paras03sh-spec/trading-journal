@@ -569,6 +569,8 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
                 cursor:'pointer',outline:'none',
               }}>
                 <option value=''>-- select --</option>
+                {trade.entryTime && !TIME_OPTIONS.some(o=>o.value===trade.entryTime) &&
+                  <option value={trade.entryTime}>⚠ {trade.entryTime} (outside 10:30–4:00 — check Sierra's Global Time Zone setting)</option>}
                 {TIME_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </div>
@@ -580,6 +582,8 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
                 cursor:'pointer',outline:'none',
               }}>
                 <option value=''>-- select --</option>
+                {trade.exitTime && !TIME_OPTIONS.some(o=>o.value===trade.exitTime) &&
+                  <option value={trade.exitTime}>⚠ {trade.exitTime} (outside 10:30–4:00 — check Sierra's Global Time Zone setting)</option>}
                 {TIME_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </div>
@@ -731,6 +735,14 @@ function groupFillsIntoTrades(fills) {
         mfe = (sign === 1 ? pos.high - avgEntry : avgEntry - pos.low).toFixed(2);
         mae = (sign === 1 ? avgEntry - pos.low : pos.high - avgEntry).toFixed(2);
       }
+      // Suggested SL: if the FINAL exit fill was a Stop order, that's where
+      // the position's risk was actually defined — back it out from entry vs
+      // that fill (per contract), same units as the manual SL field.
+      let sl = '';
+      const lastExit = pos.exitLegs[pos.exitLegs.length - 1];
+      if (lastExit && lastExit.orderType && lastExit.orderType.includes('stop')) {
+        sl = Math.abs(avgEntry - lastExit.price).toFixed(2);
+      }
       trades.push({
         ...newTrade(),
         ticker,
@@ -740,11 +752,11 @@ function groupFillsIntoTrades(fills) {
         exitTime: pos.exitLegs.length ? formatTime(pos.exitLegs[pos.exitLegs.length - 1].time) : '',
         points: totalExitQty > 0 ? combinedPoints.toFixed(2) : '',
         result,
-        mfe, mae,
+        mfe, mae, sl,
         avgEntry: avgEntry.toFixed(4),
         multiEntry: pos.entryLegs.length > 1,
         partials,
-        notes: `Imported${pos.entryLegs.length > 1 ? ` — scaled in (avg entry ${avgEntry.toFixed(2)})` : ''}${partials.length > 1 ? `, ${partials.length} partial exits` : ''}${open ? ' — position still open, not closed in this data' : ''}.`,
+        notes: `Imported (${pos.rawSymbol || ticker})${pos.entryLegs.length > 1 ? ` — scaled in (avg entry ${avgEntry.toFixed(2)})` : ''}${partials.length > 1 ? `, ${partials.length} partial exits` : ''}${sl ? `, SL auto-set from stop fill` : ''}${open ? ' — position still open, not closed in this data' : ''}.`,
         open: true,
       });
     };
@@ -752,6 +764,7 @@ function groupFillsIntoTrades(fills) {
     const trackExtremes = (pos, f) => {
       if (f.high != null) pos.high = pos.high == null ? f.high : Math.max(pos.high, f.high);
       if (f.low != null) pos.low = pos.low == null ? f.low : Math.min(pos.low, f.low);
+      if (f.rawSymbol && !pos.rawSymbol) pos.rawSymbol = f.rawSymbol;
     };
 
     list.forEach(f => {
@@ -769,12 +782,12 @@ function groupFillsIntoTrades(fills) {
       } else {
         trackExtremes(pos, f);
         if (f.qty <= pos.remaining) {
-          pos.exitLegs.push({ qty: f.qty, price: f.price, time: f.time });
+          pos.exitLegs.push({ qty: f.qty, price: f.price, time: f.time, orderType: f.orderType });
           pos.remaining -= f.qty;
           if (pos.remaining === 0) { finalize(false); pos = null; }
         } else {
           // Overshoot: closes current position, flips remainder into a new one
-          pos.exitLegs.push({ qty: pos.remaining, price: f.price, time: f.time });
+          pos.exitLegs.push({ qty: pos.remaining, price: f.price, time: f.time, orderType: f.orderType });
           const leftover = f.qty - pos.remaining;
           finalize(false);
           pos = { direction: isBuy ? 'Long' : 'Short', entryLegs: [{ qty: leftover, price: f.price, time: f.time }], exitLegs: [], remaining: leftover, high: null, low: null };
@@ -817,11 +830,22 @@ const PRICE_RANGE = {
   NQ: [10000, 45000], MNQ: [10000, 45000],
 };
 function normalizeSierraPrice(ticker, raw) {
+  if (!raw) return raw;
   const range = PRICE_RANGE[ticker];
-  if (!range || !raw) return raw;
+  if (range) {
+    for (const div of [1, 10, 100, 1000, 10000]) {
+      const val = raw / div;
+      if (val >= range[0] && val <= range[1] && Math.abs(val * 4 - Math.round(val * 4)) < 0.02) {
+        return val;
+      }
+    }
+  }
+  // Unrecognized ticker (e.g. a sim account symbol format we haven't seen) —
+  // fall back to a generic index-futures range + 0.25 tick check instead of
+  // giving up and returning the raw, unscaled number.
   for (const div of [1, 10, 100, 1000, 10000]) {
     const val = raw / div;
-    if (val >= range[0] && val <= range[1] && Math.abs(val * 4 - Math.round(val * 4)) < 0.02) {
+    if (val >= 1000 && val <= 100000 && Math.abs(val * 4 - Math.round(val * 4)) < 0.02) {
       return val;
     }
   }
@@ -867,6 +891,7 @@ function parseSierraCSV(csvText) {
     const rawPrice = parseFloat(row['fillprice'] || row['price'] || row['entryprice'] || row['exitprice'] || '0');
     const price = normalizeSierraPrice(ticker, rawPrice);
     const time = parseSierraDateTime(row['datetime'] || row['transdatetime'] || row['time'] || '');
+    const orderType = (row['ordertype'] || '').toLowerCase();
     // MFE/MAE source: Sierra Chart resets these on every fill, recording the
     // price extreme reached since the prior fill. Blank on the opening fill
     // (no "during position" history yet) — that's expected, not an error.
@@ -876,7 +901,7 @@ function parseSierraCSV(csvText) {
     const low = rawLow > 0 ? normalizeSierraPrice(ticker, rawLow) : null;
 
     if (!ticker || !side || !qty || !price || !time) continue;
-    fills.push({ ticker, side, qty, price, time, high, low });
+    fills.push({ ticker, side, qty, price, time, high, low, orderType, rawSymbol: row['symbol'] || '' });
   }
 
   const trades = groupFillsIntoTrades(fills);
