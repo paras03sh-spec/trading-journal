@@ -136,11 +136,11 @@ function sessionWindow(time){
   if(!time)return null;
   const [h,m]=time.split(':').map(Number);
   const total=h*60+m;
-  if(total>=630&&total<690)return 'C-period';   // 10:30-11:00
-  if(total>=690&&total<720)return 'D-period';   // 11:00-12:00
-  if(total>=720&&total<840)return 'Noon';       // 12:00-2:00pm
-  if(total>=840&&total<=960)return 'Afternoon'; // 2:00-4:00pm
-  return null;
+  if(total>=570&&total<630)return 'IB Period';  // 9:30-10:30 — initial balance forming
+  if(total>=630&&total<660)return 'C-period';   // 10:30-11:00 — highest-stat break window
+  if(total>=660&&total<720)return 'D-period';   // 11:00-12:00
+  if(total>=720&&total<=960)return 'Afternoon'; // 12:00-4:00pm — Noon folded in, one combined window
+  return 'Other';                                // anything outside 9:30-4:00
 }
 function useIsMobile(){
   const[mobile,setMobile]=useState(window.innerWidth<768);
@@ -1157,9 +1157,9 @@ function session3(entryTime){
   if(!entryTime)return '—';
   const[h,m]=entryTime.split(':').map(Number);
   const mins=h*60+m;
-  if(mins<12*60)return 'First 90 min';
-  if(mins<14*60+30)return 'Mid-day';
-  return 'Last 90 min';
+  if(mins<11*60)return 'First 90 min';   // 9:30-11:00
+  if(mins<14*60+30)return 'Mid-day';     // 11:00-2:30pm
+  return 'Last 90 min';                   // 2:30-4:00pm
 }
 
 function SvgDualLine({a,b,colA,colB,labelA,labelB,height=180,fmtY=v=>'$'+v.toFixed(0)}){
@@ -1511,7 +1511,7 @@ const DIMENSIONS = {
   priorDayLevel:{label:'Prior Day Value Area', get:t=>t.priorDayLevel, multi:true, options:PRIOR_DAY_LEVELS},
   direction:{label:'Direction', get:t=>t.direction, options:DIRECTION_OPTIONS},
   ticker:{label:'Instrument', get:t=>t.ticker}, // no static list — genuinely data-driven (whatever you've traded)
-  session:{label:'Session', get:t=>t.session}, // derived from entry time, not a taggable field
+  session:{label:'Session', get:t=>t.session, options:[{label:'IB Period',value:'IB Period'},{label:'C-period',value:'C-period'},{label:'D-period',value:'D-period'},{label:'Afternoon',value:'Afternoon'}]}, // derived from entry time
 };
 
 function dimValues(trades,key){
