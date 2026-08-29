@@ -77,6 +77,19 @@ export async function loadIndex(userId) {
   } catch (_) { return {}; }
 }
 
+// ─── Load all days (for Analytics + Claude context) ───────────────────────────
+export async function loadAllDays(userId) {
+  try {
+    const { data, error } = await supabase
+      .from('journal_days')
+      .select('date, data')
+      .eq('user_id', userId)
+      .order('date', { ascending: true });
+    if (error || !data) return [];
+    return data;
+  } catch (_) { return []; }
+}
+
 export async function saveIndex(date, summary, userId) {
   try {
     await supabase

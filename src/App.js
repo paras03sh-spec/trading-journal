@@ -1,18 +1,40 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
-import { supabase, loadDay, saveDay, loadIndex, saveIndex, getCurrentUser, signIn, signUp, signOut } from './supabase';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { supabase, loadDay, saveDay, loadIndex, saveIndex, loadAllDays, getCurrentUser, signIn, signUp, signOut } from './supabase';
 
 const POINT_VALUES = { ES: 50, NQ: 20, MES: 5, MNQ: 2 };
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const DAYS_HDR = ["Su","Mo","Tu","We","Th","Fr","Sa"];
-const TABS = ["Pre-Market", "Trades", "EOD Review"];
+const TABS = ["Trades", "Analytics", "Ask Claude"];
 
-const C = {
-  bg:'#0e0e0e', surface:'#161616', surface2:'#1c1c1c',
-  border:'#2a2a2a', border2:'#3a3a3a',
-  text:'#e8e8e8', textSub:'#999', textMut:'#555', textDim:'#333',
-  green:'#4ade80', red:'#f87171', yellow:'#fbbf24',
-  blue:'#60a5fa', purple:'#a78bfa', teal:'#34d399', orange:'#fb923c',
+const THEMES = {
+  dark:{
+    bg:'#0e0e0e', surface:'#161616', surface2:'#1c1c1c',
+    border:'#2a2a2a', border2:'#3a3a3a',
+    text:'#e8e8e8', textSub:'#999', textMut:'#555', textDim:'#333',
+    green:'#4ade80', red:'#f87171', yellow:'#fbbf24',
+    blue:'#60a5fa', purple:'#a78bfa', teal:'#34d399', orange:'#fb923c',
+  },
+  light:{
+    bg:'#f5f6f8', surface:'#ffffff', surface2:'#edeff2',
+    border:'#dfe2e7', border2:'#c9cdd4',
+    text:'#17181a', textSub:'#565b63', textMut:'#9aa0a8', textDim:'#c9cdd3',
+    green:'#15803d', red:'#dc2626', yellow:'#b45309',
+    blue:'#2563eb', purple:'#7c3aed', teal:'#0f766e', orange:'#ea580c',
+  },
 };
+const C = {...THEMES.dark};
+function applyTheme(mode){
+  Object.assign(C, THEMES[mode]||THEMES.dark);
+  try{document.body.style.background=C.bg;}catch(_){}
+}
+function initialTheme(){
+  try{
+    const saved=localStorage.getItem('journal_theme');
+    if(saved==='light'||saved==='dark')return saved;
+    if(window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches)return 'light';
+  }catch(_){}
+  return 'dark';
+}
 
 function calcPnL(ticker,contracts,points){return(parseFloat(points)||0)*(POINT_VALUES[ticker]||0);}
 function calcRisk(ticker,contracts,sl){return(parseFloat(sl)||0)*(POINT_VALUES[ticker]||0)*(parseFloat(contracts)||0);}
@@ -31,523 +53,14 @@ function getMonthDays(year,month){
   return days;
 }
 
-// ─── Bias Engine ──────────────────────────────────────────────────────────────
-function computeBias(bi) {
-  const {
-    ibSize,            // 'short'|'medium'|'large'|''
-    liveEdgeContext,   // 'balance_edge_above'|'balance_edge_below'|'failed_breakout_above'|'failed_breakout_below'|'expansion_above'|'expansion_below'|'middle_of_balance'|''
-    ibCloseMid,        // 'above'|'below'|''
-    ibBreakDir,        // 'high'|'low'|'none'|''
-    ibOppositeBreak,   // 'no'|'yes_no_accept'|'yes_accepted'|''
-    ibSecondBreak,     // 'high'|'low'|''
-    ibTimeAcceptance,  // 'yes'|'no'|''
-    ibBreakTiming,     // 'c_period'|'d_e_period'|'afternoon'|''
-    ibRetrace,         // 'shallow'|'deep'|''
-    ibCVD,             // 'agreeing'|'flat'|'diverging'|''
-  } = bi;
-
-  let signals = [];
-  let score = 0;
-
-  // ── IB Size (stat-backed: short ~75-80% trending, large = fade) ──
-  let ibSizeBoost = 0;
-  if (ibSize === 'short') {
-    ibSizeBoost = 1;
-    signals.push('📐 Short IB (<50% ATR) — trending day likely ~75-80% after confirmed break (+1)');
-  } else if (ibSize === 'large') {
-    ibSizeBoost = -2;
-    signals.push('📐 Large IB (>100% ATR) — market already moved. Fade posture. Conviction reduced (-2).');
-  } else if (ibSize === 'medium') {
-    signals.push('📐 Medium IB — no extra info, carry mid-session signals.');
-  }
-  score += ibSizeBoost;
-
-  // ── IB Close vs Midpoint (strongest pre-break stat) ──
-  // above mid: 83.5% upside break | below mid: 94.9% downside break
-  let midCloseBias = null;
-  if (ibCloseMid === 'above') {
-    score += 1;
-    midCloseBias = 'long';
-    signals.push('📊 IB closed ABOVE midpoint — 83.5% upside breakout probability (+1).');
-  } else if (ibCloseMid === 'below') {
-    score -= 1;
-    midCloseBias = 'short';
-    signals.push('📊 IB closed BELOW midpoint — 94.9% downside breakout probability (-1).');
-  }
-
-  // ── Live Edge Context (structural signal, ±2) ──
-  let edgeBoost = 0;
-  if (liveEdgeContext === 'failed_breakout_above') {
-    edgeBoost = -2;
-    signals.push('❌ Failed breakout ABOVE — broke above balance high, came back. Trapped longs. Bears in control (-2).');
-  } else if (liveEdgeContext === 'failed_breakout_below') {
-    edgeBoost = 2;
-    signals.push('❌ Failed breakout BELOW — broke below balance low, came back. Trapped shorts. Bulls in control (+2).');
-  } else if (liveEdgeContext === 'expansion_above') {
-    edgeBoost = 2;
-    signals.push('📈 Expansion ABOVE — accepted above balance high. Bulls in control (+2).');
-  } else if (liveEdgeContext === 'expansion_below') {
-    edgeBoost = -2;
-    signals.push('📉 Expansion BELOW — accepted below balance low. Bears in control (-2).');
-  } else if (liveEdgeContext === 'balance_edge_above') {
-    signals.push('⚖️ Balance edge ABOVE — two-sided. Wait for resolution. No score.');
-  } else if (liveEdgeContext === 'balance_edge_below') {
-    signals.push('⚖️ Balance edge BELOW — two-sided. Wait for resolution. No score.');
-  } else if (liveEdgeContext === 'middle_of_balance') {
-    signals.push('⚖️ Middle of balance — signal decayed. Fade extremes only.');
-  }
-  score += edgeBoost;
-
-  // ── IB Break (mid-session confirmation) ──
-  let breakBoost = 0;
-
-  if (ibOppositeBreak === 'yes_accepted') {
-    if (ibSecondBreak === 'high') {
-      breakBoost = 2;
-      signals.push('🔼 Double break — second break HIGH. Second break wins 68-72% (+2 bullish).');
-    } else if (ibSecondBreak === 'low') {
-      breakBoost = -2;
-      signals.push('🔽 Double break — second break LOW. Second break wins 68-72% (-2 bearish).');
-    } else {
-      signals.push('⚠️ Both IB sides accepted — log which broke second for directional edge.');
-    }
-  } else if (ibOppositeBreak === 'yes_no_accept') {
-    signals.push('⚠️ Both sides tested, neither held — chop. Neutral.');
-  } else {
-    // Single sided break
-    if (ibBreakDir === 'high' && ibTimeAcceptance === 'yes') {
-      if (ibBreakTiming === 'c_period') {
-        breakBoost = 2;
-        signals.push('🔼 IB broke HIGH + candle closed above — C-period. 45.5% reach 100% extension (+2).');
-        signals.push('🌙 Noon Curve: 82% probability PM session extends to new high. PM extreme ~2:04pm.');
-      } else {
-        breakBoost = 1;
-        signals.push('🔼 IB broke HIGH + candle closed above — ' + (ibBreakTiming === 'afternoon' ? 'Afternoon' : 'D/E period') + '. Lower extension probability (+1).');
-      }
-    } else if (ibBreakDir === 'low' && ibTimeAcceptance === 'yes') {
-      if (ibBreakTiming === 'c_period') {
-        breakBoost = -2;
-        signals.push('🔽 IB broke LOW + candle closed below — C-period. 45.5% reach 100% extension (-2).');
-        signals.push('🌙 Noon Curve: 72% probability PM session extends to new low. PM extreme ~2:04pm.');
-      } else {
-        breakBoost = -1;
-        signals.push('🔽 IB broke LOW + candle closed below — ' + (ibBreakTiming === 'afternoon' ? 'Afternoon' : 'D/E period') + '. Lower extension probability (-1).');
-      }
-    } else if (ibBreakDir === 'high' && ibTimeAcceptance === 'no') {
-      breakBoost = -1;
-      signals.push('↩ IB broke HIGH but snapped back — higher prices rejected, mild bearish lean (-1).');
-    } else if (ibBreakDir === 'low' && ibTimeAcceptance === 'no') {
-      breakBoost = 1;
-      signals.push('↪ IB broke LOW but snapped back — lower prices rejected, mild bullish lean (+1).');
-    } else if (ibBreakDir === 'none') {
-      signals.push('➡ No clean IB break — mid-session signals only.');
-    }
-
-    // CVD modifier on single sided held breaks only
-    if (ibTimeAcceptance === 'yes' && breakBoost !== 0) {
-      if (ibCVD === 'agreeing') {
-        breakBoost += breakBoost > 0 ? 1 : -1;
-        signals.push('📊 CVD agreeing with break — delta confirms (+1 in break direction).');
-      } else if (ibCVD === 'diverging') {
-        breakBoost += breakBoost > 0 ? -1 : 1;
-        signals.push('📊 CVD diverging — delta not confirming, potential trap (dampened).');
-      }
-    }
-
-    // Retracement depth after held break
-    if (ibTimeAcceptance === 'yes' && ibRetrace) {
-      if (ibRetrace === 'shallow') {
-        breakBoost += breakBoost > 0 ? 1 : -1;
-        signals.push('📐 Shallow retracement (<25% back into IB) — 93.8% continuation (+1).');
-      } else if (ibRetrace === 'deep') {
-        breakBoost += breakBoost > 0 ? -2 : 2;
-        signals.push('📐 Deep retracement (>50% back into IB) — 24.8% close in break direction. Double break likely (-2).');
-      }
-    }
-  }
-
-  score += breakBoost;
-
-  // ── Determine bias direction from score + midClose anchor ──
-  let bias, conviction, sizing, color;
-
-  // Determine direction
-  let direction = null;
-  if (score > 0) direction = 'long';
-  else if (score < 0) direction = 'short';
-  else {
-    // Tiebreak: use IB close vs midpoint as anchor
-    if (midCloseBias === 'long') direction = 'long';
-    else if (midCloseBias === 'short') direction = 'short';
-    else direction = null;
-  }
-
-  if (!direction) {
-    bias = 'neutral'; conviction = 'neutral'; color = C.yellow;
-    sizing = 'Neutral — fade extremes only. Half size max.';
-  } else {
-    bias = direction === 'long' ? 'bullish' : 'bearish';
-    color = direction === 'long' ? C.green : C.red;
-    const absScore = Math.abs(score);
-    if (absScore >= 5) {
-      conviction = 'high';
-      sizing = 'Full size. Hold runners. High-probability alignment (~68-75%).';
-    } else if (absScore >= 3) {
-      conviction = 'medium';
-      sizing = 'Standard size. Normal stops. Take clean setups only (~60-65%).';
-    } else if (absScore >= 1) {
-      conviction = 'low';
-      sizing = 'Reduced size. Tighter stops. Low conviction — take only cleanest setups.';
-    } else {
-      conviction = 'neutral';
-      sizing = 'Score too low — treat as neutral. Fade extremes only.';
-      bias = 'neutral'; color = C.yellow;
-    }
-  }
-
-  return { bias, conviction, sizing, signals, color, score };
-}
-
-function emptyBiasInputs() {
-  return {
-    prevDayCandle: '',
-    insideDayCount: '0',
-    profileShape: '',
-    prevHighQuality: '', // 'excess'|'normal'|''
-    prevLowQuality: '',  // 'excess'|'normal'|''
-    pocMigration: '',
-    // same-day inputs
-    ibSize: '',
-    ibCloseMid: '',      // 'above'|'below'|'' — IB close vs IB midpoint (moved to mid-session)
-    ibBreakTiming: '',   // 'c_period'|'d_e_period'|'afternoon'|'' — when did break occur
-    ibRetrace: '',       // 'shallow'|'deep'|'' — retracement depth after break
-    ibFormedLast: '',    // 'high'|'low'|'' — which side of IB formed last (52-57% opposite breaks)
-    vaOverlap: '',
-    // live / mid-session inputs
-    liveEdgeContext: '',
-    ibBreakDir: '',
-    ibOppositeBreak: '',  // 'no'|'yes_no_accept'|'yes_accepted'|''
-    ibSecondBreak: '',    // 'high'|'low'|'' — which side was the second break on double break days
-    ibTimeAcceptance: '',
-    ibCVD: '',
-    pdhPdlBreak: '',     // 'pdh'|'pdl'|'' — PDH or PDL broke during session
-  };
-}
-
-// ─── Mid-Session Update Engine ────────────────────────────────────────────────
-const CONVICTION_LEVELS = ['low','medium','high'];
-function applyLiveEdge(result, liveEdgeContext) {
-  if (!liveEdgeContext || liveEdgeContext === '') return result;
-  if (result.updatedConviction === 'neutral') return result; // neutral days not affected
-
-  const bullishEdge = ['failed_exp_low_middle','low_edge_tapped_held_middle','returning_low_from_below'];
-  const bearishEdge = ['failed_exp_high_middle','high_edge_tapped_held_middle','returning_high_from_above'];
-  const neutralEdge = ['at_high_edge','at_low_edge','not_at_edge'];
-
-  const edgeDir = bullishEdge.includes(liveEdgeContext) ? 'bullish'
-    : bearishEdge.includes(liveEdgeContext) ? 'bearish'
-    : 'neutral';
-
-  if (edgeDir === 'neutral') return result;
-
-  const agrees = edgeDir === result.updatedBias;
-  const conflicts = edgeDir !== result.updatedBias;
-  const curIdx = CONVICTION_LEVELS.indexOf(result.updatedConviction);
-  if (curIdx === -1) return result; // non-standard conviction, leave it
-
-  if (agrees) {
-    const newIdx = Math.min(curIdx + 1, CONVICTION_LEVELS.length - 1);
-    const newConviction = CONVICTION_LEVELS[newIdx];
-    return {
-      ...result,
-      updatedConviction: newConviction,
-      verdict: result.verdict + ` Live edge context agrees (${liveEdgeContext.replace(/_/g,' ')}) — conviction upgraded to ${newConviction}.`,
-      action: result.action + ` Live edge context reinforces direction.`,
-    };
-  }
-
-  if (conflicts) {
-    const newIdx = Math.max(curIdx - 1, 0);
-    const newConviction = CONVICTION_LEVELS[newIdx];
-    return {
-      ...result,
-      updatedConviction: newConviction,
-      verdict: result.verdict + ` Live edge context conflicts (${liveEdgeContext.replace(/_/g,' ')}) — conviction downgraded to ${newConviction}.`,
-      action: result.action + ` Live edge context is fighting the direction — reduce size, tighten stops.`,
-    };
-  }
-
-  return result;
-}
-
-function computeMidSession(bi, preBias) {
-  const { ibBreakDir, ibTimeAcceptance, ibCVD, ibOppositeBreak, liveEdgeContext, ibBreakTiming } = bi;
-
-  // Nothing entered yet
-  if (!ibBreakDir) return null;
-
-  // No clean break — original bias stands
-  if (ibBreakDir === 'none') {
-    return {
-      updatedBias: preBias.bias,
-      updatedConviction: preBias.conviction,
-      verdict: 'No clean IB break. Original bias unchanged.',
-      action: 'Continue with pre-market read. Wait for a cleaner setup.',
-      color: C.textSub,
-      effect: 'none',
-    };
-  }
-
-  // Time acceptance not confirmed — break is unresolved
-  if (ibTimeAcceptance === 'no') {
-    // Both sides snapped through with no acceptance = pure noise, chop
-    if (ibOppositeBreak === 'yes_no_accept') {
-      return {
-        updatedBias: 'neutral',
-        updatedConviction: 'neutral',
-        verdict: 'Both IB extremes snapped through — neither held. Choppy noise.',
-        action: 'Price tested both sides and rejected both without acceptance. This is the choppiest possible scenario — no edge in either direction. Sit on hands. Do not trade.',
-        color: C.yellow,
-        effect: 'neutralized',
-      };
-    }
-    return {
-      updatedBias: preBias.bias,
-      updatedConviction: preBias.conviction,
-      verdict: 'IB break rejected — price returned inside within 15-30 min.',
-      action: preBias.bias === 'bullish' && ibBreakDir === 'low'
-        ? 'Failed break low with bullish bias. Potential long setup back to IB mid.'
-        : preBias.bias === 'bearish' && ibBreakDir === 'high'
-        ? 'Failed break high with bearish bias. Potential short setup back to IB mid.'
-        : 'Failed break. Original bias stands. Wait for cleaner structure.',
-      color: C.yellow,
-      effect: 'none',
-    };
-  }
-
-  // ── OPPOSITE IB EXTREME ALSO BROKEN ──
-  // Check this before anything else once time acceptance is confirmed.
-  if (ibOppositeBreak === 'yes_no_accept') {
-    // Both sides broke but neither held with acceptance = pure chop.
-    // Market explored both directions and found responsive activity on both sides.
-    // ~70-75% probability of closing near middle or inside IB. No directional trade.
-    return {
-      updatedBias: 'neutral',
-      updatedConviction: 'neutral',
-      verdict: 'Both IB extremes broken — neither accepted. Double-sided chop.',
-      action: 'Market explored both directions and rejected both. This is a choppy neutral day. Do not trade directionally. Fade both extremes if anything — minimum size only. Best move is to sit on hands.',
-      color: C.yellow,
-      effect: 'neutralized',
-    };
-  }
-
-  if (ibOppositeBreak === 'yes_accepted') {
-    // Both sides broke and the opposite side accepted = double distribution developing
-    // OR structural reversal. Either way the original directional bias is dead.
-    // The second break with acceptance is the dominant signal now.
-    const secondDir = ibBreakDir === 'high' ? 'bearish' : 'bullish'; // opposite accepted = new direction
-    return {
-      updatedBias: 'neutral',
-      updatedConviction: 'neutral',
-      verdict: `Both IB extremes broken — opposite side accepted. Original bias neutralized.`,
-      action: `Price broke ${ibBreakDir} first then reversed and accepted the ${ibBreakDir === 'high' ? 'low' : 'high'}. This is a structural reversal or double distribution day. Original ${preBias.bias} bias is dead. Do not fade the second break — go neutral. Wait for clear structure to emerge before re-engaging. If a second separate value area builds, trade the gap between them.`,
-      color: C.orange,
-      effect: 'neutralized',
-    };
-  }
-
-  // Time acceptance confirmed — now check direction vs pre-market bias
-  const breakDir = ibBreakDir === 'high' ? 'bullish' : 'bearish';
-  const agrees = breakDir === preBias.bias;
-  const priorWasNeutral = preBias.bias === 'neutral' || !preBias.bias;
-
-  // CVD weight
-  const cvdStrong = ibCVD === 'agreeing';
-  const cvdDiverging = ibCVD === 'diverging';
-
-  // ── SCENARIO 1: Neutral pre-market + clean break ──
-  if (priorWasNeutral) {
-    const newBias = breakDir;
-    const conviction = cvdStrong ? 'medium' : cvdDiverging ? 'low' : 'low';
-    return applyLiveEdge({
-      updatedBias: newBias,
-      updatedConviction: conviction,
-      verdict: `IB break ${ibBreakDir === 'high' ? 'HIGH' : 'LOW'} held — ${ibBreakTiming === 'c_period' ? 'C-period' : 'D/E period'} confirmed.`,
-      action: cvdDiverging
-        ? 'CVD diverging — be cautious. Time acceptance is there but delta is not. Reduce size.'
-        : `IB break ${ibBreakDir} held — candle closed ${ibBreakDir === 'high' ? 'above IBH' : 'below IBL'}. ${ibBreakTiming === 'c_period' ? 'C-period — strongest signal. 45.5% reach 100% extension.' : 'D/E period — confirmed but lower extension probability.'} Look for pullback entries in break direction.`,
-      color: newBias === 'bullish' ? C.green : C.red,
-      effect: 'upgrade',
-    }, liveEdgeContext);
-  }
-
-  // ── SCENARIO 2: Bias and break agree ──
-  if (agrees) {
-    const conviction = cvdDiverging ? 'medium' : 'high';
-    return applyLiveEdge({
-      updatedBias: preBias.bias,
-      updatedConviction: conviction,
-      verdict: `IB break ${ibBreakDir === 'high' ? 'HIGH' : 'LOW'} held — ${ibBreakTiming === 'c_period' ? 'C-period' : 'D/E period'} confirmed.`,
-      action: cvdDiverging
-        ? 'Time accepted but CVD diverging. Confirmation is partial. Standard size, not full press.'
-        : `IB break confirmed — candle closed ${ibBreakDir === 'high' ? 'above IBH' : 'below IBL'}. ${ibBreakTiming === 'c_period' ? 'C-period — 45.5% reach 100% extension. Hold runners toward 2pm.' : 'D/E period — lower extension probability. Take partials earlier.'} Bias confirmed.`,
-      color: preBias.bias === 'bullish' ? C.green : C.red,
-      effect: 'confirmed',
-    }, liveEdgeContext);
-  }
-
-  // ── SCENARIO 3: Bias and break contradict ──
-  if (cvdDiverging) {
-    return applyLiveEdge({
-      updatedBias: preBias.bias,
-      updatedConviction: 'medium',
-      verdict: `IB break ${ibBreakDir} contradicts bias but CVD is diverging — likely a trap.`,
-      action: `Price broke ${ibBreakDir} but delta didn't confirm. High probability failed break. Watch for reversal back through IB ${ibBreakDir === 'high' ? 'high' : 'low'}. Original ${preBias.bias} bias may still be valid.`,
-      color: C.yellow,
-      effect: 'caution',
-    }, liveEdgeContext);
-  }
-
-  return applyLiveEdge({
-    updatedBias: 'neutral',
-    updatedConviction: 'neutral',
-    verdict: `IB break ${ibBreakDir} contradicts ${preBias.bias} bias with time + CVD confirmation.`,
-    action: `Pre-market bias is wrong today. Stop looking for ${preBias.bias === 'bullish' ? 'longs' : 'shorts'}. Go neutral. Fade the range or sit on hands. Do not flip to ${preBias.bias === 'bullish' ? 'bearish' : 'bullish'} — one IB break is not a full structural reversal.`,
-    color: C.orange,
-    effect: 'neutralized',
-  }, liveEdgeContext);
-}
-
-// ─── NQ + ES Alignment Engine ─────────────────────────────────────────────────
-function computeAlignment(esResult, nqResult) {
-  if (!esResult?.bias || !nqResult?.bias) return null;
-
-  const esBias = esResult.bias;   // 'bullish'|'bearish'|'neutral'|''
-  const nqBias = nqResult.bias;
-  const esConv = esResult.conviction; // 'high'|'medium'|'low'|'neutral'|'fade'|'reclaim'|'edge-watch'
-  const nqConv = nqResult.conviction;
-
-  const convRank = { high:3, medium:2, low:1, neutral:0, fade:0, reclaim:1, 'edge-watch':0 };
-  const esRank = convRank[esConv] || 0;
-  const nqRank = convRank[nqConv] || 0;
-
-  // ── Conflict ──
-  if ((esBias === 'bullish' && nqBias === 'bearish') ||
-      (esBias === 'bearish' && nqBias === 'bullish')) {
-    return {
-      alignment: 'conflict',
-      color: C.orange,
-      badge: 'CONFLICT',
-      verdict: 'NQ and ES are pointing opposite directions.',
-      action: 'Do not trade directionally. Sit on hands or take minimum size only. Wait for both instruments to agree before committing.',
-      sizing: 'Minimum size or no trade.',
-      combined: 'conflict',
-    };
-  }
-
-  // ── Both neutral ──
-  if (esBias === 'neutral' && nqBias === 'neutral') {
-    return {
-      alignment: 'both_neutral',
-      color: C.yellow,
-      badge: 'BOTH NEUTRAL',
-      verdict: 'Both NQ and ES are in balance or at an edge. No directional trade.',
-      action: 'Fade extremes only on both instruments. No trend trades. Half size max.',
-      sizing: 'Fade extremes only. Half size max.',
-      combined: 'neutral',
-    };
-  }
-
-  // ── One neutral, one directional ──
-  if (esBias === 'neutral' || nqBias === 'neutral') {
-    const dirResult = esBias !== 'neutral' ? esResult : nqResult;
-    const leadInstrument = esBias !== 'neutral' ? 'ES' : 'NQ';
-    return {
-      alignment: 'partial',
-      color: C.yellow,
-      badge: 'PARTIAL',
-      verdict: `${leadInstrument} has a directional read but the other instrument is neutral.`,
-      action: `Wait for the neutral instrument to confirm. If it does, conviction upgrades. Until then — reduced size, tighter stops, only the clearest setups.`,
-      sizing: 'Reduced size. Wait for both to align.',
-      combined: dirResult.bias,
-    };
-  }
-
-  // ── Both neutral ──
-  if (esBias === 'neutral' && nqBias === 'neutral') {
-    return {
-      alignment: 'both_neutral',
-      color: C.yellow,
-      badge: 'BOTH NEUTRAL',
-      verdict: 'Both NQ and ES are in balance or at an edge. No directional trade.',
-      action: 'Fade extremes only on both instruments. No trend trades. Half size max.',
-      sizing: 'Fade extremes only. Half size max.',
-      combined: 'neutral',
-    };
-  }
-
-  // ── Both same direction ──
-  const direction = esBias; // both equal at this point
-  const totalRank = esRank + nqRank;
-  let conv, action, sizing;
-
-  if (totalRank >= 5) {
-    conv = 'strong';
-    action = `Both NQ and ES high conviction ${direction}. This is your best trade of the week. Full size. Hold runners to the next structural target. NQ will lead — use NQ breaks as entry trigger, ES confirmation as add.`;
-    sizing = 'Full size. Hold runners.';
-  } else if (totalRank >= 3) {
-    conv = 'confirmed';
-    action = `Both instruments confirm ${direction} bias. Take clean setups in bias direction on both. Standard size. NQ likely leads the move — watch NQ IB for the first break signal.`;
-    sizing = 'Standard size. Take clean setups.';
-  } else if (totalRank >= 2) {
-    conv = 'moderate';
-    action = `Both ${direction} but conviction is moderate on at least one. Trade the instrument with higher conviction first. Reduced size until the move confirms and both are pressing.`;
-    sizing = 'Reduced size. Trade higher conviction instrument first.';
-  } else {
-    conv = 'weak';
-    action = `Both lean ${direction} but conviction is low on both. Base rate edge only. Minimal size or sit out and wait for a cleaner structure session.`;
-    sizing = 'Minimal size or sit out.';
-  }
-
-  const convColor = conv === 'strong' ? C.green : conv === 'confirmed' ? C.teal : conv === 'moderate' ? C.yellow : C.textMut;
-  const dirColor = direction === 'bullish' ? C.green : direction === 'bearish' ? C.red : C.yellow;
-
-  return {
-    alignment: 'confirmed',
-    color: dirColor,
-    convColor,
-    badge: conv.toUpperCase(),
-    verdict: `NQ and ES both ${direction.toUpperCase()} — cross-instrument confirmation.`,
-    action,
-    sizing,
-    combined: direction,
-    esConvLabel: esConv,
-    nqConvLabel: nqConv,
-  };
-}
-
 function emptyDay(){
   return{
-    pre:{
-      esInputs: emptyBiasInputs(),
-      esComputedBias: '',
-      nqInputs: emptyBiasInputs(),
-      nqComputedBias: '',
-      dailyBias: '',
-      alignmentBias: '',
-      esImgTPO:'', esImg15:'',
-      nqImgTPO:'', nqImg15:'',
-      keyLevelsImg:'',
-      esPlan:'',
-      nqPlan:'',
-      dayType:'',
-    },
+    pre:{},
     trades:[newTrade()],
-    eod:{emotions:'',well:'',fix:'',review:'',
-      img15ES:'',imgTPOES:'',img15NQ:'',imgTPONQ:''},
+    eod:{emotions:'',well:'',fix:'',review:''},
   };
 }
-function newTrade(){return{ticker:'',direction:'',contracts:'',sl:'',plan:'',confluences:[],result:'',points:'',entryTime:'',exitTime:'',emotions:'',notes:'',img1:'',img15:'',open:true};}
+function newTrade(){return{ticker:'',direction:'',contracts:'',sl:'',plan:'',confluences:[],triggers:[],attempt:'',stContext:'',htfContext:'',openingType:'',mfe:'',mae:'',result:'',points:'',entryTime:'',exitTime:'',emotions:'',notes:'',img1:'',img15:'',open:true};}
 
 // Generate 5-min interval time options for 10:30am - 4:00pm EST
 function timeOptions(){
@@ -891,519 +404,6 @@ function StatBox({label,val,color}){
   );
 }
 
-function InstrumentLabel({name,color}){
-  return(
-    <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14,marginTop:4}}>
-      <div style={{width:3,height:32,background:color,borderRadius:2}}/>
-      <div>
-        <div style={{fontSize:14,fontWeight:800,color:color}}>{name}</div>
-        <div style={{fontSize:10,color:C.textMut,letterSpacing:'0.08em'}}>CHARTS</div>
-      </div>
-    </div>
-  );
-}
-
-// ─── Bias Engine UI ───────────────────────────────────────────────────────────
-function SectionLabel({children}){
-  return <div style={{fontSize:10,color:C.textSub,marginBottom:8,letterSpacing:'0.1em',textTransform:'uppercase',fontWeight:600}}>{children}</div>;
-}
-
-function BiasEnginePanel({biasInputs, onChange, result, preBiasResult}){
-  const set = k => v => onChange({...biasInputs, [k]: v});
-  const midSession = computeMidSession(biasInputs, preBiasResult || result);
-
-  const convictionColors = {
-    high: C.green, medium: C.yellow, low: C.orange,
-    neutral: C.yellow, fade: C.orange, override: C.yellow,
-    'edge-watch': C.yellow, reclaim: C.blue, '': C.textMut
-  };
-
-  const displayResult = {...result, midSession};
-
-  return(
-    <div>
-      {/* ── OUTPUT CARD ── */}
-      {displayResult.bias && (
-        <div style={{
-          background: displayResult.color+'12',
-          border:`1.5px solid ${displayResult.color}44`,
-          borderRadius:14,padding:'18px 20px',marginBottom:28,
-        }}>
-          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
-            <div>
-              <div style={{fontSize:11,color:C.textMut,letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:4}}>Pre-Market Bias</div>
-              <div style={{fontSize:26,fontWeight:800,color:displayResult.color,textTransform:'uppercase',letterSpacing:'0.06em'}}>
-                {displayResult.bias === 'bullish' ? '🟢' : displayResult.bias === 'bearish' ? '🔴' : '⚪'} {displayResult.bias}
-              </div>
-            </div>
-            {displayResult.conviction && (
-              <div style={{
-                padding:'6px 14px',borderRadius:20,
-                background:convictionColors[displayResult.conviction]+'22',
-                border:`1px solid ${convictionColors[displayResult.conviction]}44`,
-                fontSize:12,fontWeight:700,
-                color:convictionColors[displayResult.conviction],
-                textTransform:'uppercase',letterSpacing:'0.08em',
-              }}>{displayResult.conviction}</div>
-            )}
-          </div>
-          {displayResult.sizing && (
-            <div style={{fontSize:13,color:C.textSub,lineHeight:1.6,marginBottom:12,paddingBottom:12,borderBottom:`1px solid ${C.border}`}}>
-              {displayResult.sizing}
-            </div>
-          )}
-          <div style={{display:'flex',flexDirection:'column',gap:6}}>
-          </div>
-        </div>
-      )}
-
-      {/* ── SECTION A: Pre-market inputs ── */}
-      <div style={{fontSize:11,color:C.blue,letterSpacing:'0.1em',textTransform:'uppercase',fontWeight:700,marginBottom:16,display:'flex',alignItems:'center',gap:8}}>
-        <div style={{width:3,height:14,background:C.blue,borderRadius:2}}/>
-        Pre-Market Inputs
-      </div>
-
-
-
-      {/* ── SECTION B: Same-day inputs (10:30 check) ── */}
-      <div style={{fontSize:11,color:C.purple,letterSpacing:'0.1em',textTransform:'uppercase',fontWeight:700,marginBottom:16,display:'flex',alignItems:'center',gap:8}}>
-        <div style={{width:3,height:14,background:C.purple,borderRadius:2}}/>
-        10:30 EST Inputs
-      </div>
-
-      {/* IB size */}
-      <div style={{marginBottom:18}}>
-        <SectionLabel>IB size vs prior day ATR</SectionLabel>
-        <Pills
-          options={[
-            {label:'Short &lt;50%',value:'short'},
-            {label:'Medium 50–100%',value:'medium'},
-            {label:'Large &gt;100%',value:'large'},
-          ]}
-          value={biasInputs.ibSize}
-          onChange={set('ibSize')}
-          colors={{short:C.teal,medium:'#aaa',large:C.orange}}
-        />
-        
-      </div>
-
-
-
-
-
-      <div style={{height:1,background:C.surface2,margin:'28px 0 24px'}}/>
-      <div style={{fontSize:11,color:C.orange,letterSpacing:'0.1em',textTransform:'uppercase',fontWeight:700,marginBottom:6,display:'flex',alignItems:'center',gap:8}}>
-        <div style={{width:3,height:14,background:C.orange,borderRadius:2}}/>
-        Mid-Session IB Update
-      </div>
-
-      {/* IB close vs midpoint — fill at 10:30 when IB closes */}
-      <div style={{marginBottom:18}}>
-        <SectionLabel>IB close vs midpoint (log at 10:30)</SectionLabel>
-        <Pills
-          options={[
-            {label:'⬆ Closed ABOVE midpoint',value:'above'},
-            {label:'⬇ Closed BELOW midpoint',value:'below'},
-          ]}
-          value={biasInputs.ibCloseMid}
-          onChange={set('ibCloseMid')}
-          colors={{above:C.green,below:C.red}}
-        />
-      </div>
-
-      {/* Step 1: Did IB break? */}
-      <div style={{marginBottom:18}}>
-        <SectionLabel>Did IB break?</SectionLabel>
-        <Pills
-          options={[
-            {label:'⬆ Broke high',value:'high'},
-            {label:'⬇ Broke low',value:'low'},
-            {label:'No clean break',value:'none'},
-          ]}
-          value={biasInputs.ibBreakDir}
-          onChange={set('ibBreakDir')}
-          colors={{high:C.green,low:C.red,none:'#aaa'}}
-        />
-      </div>
-
-      {(biasInputs.ibBreakDir === 'high' || biasInputs.ibBreakDir === 'low') && (
-        <>
-          {/* Step 2: Break result — merged timing + held into one question */}
-          <div style={{marginBottom:18}}>
-            <SectionLabel>Break result</SectionLabel>
-            <div style={{display:'flex',flexDirection:'column',gap:8}}>
-              {[
-                {label:'✓ Held — broke in C-period (10:30–11:00)',value:'c_period',col:C.green},
-                {label:'✓ Held — broke in D/E period (11:00–12:00)',value:'d_e_period',col:C.teal},
-                {label:'✓ Held — broke afternoon (12:00+)',value:'afternoon',col:'#aaa'},
-                {label:'✗ Snapped back inside',value:'snapped',col:C.red},
-              ].map(o=>{
-                const isSnapped = o.value === 'snapped';
-                const isActive = isSnapped
-                  ? biasInputs.ibTimeAcceptance === 'no'
-                  : biasInputs.ibTimeAcceptance === 'yes' && biasInputs.ibBreakTiming === o.value;
-                const handleClick = () => {
-                  if (isActive) {
-                    onChange({...biasInputs, ibTimeAcceptance:'', ibBreakTiming:''});
-                  } else if (isSnapped) {
-                    onChange({...biasInputs, ibTimeAcceptance:'no', ibBreakTiming:''});
-                  } else {
-                    onChange({...biasInputs, ibTimeAcceptance:'yes', ibBreakTiming:o.value});
-                  }
-                };
-                return(
-                  <button key={o.value} onClick={handleClick} style={{
-                    padding:'9px 14px',borderRadius:10,textAlign:'left',
-                    border:isActive?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
-                    background:isActive?o.col+'18':'transparent',
-                    cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
-                  }}>
-                    <span style={{color:isActive?o.col:C.textSub,fontSize:13,fontWeight:isActive?700:400}}>{o.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Step 3: CVD — only if held */}
-          {biasInputs.ibTimeAcceptance === 'yes' && (
-            <div style={{marginBottom:18}}>
-              <SectionLabel>CVD at the IB break level?</SectionLabel>
-              <Pills
-                options={[
-                  {label:'Agreeing',value:'agreeing'},
-                  {label:'Flat',value:'flat'},
-                  {label:'Diverging',value:'diverging'},
-                ]}
-                value={biasInputs.ibCVD}
-                onChange={set('ibCVD')}
-                colors={{agreeing:C.green,flat:'#aaa',diverging:C.red}}
-              />
-              
-            </div>
-          )}
-
-          {/* Step 4: Did opposite side break later in session? — only if first break held */}
-          {biasInputs.ibTimeAcceptance === 'yes' && (
-            <div style={{marginBottom:18}}>
-              <SectionLabel>Did opposite side break later in session?</SectionLabel>
-              <div style={{display:'flex',flexDirection:'column',gap:8}}>
-                {[
-                  {label:'No — single sided all day',value:'no',col:C.teal,sub:'Clean trend day, original break direction held'},
-                  {label:'Yes — opposite broke but snapped back',value:'yes_no_accept',col:C.yellow,sub:'Both sides tested, neither fully accepted — rotational day'},
-                  {label:'Yes — opposite broke and accepted',value:'yes_accepted',col:C.red,sub:'Double distribution — log which side broke second below'},
-                ].map(o=>{
-                  const active=biasInputs.ibOppositeBreak===o.value;
-                  return(
-                    <button key={o.value} onClick={()=>set('ibOppositeBreak')(active?'':o.value)} style={{
-                      padding:'9px 14px',borderRadius:10,textAlign:'left',
-                      border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
-                      background:active?o.col+'18':'transparent',
-                      cursor:'pointer',transition:'all 0.15s',fontFamily:'inherit',
-                      display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,
-                    }}>
-                      <span style={{color:active?o.col:C.textSub,fontSize:13,fontWeight:active?700:400}}>{o.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* Step 5: Second break direction — only when both sides accepted */}
-          {biasInputs.ibOppositeBreak === 'yes_accepted' && (
-            <div style={{marginBottom:18}}>
-              <SectionLabel>Which side broke SECOND? (68-72% wins)</SectionLabel>
-              <Pills
-                options={[
-                  {label:'⬆ HIGH broke second',value:'high'},
-                  {label:'⬇ LOW broke second',value:'low'},
-                ]}
-                value={biasInputs.ibSecondBreak}
-                onChange={set('ibSecondBreak')}
-                colors={{high:C.green,low:C.red}}
-              />
-            </div>
-          )}
-
-          {/* Retracement depth after break */}
-          {biasInputs.ibTimeAcceptance === 'yes' && (
-            <div style={{marginBottom:18}}>
-              <SectionLabel>Retracement depth after break</SectionLabel>
-              <Pills
-                options={[
-                  {label:'Shallow (<25% back into IB)',value:'shallow'},
-                  {label:'Deep (>50% back into IB)',value:'deep'},
-                ]}
-                value={biasInputs.ibRetrace}
-                onChange={set('ibRetrace')}
-                colors={{shallow:C.green,deep:C.red}}
-              />
-            </div>
-          )}
-        </>
-      )}
-
-      {/* Live Edge Context — updated as session develops */}
-      <div style={{marginTop:12,marginBottom:4}}>
-        <SectionLabel>Multi-Day Balance Edge (live — adds to score)</SectionLabel>
-        
-        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-          {[
-            {label:'⚖️ Balance edge above',value:'balance_edge_above',col:C.yellow},
-            {label:'⚖️ Balance edge below',value:'balance_edge_below',col:C.yellow},
-            {label:'❌ Failed breakout above',value:'failed_breakout_above',col:C.red},
-            {label:'❌ Failed breakout below',value:'failed_breakout_below',col:C.green},
-            {label:'📈 Expansion above',value:'expansion_above',col:C.green},
-            {label:'📉 Expansion below',value:'expansion_below',col:C.red},
-            {label:'⚖️ Middle of balance',value:'middle_of_balance',col:'#aaa'},
-          ].map(o=>{
-            const active=biasInputs.liveEdgeContext===o.value;
-            return(
-              <button key={o.value} onClick={()=>set('liveEdgeContext')(active?'':o.value)} style={{
-                padding:'6px 12px',borderRadius:20,fontSize:11,fontFamily:'inherit',cursor:'pointer',
-                border:active?`1.5px solid ${o.col}`:`1.5px solid ${C.border}`,
-                background:active?o.col+'22':'transparent',
-                color:active?o.col:C.textMut,fontWeight:active?700:400,transition:'all 0.15s',
-              }}>{o.label}</button>
-            );
-          })}
-        </div>
-      </div>
-
-
-
-
-
-      {/* Mid-session output card */}
-      {displayResult.midSession && (
-        <div style={{
-          background: displayResult.midSession.color+'12',
-          border:`1.5px solid ${displayResult.midSession.color}44`,
-          borderRadius:14,padding:'16px 18px',marginTop:8,
-        }}>
-          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
-            <div style={{fontSize:11,color:C.textMut,letterSpacing:'0.1em',textTransform:'uppercase'}}>Updated Bias</div>
-            <div style={{display:'flex',alignItems:'center',gap:8}}>
-              {displayResult.midSession.effect && displayResult.midSession.effect !== 'none' && (
-                <div style={{
-                  fontSize:10,fontWeight:700,letterSpacing:'0.08em',textTransform:'uppercase',
-                  padding:'3px 10px',borderRadius:20,
-                  background: displayResult.midSession.effect === 'confirmed' ? C.green+'22'
-                    : displayResult.midSession.effect === 'upgrade' ? C.blue+'22'
-                    : displayResult.midSession.effect === 'neutralized' ? C.orange+'22'
-                    : C.yellow+'22',
-                  color: displayResult.midSession.effect === 'confirmed' ? C.green
-                    : displayResult.midSession.effect === 'upgrade' ? C.blue
-                    : displayResult.midSession.effect === 'neutralized' ? C.orange
-                    : C.yellow,
-                }}>
-                  {displayResult.midSession.effect === 'confirmed' ? '✓ Confirmed'
-                    : displayResult.midSession.effect === 'upgrade' ? '↑ Upgraded'
-                    : displayResult.midSession.effect === 'neutralized' ? '⚠ Neutralized'
-                    : displayResult.midSession.effect === 'caution' ? '⚡ Caution'
-                    : '— No change'}
-                </div>
-              )}
-              <div style={{fontSize:18,fontWeight:800,color:displayResult.midSession.color,textTransform:'uppercase'}}>
-                {displayResult.midSession.updatedBias === 'bullish' ? '🟢'
-                  : displayResult.midSession.updatedBias === 'bearish' ? '🔴' : '⚪'} {displayResult.midSession.updatedBias}
-              </div>
-            </div>
-          </div>
-          <div style={{fontSize:13,color:displayResult.midSession.color,fontWeight:600,marginBottom:8}}>
-            {displayResult.midSession.verdict}
-          </div>
-          <div style={{fontSize:12,color:C.textSub,lineHeight:1.6}}>
-            {displayResult.midSession.action}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── Pre-Market Tab ───────────────────────────────────────────────────────────
-
-
-function PreMarketTab({data,onChange,isMobile,userId}){
-  const set=k=>v=>onChange({...data,[k]:v});
-
-  const esInputs = data.esInputs || emptyBiasInputs();
-  const nqInputs = data.nqInputs || emptyBiasInputs();
-  const esResult = computeBias(esInputs);
-  const nqResult = computeBias(nqInputs);
-  const alignment = computeAlignment(esResult, nqResult);
-
-  const handleESChange = (newInputs) => {
-    const result = computeBias(newInputs);
-    const newNqResult = computeBias(data.nqInputs || emptyBiasInputs());
-    const align = computeAlignment(result, newNqResult);
-    onChange({...data, esInputs: newInputs, esComputedBias: result.bias,
-      dailyBias: align?.combined || result.bias, alignmentBias: align?.combined || ''});
-  };
-
-  const handleNQChange = (newInputs) => {
-    const result = computeBias(newInputs);
-    const newEsResult = computeBias(data.esInputs || emptyBiasInputs());
-    const align = computeAlignment(newEsResult, result);
-    onChange({...data, nqInputs: newInputs, nqComputedBias: result.bias,
-      dailyBias: align?.combined || result.bias, alignmentBias: align?.combined || ''});
-  };
-
-  // Instrument column component
-  const InstrumentColumn = ({instrument, inputs, result, onInputChange, accentColor, imgTPO, imgTPOKey, img15, img15Key}) => (
-    <div style={{flex:1,minWidth:0}}>
-      {/* Header */}
-      <div style={{
-        display:'flex',alignItems:'center',justifyContent:'space-between',
-        marginBottom:16,padding:'14px 16px',
-        background:accentColor+'10',
-        border:`1px solid ${accentColor}33`,
-        borderRadius:12,
-      }}>
-        <div style={{display:'flex',alignItems:'center',gap:10}}>
-          <div style={{width:4,height:40,background:accentColor,borderRadius:2}}/>
-          <div>
-            <div style={{fontSize:20,fontWeight:800,color:accentColor}}>{instrument}</div>
-            <div style={{fontSize:10,color:C.textMut,letterSpacing:'0.08em'}}>{instrument==='ES'?'S&P 500':'NASDAQ 100'} BIAS</div>
-          </div>
-        </div>
-        {result.bias && (
-          <div style={{textAlign:'right'}}>
-            <div style={{fontSize:20,fontWeight:800,color:result.color,textTransform:'uppercase'}}>
-              {result.bias==='bullish'?'🟢':result.bias==='bearish'?'🔴':'⚪'} {result.bias}
-            </div>
-            {result.conviction && (
-              <div style={{
-                fontSize:10,fontWeight:700,textTransform:'uppercase',letterSpacing:'0.08em',
-                color:result.conviction==='high'?C.green:result.conviction==='medium'?C.yellow:result.conviction==='low'?C.orange:C.textMut,
-                marginTop:2,
-              }}>{result.conviction} conviction</div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Sizing instruction when bias exists */}
-      {result.sizing && (
-        <div style={{
-          padding:'10px 14px',borderRadius:10,marginBottom:16,
-          background:C.surface,border:`1px solid ${C.border}`,
-          fontSize:12,color:C.textSub,lineHeight:1.5,
-        }}>
-          {result.sizing}
-        </div>
-      )}
-
-      {/* Signal log */}
-      {/* Bias inputs */}
-      <BiasEnginePanel biasInputs={inputs} onChange={onInputChange} result={result} preBiasResult={result}/>
-
-      {/* Charts */}
-      <div style={{marginTop:20}}>
-        <div style={{fontSize:10,color:C.textSub,marginBottom:10,letterSpacing:'0.1em',textTransform:'uppercase',fontWeight:600}}>Charts</div>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:16}}>
-          <ImageSlot label="TPO" value={imgTPO} onChange={set(imgTPOKey)} accent={accentColor} userId={userId}/>
-          <ImageSlot label="15min" value={img15} onChange={set(img15Key)} accent={accentColor} userId={userId}/>
-        </div>
-      </div>
-    </div>
-  );
-
-  return(
-    <div>
-      {/* ── TWO COLUMN LAYOUT ── */}
-      <div style={{
-        display: isMobile ? 'block' : 'grid',
-        gridTemplateColumns: isMobile ? undefined : '1fr 1fr',
-        gap: isMobile ? 0 : 24,
-        alignItems: 'start',
-      }}>
-        <InstrumentColumn
-          instrument="ES"
-          inputs={esInputs}
-          result={esResult}
-          onInputChange={handleESChange}
-          accentColor={C.blue}
-          imgTPO={data.esImgTPO||''} imgTPOKey="esImgTPO"
-          img15={data.esImg15||''} img15Key="esImg15"
-        />
-
-        {isMobile && <div style={{height:2,background:C.surface2,margin:'28px 0'}}/>}
-
-        <InstrumentColumn
-          instrument="NQ"
-          inputs={nqInputs}
-          result={nqResult}
-          onInputChange={handleNQChange}
-          accentColor={C.purple}
-          imgTPO={data.nqImgTPO||''} imgTPOKey="nqImgTPO"
-          img15={data.nqImg15||''} img15Key="nqImg15"
-        />
-      </div>
-
-      {/* ── ALIGNMENT OUTPUT ── */}
-      <div style={{height:2,background:C.surface2,margin:'32px 0'}}/>
-      <div style={{marginBottom:28}}>
-        <div style={{fontSize:11,color:C.textMut,letterSpacing:'0.12em',textTransform:'uppercase',fontWeight:600,marginBottom:14,display:'flex',alignItems:'center',gap:8}}>
-          <div style={{width:3,height:14,background:C.textMut,borderRadius:2}}/>
-          NQ + ES Alignment
-        </div>
-        {alignment ? (
-          <div style={{
-            background:alignment.color+'10',
-            border:`2px solid ${alignment.color}55`,
-            borderRadius:16,padding:'22px 24px',
-          }}>
-            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16,flexWrap:'wrap',gap:12}}>
-              <div>
-                <div style={{fontSize:28,fontWeight:800,color:alignment.color,textTransform:'uppercase',letterSpacing:'0.04em',marginBottom:4}}>
-                  {alignment.combined==='bullish'?'🟢':alignment.combined==='bearish'?'🔴':alignment.combined==='conflict'?'⚡':'⚪'} {alignment.combined||alignment.alignment}
-                </div>
-                <div style={{fontSize:13,color:alignment.color,fontWeight:600}}>{alignment.verdict}</div>
-              </div>
-              <div style={{display:'flex',flexDirection:'column',alignItems:'flex-end',gap:8}}>
-                <div style={{
-                  padding:'7px 18px',borderRadius:20,
-                  background:(alignment.convColor||alignment.color)+'22',
-                  border:`1.5px solid ${(alignment.convColor||alignment.color)}55`,
-                  fontSize:13,fontWeight:800,
-                  color:alignment.convColor||alignment.color,
-                  textTransform:'uppercase',letterSpacing:'0.08em',
-                }}>{alignment.badge}</div>
-                {alignment.esConvLabel && (
-                  <div style={{display:'flex',gap:8}}>
-                    <div style={{fontSize:11,padding:'3px 10px',borderRadius:12,background:esResult.color+'20',color:esResult.color,fontWeight:600}}>ES {alignment.esConvLabel}</div>
-                    <div style={{fontSize:11,padding:'3px 10px',borderRadius:12,background:nqResult.color+'20',color:nqResult.color,fontWeight:600}}>NQ {alignment.nqConvLabel}</div>
-                  </div>
-                )}
-              </div>
-            </div>
-            <div style={{height:1,background:alignment.color+'22',marginBottom:14}}/>
-            <div style={{fontSize:13,color:C.textSub,lineHeight:1.8,marginBottom:14}}>{alignment.action}</div>
-            <div style={{
-              padding:'10px 14px',borderRadius:10,
-              background:C.surface,border:`1px solid ${C.border}`,
-              display:'flex',alignItems:'center',gap:10,
-            }}>
-              <div style={{fontSize:11,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:600,flexShrink:0}}>Sizing</div>
-              <div style={{fontSize:13,color:C.text,fontWeight:600}}>{alignment.sizing}</div>
-            </div>
-          </div>
-        ) : (
-          <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:'24px',textAlign:'center'}}>
-            <div style={{fontSize:22,marginBottom:8}}>📊</div>
-            <div style={{fontSize:14,color:C.textMut}}>Fill in ES and NQ bias inputs above to see the alignment assessment</div>
-          </div>
-        )}
-      </div>
-
-    </div>
-  );
-}
-
-// ─── Trade Card ───────────────────────────────────────────────────────────────
 function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
   const pnl=calcPnL(trade.ticker,trade.contracts,trade.points);
   const risk=calcRisk(trade.ticker,trade.contracts,trade.sl);
@@ -1448,43 +448,29 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
           <div style={{marginBottom:16}}>
             <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Setup Type</div>
             <Pills options={[
-              {label:'Balance Trade',value:'balance'},
-              {label:'Failed Expansion',value:'failedexp'},
-              {label:'Balance Reclaim',value:'reclaim'},
-              {label:'Balance Breakout',value:'breakout'},
+              {label:'BPB',value:'BPB'},
+              {label:'RPB',value:'RPB'},
+              {label:'ROT',value:'ROT'},
+              {label:'Fade',value:'FADE'},
             ]} value={trade.plan} onChange={set('plan')} colors={{
-              balance:C.blue,failedexp:C.orange,reclaim:C.teal,breakout:C.yellow,
+              BPB:C.blue,RPB:C.teal,ROT:C.yellow,FADE:C.orange,
             }}/>
           </div>
           <div style={{marginBottom:16}}>
-            <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Confluences at Entry</div>
+            <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Entry Trigger</div>
             <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
               {[
-                {label:'yVAH',value:'yVAH',col:C.blue},
-                {label:'yVAL',value:'yVAL',col:C.blue},
-                {label:'yPOC',value:'yPOC',col:C.blue},
-                {label:'Excess',value:'Excess',col:C.orange},
-                {label:'pwVAH',value:'pwVAH',col:C.purple},
-                {label:'pwVAL',value:'pwVAL',col:C.purple},
-                {label:'pwPOC',value:'pwPOC',col:C.purple},
-                {label:'PriorVAH',value:'PriorVAH',col:C.teal},
-                {label:'PriorVAL',value:'PriorVAL',col:C.teal},
-                {label:'PriorPOC',value:'PriorPOC',col:C.teal},
-                {label:'IB High',value:'IBHigh',col:C.teal},
-                {label:'IB Low',value:'IBLow',col:C.teal},
-                {label:'LEDGE',value:'LEDGE',col:C.yellow},
-                {label:'Medium TF Edge',value:'MedTFEdge',col:C.yellow},
-                {label:'GAP',value:'GAP',col:C.yellow},
-                {label:'Single Prints',value:'SinglePrints',col:C.yellow},
-                {label:'ETH VWAP',value:'ETHVWAP',col:C.red},
-                {label:'RTH VWAP',value:'RTHVWAP',col:C.green},
-                {label:'Large Trade',value:'LargeTrade',col:C.purple},
-                {label:'Hourly Sweep',value:'HourlySweep',col:C.orange},
+                {label:'b shape FP',value:'b_shape_FP',col:C.green},
+                {label:'P shape FP',value:'P_shape_FP',col:C.red},
+                {label:'Exhaustion',value:'exhaustion',col:C.orange},
+                {label:'Absorption',value:'absorption',col:C.teal},
+                {label:'Volume Spike',value:'volume_spike',col:C.yellow},
+                {label:'Initiative Participants',value:'initiative_participants',col:C.purple},
               ].map(o=>{
-                const active=(trade.confluences||[]).includes(o.value);
+                const active=(trade.triggers||[]).includes(o.value);
                 const toggle=()=>{
-                  const cur=trade.confluences||[];
-                  set('confluences')(active?cur.filter(x=>x!==o.value):[...cur,o.value]);
+                  const cur=trade.triggers||[];
+                  set('triggers')(active?cur.filter(x=>x!==o.value):[...cur,o.value]);
                 };
                 return(
                   <button key={o.value} onClick={toggle} style={{
@@ -1497,10 +483,44 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
               })}
             </div>
           </div>
-          <Divider label="Entry Charts"/>
-          <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
-            <ImageSlot label="1min Chart" value={trade.img1} onChange={set('img1')} accent={C.teal} userId={userId}/>
-            <ImageSlot label="15min Chart" value={trade.img15} onChange={set('img15')} accent={C.blue} userId={userId}/>
+          <div style={{marginBottom:16}}>
+            <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Entry Attempt</div>
+            <Pills options={[
+              {label:'Entry 1',value:'entry_1'},
+              {label:'Entry 2',value:'entry_2'},
+              {label:'Entry 3',value:'entry_3'},
+            ]} value={trade.attempt} onChange={set('attempt')} colors={{
+              entry_1:C.green,entry_2:C.yellow,entry_3:C.orange,
+            }}/>
+          </div>
+          <div style={{marginBottom:16}}>
+            <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Short-Term Context</div>
+            <Pills options={[
+              {label:'Bullish Short Term',value:'bullish_st'},
+              {label:'Bearish Short Term',value:'bearish_st'},
+              {label:'Balanced Short Term',value:'balanced_st'},
+            ]} value={trade.stContext} onChange={set('stContext')} colors={{
+              bullish_st:C.green,bearish_st:C.red,balanced_st:C.yellow,
+            }}/>
+          </div>
+          <div style={{marginBottom:16}}>
+            <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>HTF Context</div>
+            <Pills options={[
+              {label:'Bullish HTF',value:'bullish_htf'},
+              {label:'Bearish HTF',value:'bearish_htf'},
+            ]} value={trade.htfContext} onChange={set('htfContext')} colors={{
+              bullish_htf:C.green,bearish_htf:C.red,
+            }}/>
+          </div>
+          <div style={{marginBottom:16}}>
+            <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Opening Type</div>
+            <Pills options={[
+              {label:'In Range In Value',value:'ir_iv'},
+              {label:'In Range Out of Value',value:'ir_ov'},
+              {label:'Out of Range Out of Value',value:'or_ov'},
+            ]} value={trade.openingType} onChange={set('openingType')} colors={{
+              ir_iv:C.blue,ir_ov:C.teal,or_ov:C.purple,
+            }}/>
           </div>
           <Divider label="Result"/>
           <div style={{marginBottom:16}}>
@@ -1509,6 +529,10 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
               value={trade.result} onChange={set('result')} colors={{W:C.green,L:C.red,BE:C.yellow}}/>
           </div>
           <Input label="Total Points (all contracts combined)" type="number" value={trade.points} onChange={set('points')}/>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}}>
+            <Input label="MFE (pts per contract)" type="number" value={trade.mfe} onChange={set('mfe')}/>
+            <Input label="MAE (pts per contract)" type="number" value={trade.mae} onChange={set('mae')}/>
+          </div>
 
           {/* Entry / Exit time */}
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>
@@ -1558,7 +582,6 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
             <StatBox label="RR" val={`${rr}R`} color={C.textSub}/>
           </div>
           <Divider label="Notes"/>
-          <Field label="Emotions" placeholder="Entry · during · exit..." value={trade.emotions} onChange={set('emotions')} rows={2}/>
           <Field label="Trade Notes" placeholder="Plan followed? Deviations? Key observations..." value={trade.notes} onChange={set('notes')} rows={2}/>
         </div>
       )}
@@ -1589,163 +612,1603 @@ function SummaryBar({trades}){
   );
 }
 
-function TradesTab({trades,onChange,isMobile,userId}){
-  const update=(i,t)=>onChange(trades.map((x,j)=>j===i?t:x));
-  const remove=(i)=>onChange(trades.filter((_,j)=>j!==i));
-  const add=()=>onChange([...trades,newTrade()]);
+
+// ─── Tradovate Import ────────────────────────────────────────────────────────
+const TRADOVATE_LIVE_URL = 'https://live.tradovateapi.com/v1';
+const TRADOVATE_DEMO_URL = 'https://demo.tradovateapi.com/v1';
+
+async function tradovateAuth(username, password, appId, appVersion, isDemo) {
+  const url = (isDemo ? TRADOVATE_DEMO_URL : TRADOVATE_LIVE_URL) + '/auth/accesstokenrequest';
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      name: username,
+      password,
+      appId: appId || 'Sample App',
+      appVersion: appVersion || '1.0',
+      cid: 8,
+      sec: 'secret',
+      deviceId: 'journal-app',
+    })
+  });
+  if (!res.ok) throw new Error('Auth failed: ' + res.status);
+  const data = await res.json();
+  if (!data.accessToken) throw new Error(data.errorText || 'No access token returned');
+  return data.accessToken;
+}
+
+async function tradovateFetchFills(token, isDemo) {
+  const base = isDemo ? TRADOVATE_DEMO_URL : TRADOVATE_LIVE_URL;
+  const res = await fetch(base + '/fill/list', {
+    headers: { 'Authorization': 'Bearer ' + token }
+  });
+  if (!res.ok) throw new Error('Fill fetch failed: ' + res.status);
+  return res.json();
+}
+
+async function tradovateFetchOrders(token, isDemo) {
+  const base = isDemo ? TRADOVATE_DEMO_URL : TRADOVATE_LIVE_URL;
+  const res = await fetch(base + '/order/list', {
+    headers: { 'Authorization': 'Bearer ' + token }
+  });
+  if (!res.ok) throw new Error('Order fetch failed: ' + res.status);
+  return res.json();
+}
+
+function parseTicker(contractName) {
+  if (!contractName) return '';
+  const n = contractName.toUpperCase();
+  if (n.startsWith('MESM') || n.startsWith('MESU') || n.startsWith('MESH') || n.startsWith('MESZ') || n === 'MES') return 'MES';
+  if (n.startsWith('MNQM') || n.startsWith('MNQU') || n.startsWith('MNQH') || n.startsWith('MNQZ') || n === 'MNQ') return 'MNQ';
+  if (n.startsWith('ESM') || n.startsWith('ESU') || n.startsWith('ESH') || n.startsWith('ESZ') || n === 'ES') return 'ES';
+  if (n.startsWith('NQM') || n.startsWith('NQU') || n.startsWith('NQH') || n.startsWith('NQZ') || n === 'NQ') return 'NQ';
+  return contractName;
+}
+
+function formatTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const h = d.getUTCHours();
+  const m = d.getUTCMinutes();
+  // Round to nearest 5 min
+  const rm = Math.round(m / 5) * 5;
+  const fh = (h % 24).toString().padStart(2,'0');
+  const fm = (rm === 60 ? '00' : rm.toString().padStart(2,'0'));
+  return `${fh}:${fm}`;
+}
+
+function fillsToTrades(fills, orders) {
+  // Group fills by orderId to match entry/exit
+  const orderMap = {};
+  (orders || []).forEach(o => { orderMap[o.id] = o; });
+
+  // Group fills by contract and side to build trades
+  // Each fill = one leg of a trade
+  const trades = [];
+  const processed = new Set();
+
+  fills.forEach((fill, i) => {
+    if (processed.has(fill.id)) return;
+    const ticker = parseTicker(fill.contractId?.name || fill.contractName || '');
+    const direction = fill.action === 'Buy' ? 'Long' : 'Short';
+    const contracts = Math.abs(fill.qty || 1);
+    const entryPrice = fill.price || 0;
+    const entryTime = formatTime(fill.timestamp);
+
+    // Look for matching exit fill (opposite side, same contract)
+    let exitFill = null;
+    for (let j = i + 1; j < fills.length; j++) {
+      const f2 = fills[j];
+      if (processed.has(f2.id)) continue;
+      const t2 = parseTicker(f2.contractId?.name || f2.contractName || '');
+      if (t2 === ticker && f2.action !== fill.action) {
+        exitFill = f2;
+        processed.add(f2.id);
+        break;
+      }
+    }
+
+    processed.add(fill.id);
+
+    const pv = ticker === 'ES' ? 50 : ticker === 'NQ' ? 20 : ticker === 'MES' ? 5 : ticker === 'MNQ' ? 2 : 0;
+    let points = 0;
+    let exitTime = '';
+
+    if (exitFill) {
+      const exitPrice = exitFill.price || 0;
+      points = direction === 'Long'
+        ? (exitPrice - entryPrice) * contracts
+        : (entryPrice - exitPrice) * contracts;
+      exitTime = formatTime(exitFill.timestamp);
+    }
+
+    trades.push({
+      ...newTrade(),
+      ticker,
+      direction,
+      contracts: contracts.toString(),
+      entryTime,
+      exitTime,
+      points: exitFill ? points.toFixed(2) : '',
+      notes: `Imported from Tradovate. Entry: ${entryPrice}${exitFill ? ' Exit: ' + exitFill.price : ' (no exit matched)'}`,
+      open: true,
+    });
+  });
+
+  return trades.length > 0 ? trades : [newTrade()];
+}
+
+// Sierra Chart CSV parser
+function parseSierraCSV(csvText) {
+  const lines = csvText.trim().split('\n');
+  if (lines.length < 2) return [];
+  const headers = lines[0].split(',').map(h => h.trim().replace(/"/g,'').toLowerCase());
+
+  const trades = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(',').map(c => c.trim().replace(/"/g,''));
+    if (cols.length < 3) continue;
+    const row = {};
+    headers.forEach((h, idx) => { row[h] = cols[idx] || ''; });
+
+    const ticker = parseTicker(row['symbol'] || row['contract'] || row['instrument'] || '');
+    const direction = (row['side'] || row['action'] || row['buy/sell'] || '').toLowerCase().includes('buy') ? 'Long' : 'Short';
+    const contracts = row['qty'] || row['quantity'] || row['contracts'] || '1';
+    const entryPrice = row['entry price'] || row['fill price'] || row['price'] || '';
+    const exitPrice = row['exit price'] || row['close price'] || '';
+    const entryTime = row['entry time'] || row['time'] || row['entry'] || '';
+    const exitTime = row['exit time'] || row['exit'] || '';
+    const pnl = row['profit/loss'] || row['p&l'] || row['pnl'] || '';
+    const points = row['points'] || row['ticks'] || '';
+
+    trades.push({
+      ...newTrade(),
+      ticker,
+      direction,
+      contracts,
+      entryTime: formatTime(entryTime) || entryTime,
+      exitTime: formatTime(exitTime) || exitTime,
+      points,
+      notes: `Imported from Sierra Chart. Entry: ${entryPrice}${exitPrice ? ' Exit: ' + exitPrice : ''} P&L: ${pnl}`,
+      open: true,
+    });
+  }
+  return trades.length > 0 ? trades : [newTrade()];
+}
+
+function TradovateImportModal({onClose, onImport}) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [isDemo, setIsDemo] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [preview, setPreview] = useState(null);
+
+  const handleFetch = async () => {
+    setLoading(true); setError('');
+    try {
+      const token = await tradovateAuth(username, password, 'Journal App', '1.0', isDemo);
+      const [fills, orders] = await Promise.all([
+        tradovateFetchFills(token, isDemo),
+        tradovateFetchOrders(token, isDemo),
+      ]);
+      const trades = fillsToTrades(fills, orders);
+      setPreview(trades);
+    } catch(e) {
+      setError(e.message);
+    }
+    setLoading(false);
+  };
+
+  const inputStyle = {
+    width:'100%', padding:'10px 12px', borderRadius:10,
+    border:`1.5px solid ${C.border}`, background:C.bg,
+    color:C.text, fontSize:13, fontFamily:'inherit',
+    outline:'none', boxSizing:'border-box', marginBottom:10,
+  };
+
   return(
-    <div>
-      <SummaryBar trades={trades}/>
-      {trades.map((t,i)=>(
-        <TradeCard key={i} index={i} trade={t} onChange={nt=>update(i,nt)} onRemove={()=>remove(i)} isMobile={isMobile} userId={userId}/>
-      ))}
-      <button onClick={add} style={{
-        width:'100%',padding:'13px',marginTop:8,
-        background:'transparent',border:`1.5px dashed ${C.border}`,
-        borderRadius:12,color:C.textMut,fontSize:13,
-        fontFamily:'inherit',cursor:'pointer',letterSpacing:'0.04em',transition:'all 0.15s',
-      }}
-        onMouseEnter={e=>{e.target.style.borderColor=C.border2;e.target.style.color=C.textSub;}}
-        onMouseLeave={e=>{e.target.style.borderColor=C.border;e.target.style.color=C.textMut;}}
-      >+ Add Trade</button>
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',zIndex:999,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}>
+      <div style={{background:C.bg,borderRadius:20,padding:28,width:'100%',maxWidth:480,border:`1px solid ${C.border}`}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:20}}>
+          <div style={{fontSize:16,fontWeight:700,color:C.text}}>Import from Tradovate</div>
+          <button onClick={onClose} style={{background:'none',border:'none',color:C.textMut,fontSize:20,cursor:'pointer'}}>×</button>
+        </div>
+
+        {!preview ? (
+          <>
+            <div style={{fontSize:11,color:C.textMut,marginBottom:12}}>Pulls today's fills from your Tradovate account.</div>
+
+            <div style={{display:'flex',gap:8,marginBottom:12}}>
+              {['Demo','Live'].map(m=>(
+                <button key={m} onClick={()=>setIsDemo(m==='Demo')} style={{
+                  flex:1,padding:'8px',borderRadius:10,border:`1.5px solid ${isDemo===(m==='Demo')?C.blue:C.border}`,
+                  background:isDemo===(m==='Demo')?C.blue+'22':'transparent',
+                  color:isDemo===(m==='Demo')?C.blue:C.textMut,
+                  fontFamily:'inherit',fontSize:12,cursor:'pointer',fontWeight:600,
+                }}>{m} Account</button>
+              ))}
+            </div>
+
+            <input style={inputStyle} placeholder="Tradovate username / email"
+              value={username} onChange={e=>setUsername(e.target.value)}/>
+            <input style={inputStyle} type="password" placeholder="Tradovate password"
+              value={password} onChange={e=>setPassword(e.target.value)}/>
+
+            {error && <div style={{fontSize:12,color:C.red,marginBottom:10,padding:'8px 12px',background:C.red+'15',borderRadius:8}}>{error}</div>}
+
+            <button onClick={handleFetch} disabled={loading||!username||!password} style={{
+              width:'100%',padding:'12px',borderRadius:12,border:'none',
+              background:loading?C.surface:C.blue,color:loading?C.textMut:'#fff',
+              fontFamily:'inherit',fontSize:13,fontWeight:600,cursor:loading?'not-allowed':'pointer',
+            }}>{loading?'Fetching fills...':"Fetch Today's Trades"}</button>
+          </>
+        ) : (
+          <>
+            <div style={{fontSize:13,color:C.textSub,marginBottom:16}}>
+              Found <b style={{color:C.text}}>{preview.length}</b> trade{preview.length!==1?'s':''} today. Review before importing.
+            </div>
+            <div style={{maxHeight:200,overflowY:'auto',marginBottom:16}}>
+              {preview.map((t,i)=>(
+                <div key={i} style={{padding:'10px 12px',background:C.surface,borderRadius:10,marginBottom:8,fontSize:12,color:C.textSub}}>
+                  <b style={{color:C.text}}>{t.ticker} {t.direction}</b> — {t.contracts} contracts | Entry: {t.entryTime} Exit: {t.exitTime} | Pts: {t.points||'—'}
+                </div>
+              ))}
+            </div>
+            <div style={{fontSize:11,color:C.yellow,marginBottom:14,padding:'8px 12px',background:C.yellow+'15',borderRadius:8}}>
+              ⚠ Setup type, SL, confluences and notes need to be filled manually after import.
+            </div>
+            <div style={{display:'flex',gap:10}}>
+              <button onClick={()=>setPreview(null)} style={{flex:1,padding:'11px',borderRadius:12,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textSub,fontFamily:'inherit',fontSize:13,cursor:'pointer'}}>Back</button>
+              <button onClick={()=>onImport(preview)} style={{flex:2,padding:'11px',borderRadius:12,border:'none',background:C.green,color:'#fff',fontFamily:'inherit',fontSize:13,fontWeight:600,cursor:'pointer'}}>Import {preview.length} Trade{preview.length!==1?'s':''}</button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
 
-// ─── EOD Tab ─────────────────────────────────────────────────────────────────
-function EODTab({data,onChange,trades,date,isMobile,userId}){
-  const set=k=>v=>onChange({...data,[k]:v});
-  const total=trades.reduce((s,t)=>s+calcPnL(t.ticker,t.contracts,t.points),0);
-  const esPts=trades.filter(t=>['ES','MES'].includes(t.ticker)).reduce((s,t)=>s+(parseFloat(t.points)||0),0);
-  const nqPts=trades.filter(t=>['NQ','MNQ'].includes(t.ticker)).reduce((s,t)=>s+(parseFloat(t.points)||0),0);
-  const hasES=trades.some(t=>['ES','MES'].includes(t.ticker));
-  const hasNQ=trades.some(t=>['NQ','MNQ'].includes(t.ticker));
-  const ptsLabel=hasES&&hasNQ?`ES ${esPts>=0?'+':''}${esPts.toFixed(1)} / NQ ${nqPts>=0?'+':''}${nqPts.toFixed(1)}`:hasES?`${esPts>=0?'+':''}${esPts.toFixed(1)} ES`:hasNQ?`${nqPts>=0?'+':''}${nqPts.toFixed(1)} NQ`:'—';
-  const ptsColor=hasES&&hasNQ?C.textSub:hasES?(esPts>=0?C.green:C.red):(nqPts>=0?C.green:C.red);
+function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId}){
+  const update=(i,t)=>onChange(trades.map((x,j)=>j===i?t:x));
+  const remove=(i)=>onChange(trades.filter((_,j)=>j!==i));
+  const [showTradovate,setShowTradovate] = useState(false);
+  const fileRef = useRef();
+  const [organising,setOrganising]=useState(false);
+  const setEod=k=>v=>onEodChange({...eod,[k]:v});
 
-  const[copied,setCopied]=useState(false);
-  const[organising,setOrganising]=useState(false);
+  const handleTradovateImport = (imported) => {
+    onChange([...trades.filter(t=>t.ticker||t.notes), ...imported]);
+    setShowTradovate(false);
+  };
 
-  const pre=data||{};
-  const esIn=data.esInputs||{};
-  const nqIn=data.nqInputs||{};
-  const biasStr = `ES: ${data.esComputedBias||'—'} | NQ: ${data.nqComputedBias||'—'} | Alignment: ${data.alignmentBias||data.dailyBias||'—'}`;
+  const handleSierraCSV = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const parsed = parseSierraCSV(ev.target.result);
+      onChange([...trades.filter(t=>t.ticker||t.notes), ...parsed]);
+    };
+    reader.readAsText(file);
+    e.target.value = '';
+  };
 
-  const biasInputStr=(ins,label)=>`${label} Inputs: IBSize=${ins.ibSize||'—'} | Mid: IBCloseMid=${ins.ibCloseMid||'—'} IBBreak=${ins.ibBreakDir||'—'} TimeAccept=${ins.ibTimeAcceptance||'—'} BreakTiming=${ins.ibBreakTiming||'—'} Retrace=${ins.ibRetrace||'—'} CVD=${ins.ibCVD||'—'} OppBreak=${ins.ibOppositeBreak||'—'} SecondBreak=${ins.ibSecondBreak||'—'} LiveEdge=${ins.liveEdgeContext||'—'}`;
-  const prompt=`Review my trading journal for ${date}.
-Bias — ${biasStr}
-${biasInputStr(data.esInputs||{},'ES')}
-${biasInputStr(data.nqInputs||{},'NQ')}
-ES Plan: ${data.esPlan||'—'}
-NQ Plan: ${data.nqPlan||'—'}
-Day Type: ${data.dayType||'—'}
-Trades (${trades.length}):
-${trades.map((t,i)=>{const r=calcRisk(t.ticker,t.contracts,t.sl);const p=calcPnL(t.ticker,t.contracts,t.points);const rr=r>0?(Math.abs(p)/r).toFixed(2):'—';const hold=calcHoldTime(t.entryTime,t.exitTime)||'—';const win=sessionWindow(t.entryTime)||'—';return`Trade ${i+1}: ${t.ticker}|${t.direction||'—'}|${t.contracts}c|SL ${t.sl}pts(per contract)|Setup:${t.plan}|Confluences:${(t.confluences||[]).join(',')||'none'}|Result:${t.result}|TotalPoints:${t.points}|P&L:$${p.toFixed(0)}|Risk:$${r.toFixed(0)}|RR:${rr}R|Entry:${t.entryTime||'—'}EST(${win})|Exit:${t.exitTime||'—'}EST|Hold:${hold}|Emotions:${t.emotions||'—'}|Notes:${t.notes||'—'}`}).join('\n')}
-Total P&L: $${total.toFixed(0)} | ES Points: ${esPts.toFixed(1)} | NQ Points: ${nqPts.toFixed(1)}
-What I Did Well: ${data.well||'—'}
-What I Must Fix: ${data.fix||'—'}
-General Review: ${data.review||'—'}
-Please: 1. ES vs NQ bias accuracy — did they align or diverge. 2. Did alignment call match what happened. 3. Trade-by-trade breakdown. 4. Mental state impact. 5. What I did well (specific). 6. Top 1-2 fixes. 7. Confirm P&L math (ES=$50/pt NQ=$20/pt MES=$5/pt MNQ=$2/pt — points are total across all contracts, SL is per contract). 8. One edge to build on. Direct, no padding.`;
 
-  const copy=()=>{navigator.clipboard.writeText(prompt);setCopied(true);setTimeout(()=>setCopied(false),2500);};
+  return(
+    <div>
+      {showTradovate && <TradovateImportModal onClose={()=>setShowTradovate(false)} onImport={handleTradovateImport}/>}
+      <input ref={fileRef} type="file" accept=".csv" style={{display:'none'}} onChange={handleSierraCSV}/>
 
-  const organiseReview=async()=>{
-    if(!data.review||data.review.trim()==='')return;
-    setOrganising(true);
+      {/* Import buttons */}
+      <div style={{display:'flex',gap:10,marginBottom:16}}>
+        <button onClick={()=>setShowTradovate(true)} style={{
+          flex:1,padding:'11px 14px',borderRadius:12,
+          border:`1.5px solid ${C.blue}`,background:(C.blue)+'15',
+          color:C.blue,fontFamily:'inherit',fontSize:12,fontWeight:600,cursor:'pointer',
+          display:'flex',alignItems:'center',justifyContent:'center',gap:6,
+        }}>
+          📥 Import from Tradovate
+        </button>
+        <button onClick={()=>fileRef.current.click()} style={{
+          flex:1,padding:'11px 14px',borderRadius:12,
+          border:`1.5px solid ${C.purple}`,background:C.purple+'15',
+          color:C.purple,fontFamily:'inherit',fontSize:12,fontWeight:600,cursor:'pointer',
+          display:'flex',alignItems:'center',justifyContent:'center',gap:6,
+        }}>
+          📂 Import Sierra Chart CSV
+        </button>
+      </div>
+
+      <SummaryBar trades={trades}/>
+      {trades.map((t,i)=>(
+        <TradeCard key={i} index={i} trade={t} onChange={nt=>update(i,nt)} onRemove={()=>remove(i)} isMobile={isMobile} userId={userId}/>
+      ))}
+
+      {/* ── Day Note ── */}
+      <Divider label="Day Note (optional)"/>
+      <Field label="" placeholder="Optional short note about the day — market context, levels for tomorrow..." value={eod.review} onChange={setEod('review')} rows={3}/>
+    </div>
+  );
+}
+
+
+
+// ═══ Process & Behavior ══════════════════════════════════════════════════════
+
+function pearson(xs,ys){
+  const n=xs.length;if(n<3)return null;
+  const mx=xs.reduce((a,b)=>a+b,0)/n, my=ys.reduce((a,b)=>a+b,0)/n;
+  let num=0,dx=0,dy=0;
+  for(let i=0;i<n;i++){num+=(xs[i]-mx)*(ys[i]-my);dx+=(xs[i]-mx)**2;dy+=(ys[i]-my)**2;}
+  const den=Math.sqrt(dx*dy);
+  return den?num/den:null;
+}
+function session3(entryTime){
+  if(!entryTime)return '—';
+  const[h,m]=entryTime.split(':').map(Number);
+  const mins=h*60+m;
+  if(mins<12*60)return 'First 90 min';
+  if(mins<14*60+30)return 'Mid-day';
+  return 'Last 90 min';
+}
+
+function SvgDualLine({a,b,colA,colB,labelA,labelB,height=180,fmtY=v=>'$'+v.toFixed(0)}){
+  const W=600,H=height,P={t:12,r:8,b:26,l:52};
+  if(!a||a.length<2)return <div style={{height,display:'flex',alignItems:'center',justifyContent:'center',color:C.textDim,fontSize:12}}>Not enough data</div>;
+  const all=[...a.map(p=>p.val),...(b||[]).map(p=>p.val)];
+  const min=Math.min(0,...all),max=Math.max(0,...all),range=max-min||1;
+  const y=v=>P.t+(1-(v-min)/range)*(H-P.t-P.b);
+  const path=(s)=>s.map((p,i)=>`${i===0?'M':'L'}${(P.l+(i/(s.length-1))*(W-P.l-P.r)).toFixed(1)},${y(p.val).toFixed(1)}`).join(' ');
+  return(
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%',height:'auto',display:'block'}}>
+      <line x1={P.l} x2={W-P.r} y1={y(0)} y2={y(0)} stroke={C.textMut} strokeWidth="0.7"/>
+      <text x={P.l-6} y={y(max)+4} fill={C.textMut} fontSize="10" textAnchor="end">{fmtY(max)}</text>
+      <path d={path(a)} fill="none" stroke={colA} strokeWidth="2" strokeLinejoin="round"/>
+      {b&&b.length>1&&<path d={path(b)} fill="none" stroke={colB} strokeWidth="2" strokeDasharray="5,4" strokeLinejoin="round"/>}
+      <rect x={P.l} y={H-16} width="10" height="3" fill={colA}/><text x={P.l+16} y={H-11} fill={C.textSub} fontSize="10">{labelA}</text>
+      {b&&<><rect x={P.l+120} y={H-16} width="10" height="3" fill={colB}/><text x={P.l+136} y={H-11} fill={C.textSub} fontSize="10">{labelB}</text></>}
+    </svg>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ANALYTICS ENGINE
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function extractAllTrades(days){
+  const out=[];
+  days.forEach(row=>{
+    const trades=row.data?.trades||[];
+    trades.forEach(t=>{
+      if(!t.ticker||!t.result||!t.points)return;
+      const contracts=parseFloat(t.contracts)||1;
+      const points=parseFloat(t.points)||0;
+      const sl=parseFloat(t.sl)||0;
+      const pv=POINT_VALUES[t.ticker]||0;
+      const pnl=points*pv;
+      const risk=sl*pv*contracts;
+      const ptsPerC=contracts?points/contracts:0;
+      const rr=sl?Math.abs(ptsPerC)/sl:0;
+      out.push({
+        date:row.date, ticker:t.ticker, direction:t.direction||'—',
+        contracts, points, sl, pnl, risk,
+        rr:t.result==='W'?rr:(t.result==='L'?-1:0),
+        rawRR:rr, result:t.result,
+        setup:t.plan||'—', confluences:t.confluences||[], triggers:t.triggers||[],
+        attempt:t.attempt||'—', stContext:t.stContext||'—', htfContext:t.htfContext||'—', openingType:t.openingType||'—',
+        entryTime:t.entryTime||'', exitTime:t.exitTime||'',
+        session:sessionWindow(t.entryTime)||'—',
+        hold:calcHoldTime(t.entryTime,t.exitTime)||'',
+        mfe:parseFloat(t.mfe)||0, mae:parseFloat(t.mae)||0,
+        notes:t.notes||'', emotions:t.emotions||'',
+      });
+    });
+  });
+  return out;
+}
+
+function computeStats(trades){
+  const closed=trades.filter(t=>['W','L','BE'].includes(t.result));
+  const wins=closed.filter(t=>t.result==='W');
+  const losses=closed.filter(t=>t.result==='L');
+  const winRate=wins.length+losses.length>0?wins.length/(wins.length+losses.length)*100:0;
+  const totalPnl=closed.reduce((s,t)=>s+t.pnl,0);
+  const grossWin=wins.reduce((s,t)=>s+t.pnl,0);
+  const grossLoss=Math.abs(losses.reduce((s,t)=>s+t.pnl,0));
+  const profitFactor=grossLoss>0?grossWin/grossLoss:grossWin>0?99:0;
+  const avgWin=wins.length?grossWin/wins.length:0;
+  const avgLoss=losses.length?grossLoss/losses.length:0;
+  const avgWinRR=wins.length?wins.reduce((s,t)=>s+t.rawRR,0)/wins.length:0;
+  const expectancy=closed.length?totalPnl/closed.length:0;
+
+  // Daily P&L series + equity curve + drawdown
+  const dayMap={};
+  closed.forEach(t=>{dayMap[t.date]=(dayMap[t.date]||0)+t.pnl;});
+  const dates=Object.keys(dayMap).sort();
+  let cum=0, peak=0, maxDD=0;
+  const equity=[], dailyPnl=[], ddSeries=[];
+  dates.forEach(d=>{
+    cum+=dayMap[d];
+    if(cum>peak)peak=cum;
+    const dd=peak-cum;
+    if(dd>maxDD)maxDD=dd;
+    equity.push({date:d,val:cum});
+    dailyPnl.push({date:d,val:dayMap[d]});
+    ddSeries.push({date:d,val:-dd});
+  });
+
+  // Streak
+  let streak=0;
+  for(let i=closed.length-1;i>=0;i--){
+    const r=closed[i].result;
+    if(r==='BE')continue;
+    if(streak===0){streak=r==='W'?1:-1;}
+    else if(streak>0&&r==='W')streak++;
+    else if(streak<0&&r==='L')streak--;
+    else break;
+  }
+
+  const breakdown=(keyFn,multi=false)=>{
+    const m={};
+    const addTo=(k,t)=>{
+      if(!k||k==='—')return;
+      if(!m[k])m[k]={w:0,l:0,be:0,pnl:0,gw:0,gl:0};
+      if(t.result==='W'){m[k].w++;m[k].gw+=t.pnl;}
+      else if(t.result==='L'){m[k].l++;m[k].gl+=Math.abs(t.pnl);}
+      else m[k].be++;
+      m[k].pnl+=t.pnl;
+    };
+    closed.forEach(t=>{
+      const k=keyFn(t);
+      if(multi&&Array.isArray(k))k.forEach(kk=>addTo(kk,t));
+      else addTo(k,t);
+    });
+    return Object.entries(m).map(([k,v])=>({
+      label:k, wins:v.w, losses:v.l, be:v.be, pnl:v.pnl,
+      total:v.w+v.l+v.be,
+      winRate:v.w+v.l>0?v.w/(v.w+v.l)*100:0,
+      pf:v.gl>0?v.gw/v.gl:(v.gw>0?99:0),
+      avgPnl:(v.w+v.l+v.be)>0?v.pnl/(v.w+v.l+v.be):0,
+    })).sort((a,b)=>b.total-a.total);
+  };
+
+  const dowNames=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+  return {
+    totalTrades:closed.length, wins:wins.length, losses:losses.length,
+    be:closed.filter(t=>t.result==='BE').length,
+    winRate, totalPnl, profitFactor, avgWin, avgLoss, avgWinRR, expectancy,
+    maxDD, streak, equity, dailyPnl, ddSeries, dayMap,
+    bySetup:breakdown(t=>t.setup),
+    bySession:breakdown(t=>t.session),
+    byInstrument:breakdown(t=>t.ticker),
+    byDirection:breakdown(t=>t.direction),
+    byDow:breakdown(t=>dowNames[new Date(t.date+'T12:00:00').getDay()]),
+    byTrigger:breakdown(t=>t.triggers,true),
+    byAttempt:breakdown(t=>t.attempt),
+    byStContext:breakdown(t=>t.stContext),
+    byHtfContext:breakdown(t=>t.htfContext),
+    byOpeningType:breakdown(t=>t.openingType),
+    rrList:wins.map(t=>t.rawRR),
+  };
+}
+
+// ─── SVG Chart Components ─────────────────────────────────────────────────────
+function SvgLineChart({series,color,height=180,fill=true,fmtY=v=>'$'+v.toFixed(0)}){
+  const W=600,H=height,P={t:12,r:8,b:22,l:52};
+  if(!series||series.length<2)return <div style={{height,display:'flex',alignItems:'center',justifyContent:'center',color:C.textDim,fontSize:12}}>Not enough data yet</div>;
+  const vals=series.map(p=>p.val);
+  const min=Math.min(0,...vals), max=Math.max(0,...vals);
+  const range=max-min||1;
+  const x=i=>P.l+(i/(series.length-1))*(W-P.l-P.r);
+  const y=v=>P.t+(1-(v-min)/range)*(H-P.t-P.b);
+  const path=series.map((p,i)=>`${i===0?'M':'L'}${x(i).toFixed(1)},${y(p.val).toFixed(1)}`).join(' ');
+  const areaPath=path+` L${x(series.length-1).toFixed(1)},${y(Math.max(min,0)).toFixed(1)} L${x(0).toFixed(1)},${y(Math.max(min,0)).toFixed(1)} Z`;
+  const gid='g'+Math.random().toString(36).slice(2,8);
+  const ticks=[min,min+range/2,max];
+  return(
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%',height:'auto',display:'block'}}>
+      <defs><linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stopColor={color} stopOpacity="0.25"/>
+        <stop offset="100%" stopColor={color} stopOpacity="0.02"/>
+      </linearGradient></defs>
+      {ticks.map((tv,i)=>(
+        <g key={i}>
+          <line x1={P.l} x2={W-P.r} y1={y(tv)} y2={y(tv)} stroke={C.border} strokeWidth="0.5" strokeDasharray="4,4"/>
+          <text x={P.l-6} y={y(tv)+4} fill={C.textMut} fontSize="10" textAnchor="end">{fmtY(tv)}</text>
+        </g>
+      ))}
+      {min<0&&<line x1={P.l} x2={W-P.r} y1={y(0)} y2={y(0)} stroke={C.textMut} strokeWidth="0.7"/>}
+      {fill&&<path d={areaPath} fill={`url(#${gid})`}/>}
+      <path d={path} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round"/>
+      <circle cx={x(series.length-1)} cy={y(series[series.length-1].val)} r="3.5" fill={color}/>
+      <text x={P.l} y={H-6} fill={C.textMut} fontSize="9">{series[0].date?.slice(5)}</text>
+      <text x={W-P.r} y={H-6} fill={C.textMut} fontSize="9" textAnchor="end">{series[series.length-1].date?.slice(5)}</text>
+    </svg>
+  );
+}
+
+function SvgBarChart({series,height=160,posColor,negColor,fmtY=v=>'$'+v.toFixed(0)}){
+  const W=600,H=height,P={t:12,r:8,b:22,l:52};
+  if(!series||series.length===0)return <div style={{height,display:'flex',alignItems:'center',justifyContent:'center',color:C.textDim,fontSize:12}}>No data yet</div>;
+  const vals=series.map(p=>p.val);
+  const min=Math.min(0,...vals),max=Math.max(0,...vals);
+  const range=max-min||1;
+  const bw=Math.min(28,(W-P.l-P.r)/series.length*0.7);
+  const x=i=>P.l+(i+0.5)/series.length*(W-P.l-P.r);
+  const y=v=>P.t+(1-(v-min)/range)*(H-P.t-P.b);
+  return(
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%',height:'auto',display:'block'}}>
+      <line x1={P.l} x2={W-P.r} y1={y(0)} y2={y(0)} stroke={C.textMut} strokeWidth="0.7"/>
+      <text x={P.l-6} y={y(max)+4} fill={C.textMut} fontSize="10" textAnchor="end">{fmtY(max)}</text>
+      {min<0&&<text x={P.l-6} y={y(min)+4} fill={C.textMut} fontSize="10" textAnchor="end">{fmtY(min)}</text>}
+      {series.map((p,i)=>(
+        <rect key={i} x={x(i)-bw/2} y={p.val>=0?y(p.val):y(0)}
+          width={bw} height={Math.abs(y(p.val)-y(0))||1}
+          fill={p.val>=0?(posColor||C.green):(negColor||C.red)} rx="2" opacity="0.85"/>
+      ))}
+      <text x={P.l} y={H-6} fill={C.textMut} fontSize="9">{series[0].date?.slice(5)}</text>
+      <text x={W-P.r} y={H-6} fill={C.textMut} fontSize="9" textAnchor="end">{series[series.length-1].date?.slice(5)}</text>
+    </svg>
+  );
+}
+
+function BreakdownBars({items,valueKey='winRate',fmtVal=v=>v.toFixed(0)+'%',subKey}){
+  if(!items||items.length===0)return <div style={{color:C.textDim,fontSize:12,padding:'16px 0',textAlign:'center'}}>No data yet</div>;
+  const max=Math.max(...items.map(i=>Math.abs(i[valueKey])),1);
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:10}}>
+      {items.map((it,i)=>{
+        const v=it[valueKey];
+        const pct=Math.abs(v)/max*100;
+        const col=valueKey==='pnl'?(v>=0?C.green:C.red):(v>=55?C.green:v>=45?C.yellow:C.red);
+        return(
+          <div key={i}>
+            <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+              <span style={{fontSize:12,color:C.text,fontWeight:600}}>{it.label}
+                <span style={{fontSize:10,color:C.textMut,marginLeft:6}}>{it.wins}W-{it.losses}L{it.be?`-${it.be}BE`:''}</span>
+              </span>
+              <span style={{fontSize:12,color:col,fontWeight:700,fontVariantNumeric:'tabular-nums'}}>{fmtVal(v)}
+                {it.pf!==undefined&&<span style={{fontSize:10,color:it.pf>=1.5?C.green:it.pf>=1?C.yellow:C.red,marginLeft:6}}>PF {it.pf>=99?'∞':it.pf.toFixed(2)}</span>}
+                {subKey&&<span style={{fontSize:10,color:it[subKey]>=0?C.green:C.red,marginLeft:6}}>{it[subKey]>=0?'+':''}${it[subKey].toFixed(0)}</span>}
+              </span>
+            </div>
+            <div style={{height:7,background:C.surface2,borderRadius:4,overflow:'hidden'}}>
+              <div style={{width:pct+'%',height:'100%',background:col,borderRadius:4,transition:'width 0.4s'}}/>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function RRHistogram({rrList,height=140}){
+  if(!rrList||rrList.length===0)return <div style={{height,display:'flex',alignItems:'center',justifyContent:'center',color:C.textDim,fontSize:12}}>No winning trades yet</div>;
+  const buckets=[{l:'0-1R',min:0,max:1},{l:'1-2R',min:1,max:2},{l:'2-3R',min:2,max:3},{l:'3-4R',min:3,max:4},{l:'4-5R',min:4,max:5},{l:'5R+',min:5,max:999}];
+  const counts=buckets.map(b=>rrList.filter(r=>r>=b.min&&r<b.max).length);
+  const max=Math.max(...counts,1);
+  return(
+    <div style={{display:'flex',gap:8,alignItems:'flex-end',height}}>
+      {buckets.map((b,i)=>(
+        <div key={i} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:4,height:'100%',justifyContent:'flex-end'}}>
+          <span style={{fontSize:11,color:C.textSub,fontWeight:700}}>{counts[i]||''}</span>
+          <div style={{width:'100%',maxWidth:44,height:`${counts[i]/max*70}%`,minHeight:counts[i]?4:0,background:C.teal,borderRadius:'4px 4px 0 0',opacity:0.85}}/>
+          <span style={{fontSize:10,color:C.textMut}}>{b.l}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function HeatCalendar({dayMap}){
+  const dates=Object.keys(dayMap).sort();
+  if(dates.length===0)return <div style={{color:C.textDim,fontSize:12,padding:'16px 0',textAlign:'center'}}>No data yet</div>;
+  // Group by month
+  const months={};
+  dates.forEach(d=>{const m=d.slice(0,7);if(!months[m])months[m]=[];months[m].push(d);});
+  const maxAbs=Math.max(...Object.values(dayMap).map(v=>Math.abs(v)),1);
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:14}}>
+      {Object.entries(months).map(([m,ds])=>{
+        const first=new Date(m+'-01T12:00:00');
+        const daysInMonth=new Date(first.getFullYear(),first.getMonth()+1,0).getDate();
+        const startDow=first.getDay();
+        const cells=[];
+        for(let i=0;i<startDow;i++)cells.push(null);
+        for(let d=1;d<=daysInMonth;d++){
+          const ds2=`${m}-${d.toString().padStart(2,'0')}`;
+          cells.push({day:d,pnl:dayMap[ds2]});
+        }
+        return(
+          <div key={m}>
+            <div style={{fontSize:11,color:C.textSub,fontWeight:700,marginBottom:6}}>{first.toLocaleDateString('en-US',{month:'long',year:'numeric'})}</div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:3}}>
+              {['S','M','T','W','T','F','S'].map((d,i)=><div key={i} style={{fontSize:9,color:C.textDim,textAlign:'center'}}>{d}</div>)}
+              {cells.map((c,i)=>{
+                if(!c)return <div key={i}/>;
+                const has=c.pnl!==undefined;
+                const intensity=has?Math.min(Math.abs(c.pnl)/maxAbs,1):0;
+                const col=has?(c.pnl>=0?C.green:C.red):null;
+                return(
+                  <div key={i} title={has?`$${c.pnl.toFixed(0)}`:''} style={{
+                    aspectRatio:'1',borderRadius:4,display:'flex',alignItems:'center',justifyContent:'center',
+                    background:has?col+Math.round(20+intensity*60).toString(16).padStart(2,'0'):C.surface,
+                    border:`1px solid ${has?col+'44':C.border}`,
+                    fontSize:9,color:has?C.text:C.textDim,fontWeight:has?700:400,
+                    cursor:has?'default':'default',
+                  }}>{c.day}</div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ChartCard({title,sub,children}){
+  return(
+    <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:'16px 18px',marginBottom:14}}>
+      <div style={{marginBottom:14}}>
+        <div style={{fontSize:13,fontWeight:700,color:C.text}}>{title}</div>
+        {sub&&<div style={{fontSize:11,color:C.textMut,marginTop:2}}>{sub}</div>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function BigStat({label,val,col,sub}){
+  return(
+    <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:'14px 16px'}}>
+      <div style={{fontSize:10,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:6}}>{label}</div>
+      <div style={{fontSize:22,fontWeight:800,color:col||C.text,fontVariantNumeric:'tabular-nums',lineHeight:1.1}}>{val}</div>
+      {sub&&<div style={{fontSize:10,color:C.textMut,marginTop:4}}>{sub}</div>}
+    </div>
+  );
+}
+
+
+// ═══ Deep Analytics Engine ═══════════════════════════════════════════════════
+const PRETTY = {
+  b_shape_FP:'b shape FP', P_shape_FP:'P shape FP', exhaustion:'Exhaustion', absorption:'Absorption',
+  volume_spike:'Volume Spike', initiative_participants:'Initiative Participants',
+  entry_1:'Entry 1', entry_2:'Entry 2', entry_3:'Entry 3',
+  bullish_st:'Bullish ST', bearish_st:'Bearish ST', balanced_st:'Balanced ST',
+  bullish_htf:'Bullish HTF', bearish_htf:'Bearish HTF',
+  ir_iv:'In Range In Value', ir_ov:'In Range Out of Value', or_ov:'Out of Range Out of Value',
+  long:'Long', short:'Short',
+  BPB:'BPB', RPB:'RPB', ROT:'ROT', FADE:'Fade',
+  finesse:'Finesse entry', mid_move:'Entered mid-move', no_pivot:'No pivot confirmation', revenge:'Revenge trade', overtrading:'Overtrading after loss', oversized:'Oversized', moved_stop:'Moved stop', early_exit:'Early exit', chased:'Chased extension', no_level:'No level beneath entry',
+  balance:'Balance (old)', failedexp:'Failed Exp (old)', reclaim:'Reclaim (old)', breakout:'Breakout (old)',
+};
+const pretty=v=>PRETTY[v]||v;
+
+const DIMENSIONS = {
+  setup:{label:'Setup', get:t=>t.setup},
+  trigger:{label:'Entry Trigger', get:t=>t.triggers, multi:true},
+  attempt:{label:'Entry Attempt', get:t=>t.attempt},
+  stContext:{label:'Short-Term Context', get:t=>t.stContext},
+  htfContext:{label:'HTF Context', get:t=>t.htfContext},
+  openingType:{label:'Opening Type', get:t=>t.openingType},
+  direction:{label:'Direction', get:t=>t.direction},
+  ticker:{label:'Instrument', get:t=>t.ticker},
+  session:{label:'Session', get:t=>t.session},
+};
+
+function dimValues(trades,key){
+  const s=new Set();
+  trades.forEach(t=>{
+    const v=DIMENSIONS[key].get(t);
+    if(DIMENSIONS[key].multi)(v||[]).forEach(x=>x&&x!=='—'&&s.add(x));
+    else if(v&&v!=='—')s.add(v);
+  });
+  return[...s];
+}
+
+function applyFilters(trades,f){
+  return trades.filter(t=>{
+    if(f.from&&t.date<f.from)return false;
+    if(f.to&&t.date>f.to)return false;
+    for(const key of Object.keys(DIMENSIONS)){
+      const sel=f[key];
+      if(!sel||sel.length===0)continue;
+      const v=DIMENSIONS[key].get(t);
+      if(DIMENSIONS[key].multi){
+        if(!(v||[]).some(x=>sel.includes(x)))return false;
+      }else{
+        if(!sel.includes(v))return false;
+      }
+    }
+    return true;
+  });
+}
+
+function metricsFor(trades){
+  const closed=trades.filter(t=>['W','L','BE'].includes(t.result));
+  const w=closed.filter(t=>t.result==='W'), l=closed.filter(t=>t.result==='L');
+  const gw=w.reduce((s,t)=>s+t.pnl,0), gl=Math.abs(l.reduce((s,t)=>s+t.pnl,0));
+  const total=closed.reduce((s,t)=>s+t.pnl,0);
+  const withMfe=closed.filter(t=>t.mfe>0);
+  const withMae=closed.filter(t=>t.mae>0);
+  const capList=withMfe.filter(t=>t.contracts>0).map(t=>Math.max(0,(t.points/t.contracts))/t.mfe);
+  return{
+    count:closed.length, wins:w.length, losses:l.length, be:closed.length-w.length-l.length,
+    winRate:w.length+l.length>0?w.length/(w.length+l.length)*100:0,
+    totalPnl:total, avgPnl:closed.length?total/closed.length:0,
+    pf:gl>0?gw/gl:(gw>0?99:0),
+    expectancy:closed.length?total/closed.length:0,
+    avgMFE:withMfe.length?withMfe.reduce((s,t)=>s+t.mfe,0)/withMfe.length:0,
+    avgMAE:withMae.length?withMae.reduce((s,t)=>s+t.mae,0)/withMae.length:0,
+    capture:capList.length?capList.reduce((s,v)=>s+v,0)/capList.length*100:0,
+    mfeN:withMfe.length,
+  };
+}
+
+function groupByDims(trades,dimKeys,minN=1){
+  const groups={};
+  trades.forEach(t=>{
+    // build label combos — expand multi dims
+    let combos=[[]];
+    for(const key of dimKeys){
+      const v=DIMENSIONS[key].get(t);
+      const vals=DIMENSIONS[key].multi?(v||[]).filter(x=>x&&x!=='—'):(v&&v!=='—'?[v]:[]);
+      if(vals.length===0){combos=[];break;}
+      const next=[];
+      combos.forEach(c=>vals.forEach(val=>next.push([...c,val])));
+      combos=next;
+    }
+    combos.forEach(c=>{
+      const k=c.join('|');
+      if(!groups[k])groups[k]={label:c.map(pretty).join(' × '),trades:[]};
+      groups[k].trades.push(t);
+    });
+  });
+  return Object.values(groups)
+    .map(g=>({label:g.label,...metricsFor(g.trades)}))
+    .filter(g=>g.count>=minN)
+    .sort((a,b)=>b.totalPnl-a.totalPnl);
+}
+
+// ─── Sortable table ───
+function SortTable({columns,rows,defaultSort,isMobile}){
+  const[sortKey,setSortKey]=useState(defaultSort||columns[1]?.key);
+  const[dir,setDir]=useState(-1);
+  const sorted=[...rows].sort((a,b)=>{
+    const av=a[sortKey],bv=b[sortKey];
+    if(typeof av==='string')return dir*av.localeCompare(bv);
+    return dir*((av||0)-(bv||0));
+  });
+  const click=k=>{if(k===sortKey)setDir(-dir);else{setSortKey(k);setDir(-1);}};
+  return(
+    <div style={{overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
+      <table style={{width:'100%',borderCollapse:'collapse',fontSize:12,minWidth:isMobile?560:0}}>
+        <thead><tr>
+          {columns.map(c=>(
+            <th key={c.key} onClick={()=>click(c.key)} style={{
+              textAlign:c.align||'right',padding:'8px 10px',color:sortKey===c.key?C.teal:C.textMut,
+              fontSize:10,textTransform:'uppercase',letterSpacing:'0.06em',cursor:'pointer',
+              borderBottom:`1px solid ${C.border}`,whiteSpace:'nowrap',userSelect:'none',
+            }}>{c.label}{sortKey===c.key?(dir<0?' ↓':' ↑'):''}</th>
+          ))}
+        </tr></thead>
+        <tbody>
+          {sorted.map((r,i)=>(
+            <tr key={i} onClick={r.__onClick} style={{cursor:r.__onClick?'pointer':'default'}}
+              onMouseEnter={e=>{if(r.__onClick)e.currentTarget.style.background=C.surface2;}}
+              onMouseLeave={e=>{e.currentTarget.style.background='transparent';}}>
+              {columns.map(c=>(
+                <td key={c.key} style={{
+                  padding:'7px 9px',textAlign:c.align||'right',
+                  borderBottom:`0.5px solid ${C.border}`,whiteSpace:'nowrap',
+                  color:c.color?c.color(r):C.text,
+                  fontWeight:c.bold?700:400,fontVariantNumeric:'tabular-nums',
+                }}>{c.fmt?c.fmt(r[c.key],r):r[c.key]}</td>
+              ))}
+            </tr>
+          ))}
+          {sorted.length===0&&<tr><td colSpan={columns.length} style={{padding:'20px',textAlign:'center',color:C.textDim}}>No trades match</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+const perfColumns=(isMobile)=>[
+  {key:'label',label:'Tag',align:'left',bold:true},
+  {key:'totalPnl',label:'Total PnL',fmt:v=>(v>=0?'+':'')+'$'+v.toFixed(0),color:r=>r.totalPnl>=0?C.green:C.red,bold:true},
+  {key:'avgPnl',label:'Avg PnL',fmt:v=>(v>=0?'+':'')+'$'+v.toFixed(0),color:r=>r.avgPnl>=0?C.green:C.red},
+  {key:'count',label:'Trades'},
+  {key:'winRate',label:'Win %',fmt:v=>v.toFixed(0)+'%',color:r=>r.winRate>=55?C.green:r.winRate>=45?C.yellow:C.red},
+  {key:'pf',label:'PF',fmt:v=>v>=99?'∞':v.toFixed(2),color:r=>r.pf>=1.5?C.green:r.pf>=1?C.yellow:C.red},
+  {key:'expectancy',label:'Expect.',fmt:v=>(v>=0?'+':'')+'$'+v.toFixed(0),color:r=>r.expectancy>=0?C.green:C.red},
+];
+
+function HBars({rows,metric}){
+  if(rows.length===0)return null;
+  const vals=rows.map(r=>metric==='winRate'?r.winRate:metric==='pf'?Math.min(r.pf,5):metric==='count'?r.count:r.totalPnl);
+  const max=Math.max(...vals.map(Math.abs),1);
+  return(
+    <div style={{display:'flex',flexDirection:'column',gap:8,marginTop:14}}>
+      {rows.map((r,i)=>{
+        const v=vals[i];
+        const col=metric==='winRate'?(r.winRate>=55?C.green:r.winRate>=45?C.yellow:C.red)
+          :metric==='pf'?(r.pf>=1.5?C.green:r.pf>=1?C.yellow:C.red)
+          :metric==='count'?C.blue
+          :(v>=0?C.green:C.red);
+        return(
+          <div key={i} style={{display:'flex',alignItems:'center',gap:10}}>
+            <div style={{width:130,fontSize:11,color:C.textSub,textAlign:'right',flexShrink:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.label}</div>
+            <div style={{flex:1,height:14,background:C.surface2,borderRadius:4,overflow:'hidden'}}>
+              <div style={{width:Math.abs(v)/max*100+'%',height:'100%',background:col,borderRadius:4}}/>
+            </div>
+            <div style={{width:60,fontSize:11,color:col,fontWeight:700,fontVariantNumeric:'tabular-nums'}}>
+              {metric==='winRate'?r.winRate.toFixed(0)+'%':metric==='pf'?(r.pf>=99?'∞':r.pf.toFixed(2)):metric==='count'?r.count:(r.totalPnl>=0?'+':'')+'$'+r.totalPnl.toFixed(0)}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── Global filter bar ───
+function FilterBar({allTrades,filters,setFilters,isMobile}){
+  const[open,setOpen]=useState(false);
+  const activeCount=Object.keys(DIMENSIONS).reduce((n,k)=>n+(filters[k]?.length||0),0)+(filters.from?1:0)+(filters.to?1:0);
+  const toggle=(key,val)=>{
+    const cur=filters[key]||[];
+    setFilters({...filters,[key]:cur.includes(val)?cur.filter(x=>x!==val):[...cur,val]});
+  };
+  const inputStyle={padding:'8px 11px',borderRadius:9,border:`1.5px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontFamily:'inherit',outline:'none'};
+  return(
+    <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:'12px 16px',marginBottom:16}}>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,flexWrap:'wrap'}}>
+        <div style={{display:'flex',gap:8,alignItems:'center'}}>
+          <input type="date" value={filters.from||''} onChange={e=>setFilters({...filters,from:e.target.value})} style={inputStyle}/>
+          <span style={{color:C.textMut,fontSize:12}}>→</span>
+          <input type="date" value={filters.to||''} onChange={e=>setFilters({...filters,to:e.target.value})} style={inputStyle}/>
+        </div>
+        <div style={{display:'flex',gap:8}}>
+          {activeCount>0&&<button onClick={()=>setFilters({})} style={{padding:'8px 14px',borderRadius:9,border:`1.5px solid ${C.red}44`,background:'transparent',color:C.red,fontSize:12,fontFamily:'inherit',cursor:'pointer'}}>Clear ({activeCount})</button>}
+          <button onClick={()=>setOpen(!open)} style={{padding:'8px 14px',borderRadius:9,border:`1.5px solid ${open?C.teal:C.border}`,background:open?C.teal+'15':'transparent',color:open?C.teal:C.textSub,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600}}>
+            {open?'Hide Filters':'Tag Filters'}
+          </button>
+        </div>
+      </div>
+      {activeCount>0&&(
+        <div style={{display:'flex',gap:6,flexWrap:'wrap',marginTop:10}}>
+          {filters.from&&<span onClick={()=>setFilters({...filters,from:''})} style={{padding:'3px 10px',borderRadius:14,fontSize:11,border:`1px solid ${C.teal}55`,background:C.teal+'12',color:C.teal,cursor:'pointer',fontWeight:600}}>from {filters.from} ×</span>}
+          {filters.to&&<span onClick={()=>setFilters({...filters,to:''})} style={{padding:'3px 10px',borderRadius:14,fontSize:11,border:`1px solid ${C.teal}55`,background:C.teal+'12',color:C.teal,cursor:'pointer',fontWeight:600}}>to {filters.to} ×</span>}
+          {Object.keys(DIMENSIONS).flatMap(key=>(filters[key]||[]).map(v=>(
+            <span key={key+v} onClick={()=>toggle(key,v)} style={{padding:'3px 10px',borderRadius:14,fontSize:11,border:`1px solid ${C.teal}55`,background:C.teal+'12',color:C.teal,cursor:'pointer',fontWeight:600}}>
+              {DIMENSIONS[key].label}: {pretty(v)} ×
+            </span>
+          )))}
+        </div>
+      )}
+      {open&&(
+        <div style={{marginTop:14,display:'flex',flexDirection:'column',gap:12}}>
+          {Object.entries(DIMENSIONS).map(([key,dim])=>{
+            const vals=dimValues(allTrades,key);
+            if(vals.length===0)return null;
+            return(
+              <div key={key}>
+                <div style={{fontSize:10,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:6,fontWeight:700}}>{dim.label}</div>
+                <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                  {vals.map(v=>{
+                    const on=(filters[key]||[]).includes(v);
+                    return(
+                      <button key={v} onClick={()=>toggle(key,v)} style={{
+                        padding:'4px 11px',borderRadius:16,fontSize:11,fontFamily:'inherit',cursor:'pointer',
+                        border:`1.5px solid ${on?C.teal:C.border}`,
+                        background:on?C.teal+'18':'transparent',
+                        color:on?C.teal:C.textMut,fontWeight:on?700:400,
+                      }}>{pretty(v)}</button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Analytics Tab ────────────────────────────────────────────────────────────
+function DimSection({dimKey,trades,minN,tagMetric,setTagMetric,isMobile,rollingBase}){
+  const dim=DIMENSIONS[dimKey];
+  const rows=groupByDims(trades,[dimKey],minN);
+  const hasMfe=trades.some(t=>t.mfe>0);
+  const cols=[...perfColumns(isMobile)];
+  if(hasMfe){
+    cols.push({key:'avgMFE',label:'Avg MFE',fmt:v=>v?v.toFixed(1):'—',color:()=>C.textSub});
+    cols.push({key:'capture',label:'Capture',fmt:(v,r)=>r.mfeN?v.toFixed(0)+'%':'—',color:r=>r.capture>=60?C.green:r.capture>=40?C.yellow:C.textMut});
+  }
+  return(
+    <ChartCard title={`${dim.label} Performance`}>
+      <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:14}}>
+        {[['totalPnl','Total PnL'],['winRate','Win %'],['pf','Profit Factor'],['count','Trade Count']].map(([k,l])=>(
+          <button key={k} onClick={()=>setTagMetric(k)} style={{
+            padding:'5px 12px',borderRadius:16,fontSize:11,fontFamily:'inherit',cursor:'pointer',fontWeight:600,
+            border:`1.5px solid ${tagMetric===k?C.blue:C.border}`,
+            background:tagMetric===k?C.blue+'15':'transparent',
+            color:tagMetric===k?C.blue:C.textMut,
+          }}>{l}</button>
+        ))}
+      </div>
+      <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'minmax(0,58%) minmax(0,42%)',gap:24,alignItems:'start'}}>
+        <SortTable columns={cols} rows={rows} defaultSort="totalPnl" isMobile={isMobile}/>
+        <HBars rows={rows} metric={tagMetric}/>
+      </div>
+      {rows.length===0&&<div style={{color:C.textDim,fontSize:12,textAlign:'center',padding:'8px 0'}}>No tags meet the minimum sample of {minN}</div>}
+    </ChartCard>
+  );
+}
+
+function AnalyticsTab({userId,isMobile,onJumpToDate}){
+  const[days,setDays]=useState(null);
+  const[section,setSection]=useState('equity');
+  const[filters,setFilters]=useState({});
+  const[minN,setMinN]=useState(1);
+  const[tagMetric,setTagMetric]=useState('totalPnl');
+  const[pivotDims,setPivotDims]=useState(['setup','trigger']);
+  const[pivotMinN,setPivotMinN]=useState(5);
+  const[rollWin,setRollWin]=useState(20);
+  const[timeMetric,setTimeMetric]=useState('pnl');
+  const[exFilters,setExFilters]=useState({});
+
+  useEffect(()=>{
+    let live=true;
+    loadAllDays(userId).then(d=>{if(live)setDays(d);});
+    return()=>{live=false;};
+  },[userId]);
+
+  if(days===null)return <div style={{textAlign:'center',color:C.textMut,padding:'60px 0',fontSize:13}}>Loading your data...</div>;
+
+  const allTrades=extractAllTrades(days);
+  const trades=applyFilters(allTrades,filters);
+  const s=computeStats(trades);
+
+  const SECTIONS=[
+    ['equity','Equity & Drawdown'],
+    ['setup','Setup'],['trigger','Entry Trigger'],['attempt','Entry Attempt'],
+    ['stContext','Short-Term Context'],['htfContext','HTF Context'],['openingType','Opening Type'],['direction','Direction'],
+    ['pivot','Cross / Pivot'],['time','Time & Session'],['rolling','Rolling Windows'],['whatif','What-If'],['log','Trade Log'],
+  ];
+
+  const dimSectionKeys=['setup','trigger','attempt','stContext','htfContext','openingType','direction'];
+
+  return(
+    <div>
+      <div style={{display:'flex',gap:5,marginBottom:12,overflowX:'auto',paddingBottom:2,flexWrap:isMobile?'nowrap':'wrap',maxWidth:900}}>
+        {SECTIONS.map(([k,l])=>(
+          <button key={k} onClick={()=>setSection(k)} style={{
+            padding:'5px 11px',borderRadius:16,fontSize:11,fontFamily:'inherit',cursor:'pointer',fontWeight:600,whiteSpace:'nowrap',
+            border:`1.5px solid ${section===k?C.teal:C.border}`,
+            background:section===k?C.teal+'15':'transparent',
+            color:section===k?C.teal:C.textMut,flexShrink:0,
+          }}>{l}</button>
+        ))}
+      </div>
+
+      <FilterBar allTrades={allTrades} filters={filters} setFilters={setFilters} isMobile={isMobile}/>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16,flexWrap:'wrap',gap:8}}>
+        <div style={{fontSize:11,color:C.textMut}}>{trades.length} of {allTrades.length} trades match · Min sample: {dimSectionKeys.includes(section)?minN:section==='pivot'?pivotMinN:'—'}</div>
+        {dimSectionKeys.includes(section)&&(
+          <div style={{display:'flex',alignItems:'center',gap:6}}>
+            <span style={{fontSize:11,color:C.textMut}}>Min sample:</span>
+            <input type="number" value={minN} min="1" onChange={e=>setMinN(parseInt(e.target.value)||1)}
+              style={{width:56,padding:'6px 10px',borderRadius:8,border:`1.5px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontFamily:'inherit',outline:'none'}}/>
+          </div>
+        )}
+      </div>
+
+      {s.totalTrades===0?(
+        <div style={{textAlign:'center',color:C.textMut,padding:'40px 0',fontSize:13}}>No completed trades match the current filters.</div>
+      ):(<>
+
+      {/* ══ EQUITY & DRAWDOWN ══ */}
+      {section==='equity'&&(<>
+        <InsightsCard insights={insightsFor(trades)}/>
+        <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(4,1fr)',gap:10,marginBottom:16}}>
+          <BigStat label="Net P&L" val={`${s.totalPnl>=0?'+':''}$${s.totalPnl.toFixed(0)}`} col={s.totalPnl>=0?C.green:C.red}/>
+          <BigStat label="Win Rate" val={`${s.winRate.toFixed(1)}%`} col={s.winRate>=50?C.green:s.winRate>=40?C.yellow:C.red} sub={`${s.wins}W · ${s.losses}L · ${s.be}BE`}/>
+          <BigStat label="Profit Factor" val={s.profitFactor>=99?'∞':s.profitFactor.toFixed(2)} col={s.profitFactor>=1.5?C.green:s.profitFactor>=1?C.yellow:C.red}/>
+          <BigStat label="Expectancy" val={`${s.expectancy>=0?'+':''}$${s.expectancy.toFixed(0)}`} col={s.expectancy>=0?C.green:C.red} sub="per trade"/>
+        </div>
+        <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+          <ChartCard title="Equity Curve" sub="Responds live to the tag filters above">
+            <SvgLineChart series={s.equity} color={s.totalPnl>=0?C.green:C.red}/>
+          </ChartCard>
+          <ChartCard title="Drawdown" sub="Distance from equity peak">
+            <SvgLineChart series={s.ddSeries} color={C.orange}/>
+          </ChartCard>
+          <ChartCard title="Daily P&L"><SvgBarChart series={s.dailyPnl}/></ChartCard>
+          <ChartCard title="P&L Calendar"><HeatCalendar dayMap={s.dayMap}/></ChartCard>
+        </div>
+      </>)}
+
+      {/* ══ PER-DIMENSION SECTIONS ══ */}
+      {dimSectionKeys.includes(section)&&(
+        <DimSection dimKey={section} trades={trades} minN={minN} tagMetric={tagMetric} setTagMetric={setTagMetric} isMobile={isMobile}/>
+      )}
+
+      {/* ══ CROSS / PIVOT ══ */}
+      {section==='pivot'&&(
+        <ChartCard title="Cross-Tag Pivot" sub="Group any 2-3 dimensions — where the edge actually lives">
+          <div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'center',marginBottom:16}}>
+            {[0,1,2].map(i=>(
+              <select key={i} value={pivotDims[i]||''} onChange={e=>{
+                const nd=[...pivotDims];
+                if(e.target.value)nd[i]=e.target.value;else nd.splice(i,1);
+                setPivotDims(nd.filter(Boolean).slice(0,3));
+              }} style={{padding:'8px 11px',borderRadius:9,border:`1.5px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontFamily:'inherit',outline:'none'}}>
+                <option value="">{i<2?'— pick dimension —':'— optional 3rd —'}</option>
+                {Object.entries(DIMENSIONS).map(([k,d])=><option key={k} value={k}>{d.label}</option>)}
+              </select>
+            ))}
+            <div style={{display:'flex',alignItems:'center',gap:6}}>
+              <span style={{fontSize:11,color:C.textMut}}>Min trades:</span>
+              <input type="number" value={pivotMinN} min="1" onChange={e=>setPivotMinN(parseInt(e.target.value)||1)}
+                style={{width:56,padding:'8px 11px',borderRadius:9,border:`1.5px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontFamily:'inherit',outline:'none'}}/>
+            </div>
+          </div>
+          {(()=>{
+            if(pivotDims.length<2)return <div style={{color:C.textDim,fontSize:12,textAlign:'center',padding:'20px 0'}}>Pick at least 2 dimensions</div>;
+            const rows=groupByDims(trades,pivotDims,pivotMinN);
+            const small=rows.filter(r=>r.count<8).length;
+            return(<>
+              {small>0&&<div style={{fontSize:11,color:C.yellow,marginBottom:10}}>⚠ {small} combination{small>1?'s':''} below 8 trades — treat as indicative only</div>}
+              <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'minmax(0,58%) minmax(0,42%)',gap:24,alignItems:'start'}}>
+                <SortTable columns={perfColumns(isMobile)} rows={rows} defaultSort="totalPnl" isMobile={isMobile}/>
+                <HBars rows={rows.slice(0,14)} metric={tagMetric}/>
+              </div>
+            </>);
+          })()}
+        </ChartCard>
+      )}
+
+      {/* ══ TIME & SESSION ══ */}
+      {section==='time'&&(()=>{
+        const dows=['Mon','Tue','Wed','Thu','Fri'];
+        const hours=[10,11,12,13,14,15];
+        const cell={};
+        trades.forEach(t=>{
+          const d=new Date(t.date+'T12:00:00').getDay();
+          if(d<1||d>5)return;
+          const h=parseInt((t.entryTime||'').split(':')[0]);
+          if(isNaN(h)||h<10||h>15)return;
+          const k=`${d}_${h}`;
+          if(!cell[k])cell[k]={pnl:0,n:0,w:0,l:0};
+          cell[k].pnl+=t.pnl;cell[k].n++;
+          if(t.result==='W')cell[k].w++;else if(t.result==='L')cell[k].l++;
+        });
+        const maxAbs=Math.max(...Object.values(cell).map(c=>Math.abs(timeMetric==='pnl'?c.pnl:(c.w+c.l?c.w/(c.w+c.l)*100-50:0))),1);
+        return(<>
+          <div style={{display:'flex',gap:8,marginBottom:16}}>
+            {[['pnl','P&L'],['wr','Win %']].map(([k,l])=>(
+              <button key={k} onClick={()=>setTimeMetric(k)} style={{padding:'7px 16px',borderRadius:20,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600,border:`1.5px solid ${timeMetric===k?C.blue:C.border}`,background:timeMetric===k?C.blue+'15':'transparent',color:timeMetric===k?C.blue:C.textMut}}>{l}</button>
+            ))}
+          </div>
+          <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+            <ChartCard title="Day × Hour Heatmap" sub="Entry hour (EST) vs day of week">
+              <div style={{overflowX:'auto'}}>
+                <div style={{display:'grid',gridTemplateColumns:`50px repeat(${hours.length},1fr)`,gap:4,minWidth:440}}>
+                  <div/>
+                  {hours.map(h=><div key={h} style={{fontSize:10,color:C.textMut,textAlign:'center'}}>{h}:00</div>)}
+                  {dows.map((dn,di)=>(<React.Fragment key={dn}>
+                    <div style={{fontSize:11,color:C.textSub,display:'flex',alignItems:'center'}}>{dn}</div>
+                    {hours.map(h=>{
+                      const c=cell[`${di+1}_${h}`];
+                      if(!c)return <div key={h} style={{aspectRatio:'1.6',borderRadius:6,background:C.surface,border:`1px solid ${C.border}`}}/>;
+                      const v=timeMetric==='pnl'?c.pnl:(c.w+c.l?c.w/(c.w+c.l)*100-50:0);
+                      const col=v>=0?C.green:C.red;
+                      const alpha=Math.round(18+Math.min(Math.abs(v)/maxAbs,1)*70).toString(16).padStart(2,'0');
+                      return(
+                        <div key={h} title={`${dn} ${h}:00 — $${c.pnl.toFixed(0)} · ${c.n} trades`} style={{aspectRatio:'1.6',borderRadius:6,background:col+alpha,border:`1px solid ${col}44`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center'}}>
+                          <div style={{fontSize:10,fontWeight:700,color:C.text}}>{timeMetric==='pnl'?('$'+c.pnl.toFixed(0)):((c.w+c.l?(c.w/(c.w+c.l)*100).toFixed(0):'—')+'%')}</div>
+                          <div style={{fontSize:8,color:C.textSub}}>{c.n}t</div>
+                        </div>
+                      );
+                    })}
+                  </React.Fragment>))}
+                </div>
+              </div>
+            </ChartCard>
+            <div>
+              <ChartCard title="Day of Week">
+                <SortTable columns={perfColumns(isMobile)} rows={groupByDims(trades,['session'],1).length?(()=>{
+                  const dowNames=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+                  const m={};
+                  trades.forEach(t=>{
+                    const k=dowNames[new Date(t.date+'T12:00:00').getDay()];
+                    if(!m[k])m[k]=[];m[k].push(t);
+                  });
+                  return Object.entries(m).map(([k,v])=>({label:k,...metricsFor(v)}));
+                })():[]} defaultSort="totalPnl" isMobile={isMobile}/>
+              </ChartCard>
+              <ChartCard title="Session Breakdown" sub="First 90 min · Mid-day · Last 90 min">
+                <SortTable columns={perfColumns(isMobile)} rows={['First 90 min','Mid-day','Last 90 min'].map(sn=>({label:sn,...metricsFor(trades.filter(t=>session3(t.entryTime)===sn))})).filter(r=>r.count>0)} defaultSort="totalPnl" isMobile={isMobile}/>
+              </ChartCard>
+            </div>
+          </div>
+        </>);
+      })()}
+
+      {/* ══ ROLLING WINDOWS ══ */}
+      {section==='rolling'&&(()=>{
+        const seqAll=[...trades.filter(t=>['W','L','BE'].includes(t.result))].sort((a,b)=>(a.date+a.entryTime).localeCompare(b.date+b.entryTime));
+        const windowTrades=seqAll.slice(-rollWin);
+        const cur=metricsFor(windowTrades), all=metricsFor(seqAll);
+        return(<>
+          <div style={{display:'flex',gap:8,marginBottom:16}}>
+            {[20,50,100].map(n=>(
+              <button key={n} onClick={()=>setRollWin(n)} style={{padding:'7px 16px',borderRadius:20,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600,border:`1.5px solid ${rollWin===n?C.teal:C.border}`,background:rollWin===n?C.teal+'15':'transparent',color:rollWin===n?C.teal:C.textMut}}>Last {n}</button>
+            ))}
+            <div style={{fontSize:11,color:C.textMut,alignSelf:'center'}}>{windowTrades.length<rollWin?`only ${windowTrades.length} closed trades available`:''}</div>
+          </div>
+          <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(4,1fr)',gap:10,marginBottom:16}}>
+            <BigStat label={`Win rate (last ${rollWin})`} val={cur.count?cur.winRate.toFixed(0)+'%':'—'} col={cur.winRate>=50?C.green:C.yellow} sub={`lifetime: ${all.winRate.toFixed(0)}%`}/>
+            <BigStat label={`Expectancy (last ${rollWin})`} val={cur.count?(cur.expectancy>=0?'+':'')+'$'+cur.expectancy.toFixed(0):'—'} col={cur.expectancy>=0?C.green:C.red} sub={`lifetime: ${(all.expectancy>=0?'+':'')}$${all.expectancy.toFixed(0)}`}/>
+            <BigStat label={`PF (last ${rollWin})`} val={cur.count?(cur.pf>=99?'∞':cur.pf.toFixed(2)):'—'} col={cur.pf>=1.5?C.green:cur.pf>=1?C.yellow:C.red} sub={`lifetime: ${all.pf>=99?'∞':all.pf.toFixed(2)}`}/>
+            <BigStat label="Trend" val={cur.count?(cur.expectancy>=all.expectancy?'Improving ↗':'Decaying ↘'):'—'} col={cur.expectancy>=all.expectancy?C.green:C.red}/>
+          </div>
+          {['setup','trigger','attempt','stContext','htfContext','openingType','direction'].map(dk=>{
+            const rows=groupByDims(windowTrades,[dk],1).map(r=>{
+              const lifetime=groupByDims(seqAll,[dk],1).find(x=>x.label===r.label);
+              return{...r,lifeExp:lifetime?lifetime.expectancy:0,delta:r.expectancy-(lifetime?lifetime.expectancy:0)};
+            });
+            if(rows.length===0)return null;
+            return(
+              <ChartCard key={dk} title={`${DIMENSIONS[dk].label} — last ${rollWin} vs lifetime`}>
+                <SortTable columns={[
+                  {key:'label',label:'Tag',align:'left',bold:true},
+                  {key:'count',label:'N (window)'},
+                  {key:'totalPnl',label:'PnL',fmt:v=>(v>=0?'+':'')+'$'+v.toFixed(0),color:r=>r.totalPnl>=0?C.green:C.red,bold:true},
+                  {key:'winRate',label:'Win %',fmt:v=>v.toFixed(0)+'%',color:r=>r.winRate>=55?C.green:r.winRate>=45?C.yellow:C.red},
+                  {key:'expectancy',label:'Exp (window)',fmt:v=>(v>=0?'+':'')+'$'+v.toFixed(0),color:r=>r.expectancy>=0?C.green:C.red},
+                  {key:'lifeExp',label:'Exp (lifetime)',fmt:v=>(v>=0?'+':'')+'$'+v.toFixed(0),color:()=>C.textSub},
+                  {key:'delta',label:'Δ',fmt:v=>(v>=0?'+':'')+'$'+v.toFixed(0),color:r=>r.delta>=0?C.green:C.red,bold:true},
+                ]} rows={rows} defaultSort="delta" isMobile={isMobile}/>
+              </ChartCard>
+            );
+          })}
+        </>);
+      })()}
+
+      {/* ══ WHAT-IF ══ */}
+      {section==='whatif'&&(()=>{
+        const excluded=t=>{
+          for(const key of Object.keys(DIMENSIONS)){
+            const sel=exFilters[key];
+            if(!sel||sel.length===0)continue;
+            const v=DIMENSIONS[key].get(t);
+            if(DIMENSIONS[key].multi){if((v||[]).some(x=>sel.includes(x)))return true;}
+            else if(sel.includes(v))return true;
+          }
+          return false;
+        };
+        const kept=trades.filter(t=>!excluded(t));
+        const removedN=trades.length-kept.length;
+        const sA=computeStats(trades), sB=computeStats(kept);
+        const toggle=(key,val)=>{
+          const cur=exFilters[key]||[];
+          setExFilters({...exFilters,[key]:cur.includes(val)?cur.filter(x=>x!==val):[...cur,val]});
+        };
+        const D=({label,a,b,fmt,invert})=>{
+          const better=invert?b<a:b>a;
+          return(
+            <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:'12px 14px'}}>
+              <div style={{fontSize:10,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:6}}>{label}</div>
+              <div style={{fontSize:13,color:C.textSub}}>{fmt(a)} → <b style={{color:better?C.green:C.red,fontSize:16}}>{fmt(b)}</b></div>
+            </div>
+          );
+        };
+        return(
+          <ChartCard title="What-If / Exclusion" sub="Select any tags to remove those trades — see the trader you'd be without them">
+            {Object.entries(DIMENSIONS).map(([key,dim])=>{
+              const vals=dimValues(trades,key);
+              if(vals.length===0)return null;
+              return(
+                <div key={key} style={{marginBottom:10}}>
+                  <div style={{fontSize:10,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:5,fontWeight:700}}>{dim.label}</div>
+                  <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                    {vals.map(v=>{
+                      const on=(exFilters[key]||[]).includes(v);
+                      return <button key={v} onClick={()=>toggle(key,v)} style={{padding:'4px 11px',borderRadius:16,fontSize:11,fontFamily:'inherit',cursor:'pointer',border:`1.5px solid ${on?C.red:C.border}`,background:on?C.red+'15':'transparent',color:on?C.red:C.textMut,fontWeight:on?700:400}}>{pretty(v)}</button>;
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+            <div style={{fontSize:12,color:C.textSub,margin:'14px 0'}}>Removing <b style={{color:C.red}}>{removedN}</b> of {trades.length} trades</div>
+            <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(4,1fr)',gap:10,marginBottom:16}}>
+              <D label="Net P&L" a={sA.totalPnl} b={sB.totalPnl} fmt={v=>(v>=0?'+':'')+'$'+v.toFixed(0)}/>
+              <D label="Profit Factor" a={sA.profitFactor} b={sB.profitFactor} fmt={v=>v>=99?'∞':v.toFixed(2)}/>
+              <D label="Expectancy" a={sA.expectancy} b={sB.expectancy} fmt={v=>(v>=0?'+':'')+'$'+v.toFixed(0)}/>
+              <D label="Max Drawdown" a={sA.maxDD} b={sB.maxDD} fmt={v=>'-$'+v.toFixed(0)} invert/>
+            </div>
+            <SvgDualLine a={sA.equity} b={sB.equity} colA={C.textMut} colB={C.teal} labelA="Actual" labelB="What-if"/>
+          </ChartCard>
+        );
+      })()}
+
+      {/* ══ TRADE LOG ══ */}
+      {section==='log'&&(
+        <ChartCard title="All Trades" sub="Click any row to open that day and edit tags/notes">
+          <SortTable columns={[
+            {key:'date',label:'Date',align:'left',bold:true},
+            {key:'ticker',label:'Inst',align:'left'},
+            {key:'direction',label:'Dir',align:'left',fmt:v=>pretty(v)},
+            {key:'setup',label:'Setup',align:'left',fmt:v=>pretty(v)},
+            {key:'triggersStr',label:'Triggers',align:'left'},
+            {key:'attempt',label:'Att.',fmt:v=>v==='—'?'—':pretty(v).replace('Entry ','E')},
+            {key:'stContext',label:'ST',fmt:v=>v==='—'?'—':pretty(v).replace(' ST','')},
+            {key:'htfContext',label:'HTF',fmt:v=>v==='—'?'—':pretty(v).replace(' HTF','')},
+            {key:'openingType',label:'Open',fmt:v=>v==='—'?'—':v==='ir_iv'?'IR-IV':v==='ir_ov'?'IR-OV':'OR-OV'},
+            {key:'result',label:'R',fmt:v=>v,color:r=>r.result==='W'?C.green:r.result==='L'?C.red:C.yellow,bold:true},
+            {key:'pnl',label:'PnL',fmt:v=>(v>=0?'+':'')+'$'+v.toFixed(0),color:r=>r.pnl>=0?C.green:C.red,bold:true},
+            {key:'rawRR',label:'RR',fmt:(v,r)=>r.result==='W'?v.toFixed(2)+'R':r.result==='L'?'-1R':'0R'},
+            {key:'entryTime',label:'Entry'},
+          ]} rows={trades.map(t=>({...t,triggersStr:(t.triggers||[]).map(pretty).join(', ')||'—',__onClick:()=>onJumpToDate&&onJumpToDate(t.date)}))} defaultSort="date" isMobile={isMobile}/>
+        </ChartCard>
+      )}
+      </>)}
+    </div>
+  );
+}
+
+// ═══ Insight Engine ══════════════════════════════════════════════════════════
+function insightsFor(trades){
+  const out=[];
+  if(trades.length<10)return out;
+  const dims=['setup','trigger','htfContext','stContext','attempt','direction','session'];
+  let best=null;
+  for(let i=0;i<dims.length;i++)for(let j=i+1;j<dims.length;j++){
+    groupByDims(trades,[dims[i],dims[j]],8).forEach(g=>{
+      if(g.expectancy>0&&(!best||g.expectancy>best.expectancy))best=g;
+    });
+  }
+  if(best)out.push({icon:'🎯',tone:'green',text:`${best.label} — ${best.winRate.toFixed(0)}% win rate, PF ${best.pf>=99?'∞':best.pf.toFixed(2)}, ${best.expectancy>=0?'+':''}$${best.expectancy.toFixed(0)}/trade over ${best.count} trades. Currently your strongest edge.`});
+  let worst=null;
+  groupByDims(trades,['setup'],5).concat(groupByDims(trades,['trigger'],5)).forEach(g=>{
+    if(g.totalPnl<0&&(!worst||g.totalPnl<worst.totalPnl))worst=g;
+  });
+  if(worst)out.push({icon:'📉',tone:'red',text:`${worst.label} — $${worst.totalPnl.toFixed(0)} over ${worst.count} trades (${worst.winRate.toFixed(0)}% win rate, PF ${worst.pf.toFixed(2)}). Weakest tag right now.`});
+  const seq=[...trades.filter(t=>['W','L','BE'].includes(t.result))].sort((a,b)=>(a.date+a.entryTime).localeCompare(b.date+b.entryTime));
+  if(seq.length>=30){
+    const cur=metricsFor(seq.slice(-20)), all=metricsFor(seq);
+    const diff=cur.expectancy-all.expectancy;
+    out.push({icon:diff>=0?'📈':'📉',tone:diff>=0?'green':'yellow',
+      text:`Last 20: ${(cur.expectancy>=0?'+':'')}$${cur.expectancy.toFixed(0)}/trade vs ${(all.expectancy>=0?'+':'')}$${all.expectancy.toFixed(0)} lifetime (${diff>=0?'+':''}$${diff.toFixed(0)}).`});
+  }
+  return out.slice(0,3);
+}
+
+function InsightsCard({insights}){
+  if(!insights.length)return null;
+  const toneCol={green:C.green,red:C.red,yellow:C.yellow,orange:C.orange};
+  return(
+    <div style={{background:C.surface,border:`1px solid ${C.teal}33`,borderRadius:14,padding:'16px 18px',marginBottom:16}}>
+      <div style={{fontSize:11,color:C.teal,textTransform:'uppercase',letterSpacing:'0.1em',fontWeight:800,marginBottom:12}}>⚡ Insights</div>
+      <div style={{display:'flex',flexDirection:'column',gap:10}}>
+        {insights.map((ins,i)=>(
+          <div key={i} style={{display:'flex',gap:10,alignItems:'flex-start'}}>
+            <span style={{fontSize:14}}>{ins.icon}</span>
+            <span style={{fontSize:12.5,color:C.text,lineHeight:1.6,borderLeft:`2px solid ${toneCol[ins.tone]||C.teal}`,paddingLeft:10}}>{ins.text}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ═══ Chat markdown + chart rendering ═════════════════════════════════════════
+function MiniChart({spec}){
+  try{
+    if(spec.type==='bar'&&Array.isArray(spec.series)){
+      const rows=spec.series.map(s=>({label:s.label,val:parseFloat(s.value)||0}));
+      const max=Math.max(...rows.map(r=>Math.abs(r.val)),1);
+      return(
+        <div style={{margin:'10px 0',padding:'12px 14px',background:C.bg,borderRadius:10,border:`1px solid ${C.border}`}}>
+          {spec.title&&<div style={{fontSize:11,fontWeight:700,color:C.textSub,marginBottom:10}}>{spec.title}</div>}
+          <div style={{display:'flex',flexDirection:'column',gap:7}}>
+            {rows.map((r,i)=>(
+              <div key={i} style={{display:'flex',alignItems:'center',gap:8}}>
+                <div style={{width:120,fontSize:10.5,color:C.textSub,textAlign:'right',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.label}</div>
+                <div style={{flex:1,height:12,background:C.surface2,borderRadius:4,overflow:'hidden'}}>
+                  <div style={{width:Math.abs(r.val)/max*100+'%',height:'100%',background:r.val>=0?C.green:C.red,borderRadius:4}}/>
+                </div>
+                <div style={{width:56,fontSize:10.5,fontWeight:700,color:r.val>=0?C.green:C.red}}>{spec.unit==='$'?(r.val>=0?'+':'')+'$'+r.val.toFixed(0):r.val.toFixed(spec.unit==='%'?0:2)+(spec.unit==='%'?'%':'')}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+    if(spec.type==='line'&&Array.isArray(spec.points)){
+      const series=spec.points.map((p,i)=>({date:String(p.label??i+1),val:parseFloat(p.value)||0}));
+      return(
+        <div style={{margin:'10px 0',padding:'12px 14px',background:C.bg,borderRadius:10,border:`1px solid ${C.border}`}}>
+          {spec.title&&<div style={{fontSize:11,fontWeight:700,color:C.textSub,marginBottom:10}}>{spec.title}</div>}
+          <SvgLineChart series={series} color={C.blue} height={140} fill={false}/>
+        </div>
+      );
+    }
+  }catch(_){}
+  return null;
+}
+
+function mdInline(text,key){
+  const parts=text.split(/\*\*(.+?)\*\*/g);
+  return <span key={key}>{parts.map((p,i)=>i%2===1?<b key={i} style={{color:C.text}}>{p}</b>:p)}</span>;
+}
+
+function MDMessage({content}){
+  const segments=[];
+  const re=/```chart\s*\n?([\s\S]*?)```/g;
+  let last=0,m;
+  while((m=re.exec(content))!==null){
+    if(m.index>last)segments.push({t:'text',v:content.slice(last,m.index)});
+    segments.push({t:'chart',v:m[1]});
+    last=m.index+m[0].length;
+  }
+  if(last<content.length)segments.push({t:'text',v:content.slice(last)});
+
+  const render=[];
+  segments.forEach((seg,si)=>{
+    if(seg.t==='chart'){
+      try{render.push(<MiniChart key={'c'+si} spec={JSON.parse(seg.v.trim())}/>);}catch(_){render.push(<pre key={'c'+si} style={{fontSize:11,color:C.textMut}}>{seg.v}</pre>);}
+      return;
+    }
+    const lines=seg.v.split('\n');
+    let i=0;
+    while(i<lines.length){
+      const line=lines[i];
+      if(line.trim().startsWith('|')){
+        const tbl=[];
+        while(i<lines.length&&lines[i].trim().startsWith('|')){tbl.push(lines[i]);i++;}
+        const rows=tbl.filter(l=>!/^\s*\|[\s\-:|]+\|\s*$/.test(l)).map(l=>l.split('|').slice(1,-1).map(c=>c.trim()));
+        if(rows.length){
+          render.push(
+            <div key={'t'+si+'_'+i} style={{overflowX:'auto',margin:'10px 0'}}>
+              <table style={{borderCollapse:'collapse',fontSize:12,minWidth:280}}>
+                <thead><tr>{rows[0].map((c,ci)=><th key={ci} style={{textAlign:ci===0?'left':'right',padding:'6px 10px',color:C.textMut,fontSize:10,textTransform:'uppercase',letterSpacing:'0.05em',borderBottom:`1px solid ${C.border}`,whiteSpace:'nowrap'}}>{c}</th>)}</tr></thead>
+                <tbody>{rows.slice(1).map((r,ri)=>(
+                  <tr key={ri}>{r.map((c,ci)=>{
+                    const neg=/^-\$|^-\d/.test(c), pos=/^\+/.test(c);
+                    return <td key={ci} style={{textAlign:ci===0?'left':'right',padding:'6px 10px',borderBottom:`0.5px solid ${C.border}`,whiteSpace:'nowrap',color:neg?C.red:pos?C.green:C.text,fontVariantNumeric:'tabular-nums'}}>{c}</td>;
+                  })}</tr>
+                ))}</tbody>
+              </table>
+            </div>
+          );
+        }
+        continue;
+      }
+      if(/^#{1,3}\s/.test(line.trim())){
+        render.push(<div key={'h'+si+'_'+i} style={{fontSize:13,fontWeight:800,color:C.text,margin:'12px 0 4px'}}>{line.replace(/^#{1,3}\s/,'')}</div>);
+        i++;continue;
+      }
+      // accumulate plain lines until next special
+      const buf=[];
+      while(i<lines.length&&!lines[i].trim().startsWith('|')&&!/^#{1,3}\s/.test(lines[i].trim())){buf.push(lines[i]);i++;}
+      const txt=buf.join('\n');
+      if(txt.trim())render.push(<div key={'p'+si+'_'+i} style={{whiteSpace:'pre-wrap'}}>{mdInline(txt,'m'+si+'_'+i)}</div>);
+    }
+  });
+  return <div style={{fontSize:13,color:C.text,lineHeight:1.7}}>{render}</div>;
+}
+
+// ─── Ask Claude Tab ───────────────────────────────────────────────────────────
+function weekId(d){const y=d.getFullYear();const start=new Date(y,0,1);return y+'-W'+Math.ceil(((d-start)/864e5+1)/7);}
+function monthId(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');}
+
+function ClaudeTab({userId,isMobile}){
+  const[days,setDays]=useState(null);
+  const[messages,setMessages]=useState([]);
+  const[input,setInput]=useState('');
+  const[thinking,setThinking]=useState(false);
+  const scrollRef=useRef();
+
+  useEffect(()=>{
+    let live=true;
+    loadAllDays(userId).then(d=>{if(live)setDays(d);});
+    return()=>{live=false;};
+  },[userId]);
+
+  useEffect(()=>{
+    if(scrollRef.current)scrollRef.current.scrollTop=scrollRef.current.scrollHeight;
+  },[messages,thinking]);
+
+  const now=new Date();
+  const weeklyDue=now.getDay()>=5&&localStorage.getItem('wk_review')!==weekId(now);
+  const dom=now.getDate();
+  const moTarget=dom<=2?monthId(new Date(now.getFullYear(),now.getMonth()-1,15)):monthId(now);
+  const monthlyDue=(dom>=28||dom<=2)&&localStorage.getItem('mo_review')!==moTarget;
+
+  const buildContext=()=>{
+    if(!days)return '';
+    const trades=extractAllTrades(days);
+    const s=computeStats(trades);
+    // Pre-computed aggregates (ground truth)
+    const agg={};
+    Object.keys(DIMENSIONS).forEach(k=>{
+      agg[k]=groupByDims(trades,[k],1).map(g=>({tag:g.label,n:g.count,pnl:Math.round(g.totalPnl),wr:Math.round(g.winRate),pf:g.pf>=99?'inf':+g.pf.toFixed(2),exp:Math.round(g.expectancy)}));
+    });
+    const topPivots=[];
+    const dims=['setup','trigger','htfContext','stContext','attempt','direction','session'];
+    for(let i=0;i<dims.length;i++)for(let j=i+1;j<dims.length;j++){
+      groupByDims(trades,[dims[i],dims[j]],8).slice(0,3).forEach(g=>topPivots.push({combo:g.label,n:g.count,pnl:Math.round(g.totalPnl),wr:Math.round(g.winRate),pf:g.pf>=99?'inf':+g.pf.toFixed(2),exp:Math.round(g.expectancy)}));
+    }
+    topPivots.sort((a,b)=>b.exp-a.exp);
+    const insights=insightsFor(trades).map(i=>i.text);
+
+    const tradeLines=trades.map(t=>
+      `${t.date}|${t.ticker}|${t.direction}|${t.setup}|${t.result}|${t.contracts}c|SL:${t.sl}|Pts:${t.points}|P&L:$${t.pnl.toFixed(0)}|RR:${t.rawRR.toFixed(2)}|Entry:${t.entryTime}(${t.session}/${session3(t.entryTime)})|Attempt:${t.attempt}|Triggers:${t.triggers.join(',')}|ST:${t.stContext}|HTF:${t.htfContext}|Open:${t.openingType}|MFE:${t.mfe||0}|MAE:${t.mae||0}|Notes:${t.notes.slice(0,100)}`
+    ).join('\n');
+    const reviews=days.filter(d=>d.data?.eod?.review).map(d=>`${d.date}: ${d.data.eod.review.slice(0,300)}`).join('\n');
+
+    return `TRADER PROFILE: Futures day trader (ES/NQ via MES/MNQ micros on sim). System: Auction Market Theory, Market Profile, order flow. Trades 10:30-4pm EST after IB forms. Setups: BPB (break from value pullback), RPB (return to value pullback), ROT (rotational), Fade (reversal at extremes). Risk: $200/trade full, $100 half. Targeting Tradeify Select 50K eval ($3000 target, $2000 max DD, 40% consistency). Point values: ES=$50 NQ=$20 MES=$5 MNQ=$2. Points are TOTAL across contracts; SL/MFE/MAE are per contract.
+
+LIFETIME STATS: ${s.totalTrades} closed | ${s.winRate.toFixed(1)}% WR | Net $${s.totalPnl.toFixed(0)} | PF ${s.profitFactor>=99?'inf':s.profitFactor.toFixed(2)} | Exp $${s.expectancy.toFixed(0)}/trade | MaxDD $${s.maxDD.toFixed(0)}
+
+PRE-COMPUTED AGGREGATES (ground truth — use these numbers):
+${JSON.stringify(agg)}
+
+TOP PIVOT COMBOS (N>=8):
+${JSON.stringify(topPivots.slice(0,12))}
+
+
+CURRENT INSIGHTS:
+${insights.join('\n')}
+
+RAW TRADES (for custom filters/aggregations you compute yourself):
+${tradeLines}
+
+EOD REVIEWS:
+${reviews}`;
+  };
+
+  const callClaude=async(newMessages)=>{
+    setThinking(true);
     try{
       const res=await fetch('https://api.anthropic.com/v1/messages',{
         method:'POST',
         headers:{
           'Content-Type':'application/json',
-          'x-api-key': process.env.REACT_APP_ANTHROPIC_API_KEY||'',
+          'x-api-key':process.env.REACT_APP_ANTHROPIC_API_KEY||'',
           'anthropic-version':'2023-06-01',
           'anthropic-dangerous-direct-browser-access':'true',
         },
         body:JSON.stringify({
           model:'claude-sonnet-4-20250514',
-          max_tokens:1000,
-          messages:[{role:'user',content:`You are analysing a futures day trader's end-of-day journal entry. The trader has written a raw general review. Your job is to:
-1. Fix grammar and spelling in the general review — keep ALL the same words, meaning and content, just fix errors. Do not rephrase or add anything.
-2. Extract from the review what the trader did well (specific positives, good executions, correct reads, rules followed).
-3. Extract from the review what the trader must fix (mistakes, rule breaks, bad entries, missed exits, anything negative).
+          max_tokens:2500,
+          system:`You are a natural-language analytics engine over this trader's real journal data. STRICT RULES:
+1. GROUNDING: Every number you state must come from the PRE-COMPUTED AGGREGATES or be computed from the RAW TRADES lines below. Never estimate or invent. If the data can't answer, say so.
+2. SAMPLE SIZE: Always state N for every stat. If N < 8, append "⚠ small sample" and treat the number as indicative only.
+3. TABLES: Use markdown tables for any multi-row comparison.
+4. CHARTS: When a visual helps, emit exactly one fenced block: \u0060\u0060\u0060chart\n{"type":"bar","title":"...","unit":"$","series":[{"label":"...","value":123}]}\n\u0060\u0060\u0060 (or {"type":"line","title":"...","points":[{"label":"...","value":123}]}). Valid JSON only, max 8 bars / 30 points.
+5. REFINEMENT: Conversation is stateful — "now only shorts" / "last 30 days" / "exclude Entry 1" refine the previous question. Restate the active filters in one short line at the top of each answer.
+6. STYLE: Direct, professional, no padding. All trades are legitimate — analyze performance, not behavior.
+7. REVIEWS: If asked for a weekly/monthly review, output NUMBERS ONLY in this structure: "## The Numbers" (markdown table: Trades, W-L-BE, Win rate, Net P&L, PF, Expectancy, Best day, Worst day, Max DD), "## Strongest Tags" (top 3 by expectancy with N), "## Weakest Tags" (bottom 3 with N). No psychology, no advice paragraphs — numbers and one-line factual observations only.
 
-Respond ONLY with valid JSON, no markdown, no backticks:
-{"review":"corrected general review text here","well":"what was done well, extracted and written cleanly","fix":"what must be fixed, extracted and written cleanly"}
-
-General Review:
-${data.review}`}]
+${buildContext()}`,
+          messages:newMessages,
         })
       });
       const json=await res.json();
-      const text=json.content?.find(b=>b.type==='text')?.text||'';
-      const parsed=JSON.parse(text.replace(/```json|```/g,'').trim());
-      onChange({...data,review:parsed.review||data.review,well:parsed.well||'',fix:parsed.fix||''});
-    }catch(e){console.error('Organise failed',e);}
-    setOrganising(false);
+      const text=json.content?.filter(b=>b.type==='text').map(b=>b.text).join('\n')||'(no response)';
+      setMessages([...newMessages,{role:'assistant',content:text}]);
+    }catch(e){
+      setMessages([...newMessages,{role:'assistant',content:'Error: '+e.message+'. Check REACT_APP_ANTHROPIC_API_KEY in Vercel env vars.'}]);
+    }
+    setThinking(false);
   };
 
+  const send=async()=>{
+    if(!input.trim()||thinking)return;
+    const nm=[...messages,{role:'user',content:input.trim()}];
+    setMessages(nm);setInput('');
+    await callClaude(nm);
+  };
+
+  const genReview=async(period)=>{
+    if(thinking)return;
+    const today=new Date();
+    let from,to,label;
+    if(period==='week'){
+      const d=new Date(today);d.setDate(d.getDate()-d.getDay()+1);
+      from=d.toLocaleDateString('en-CA');to=today.toLocaleDateString('en-CA');
+      label=`weekly review (${from} → ${to})`;
+      localStorage.setItem('wk_review',weekId(today));
+    }else{
+      const base=today.getDate()<=2?new Date(today.getFullYear(),today.getMonth()-1,15):today;
+      from=new Date(base.getFullYear(),base.getMonth(),1).toLocaleDateString('en-CA');
+      to=new Date(base.getFullYear(),base.getMonth()+1,0).toLocaleDateString('en-CA');
+      label=`monthly review (${from} → ${to})`;
+      localStorage.setItem('mo_review',monthId(base));
+    }
+    const nm=[...messages,{role:'user',content:`Generate my ${label}. Only use trades and EOD reviews dated within that range.`}];
+    setMessages(nm);
+    await callClaude(nm);
+  };
+
+  const suggestions=[
+    'Profit factor of Absorption + Bearish HTF + Entry 3 last 60 days',
+    'Strongest combinations with at least 10 trades',
+    'ROT last 40 trades vs overall',
+    'Equity curve if I exclude Entry 1 on Balanced Short Term',
+    'Chart my P&L by entry trigger',
+  ];
+
   return(
-    <div>
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:24}}>
-        {[
-          {label:'Day P&L',val:`${total>=0?'+':''}$${total.toFixed(0)}`,col:total>=0?C.green:C.red},
-          {label:'Points',val:ptsLabel,col:ptsColor},
-        ].map(s=>(
-          <div key={s.label} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:'16px'}}>
-            <div style={{fontSize:11,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.1em',marginBottom:8}}>{s.label}</div>
-            <div style={{fontSize:s.label==='Points'&&hasES&&hasNQ?16:30,fontWeight:800,color:s.col,fontVariantNumeric:'tabular-nums',lineHeight:1.2}}>{s.val}</div>
+    <div style={{display:'flex',flexDirection:'column',height:isMobile?'calc(100vh - 220px)':'calc(100vh - 160px)'}}>
+      {(weeklyDue||monthlyDue)&&(
+        <div style={{background:C.teal+'10',border:`1px solid ${C.teal}40`,borderRadius:12,padding:'10px 14px',marginBottom:12,display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,flexWrap:'wrap'}}>
+          <span style={{fontSize:12,color:C.text}}>📬 Your {weeklyDue?'weekly':'monthly'} review is ready to generate</span>
+          <button onClick={()=>genReview(weeklyDue?'week':'month')} style={{padding:'7px 14px',borderRadius:9,border:'none',background:C.teal,color:'#fff',fontSize:12,fontFamily:'inherit',fontWeight:700,cursor:'pointer'}}>Generate now</button>
+        </div>
+      )}
+      <div style={{display:'flex',gap:8,marginBottom:12}}>
+        <button onClick={()=>genReview('week')} disabled={thinking} style={{flex:1,padding:'9px',borderRadius:10,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textSub,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600}}>📅 Weekly Review</button>
+        <button onClick={()=>genReview('month')} disabled={thinking} style={{flex:1,padding:'9px',borderRadius:10,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textSub,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600}}>🗓 Monthly Review</button>
+      </div>
+      <div ref={scrollRef} style={{flex:1,overflowY:'auto',paddingBottom:16}}>
+        {messages.length===0&&(
+          <div style={{textAlign:'center',padding:'30px 20px'}}>
+            <div style={{fontSize:32,marginBottom:12}}>🤖</div>
+            <div style={{fontSize:15,fontWeight:700,color:C.text,marginBottom:6}}>Ask anything about your data</div>
+            <div style={{fontSize:12,color:C.textMut,marginBottom:24,lineHeight:1.6}}>Grounded in your real Supabase trades — with tables, charts,<br/>sample-size warnings, and follow-up refinement.</div>
+            <div style={{display:'flex',flexDirection:'column',gap:8,maxWidth:420,margin:'0 auto'}}>
+              {suggestions.map((sg,i)=>(
+                <button key={i} onClick={()=>setInput(sg)} style={{
+                  padding:'10px 16px',borderRadius:12,border:`1px solid ${C.border}`,
+                  background:C.surface,color:C.textSub,fontSize:12,fontFamily:'inherit',
+                  cursor:'pointer',textAlign:'left',
+                }}>{sg}</button>
+              ))}
+            </div>
+          </div>
+        )}
+        {messages.map((m,i)=>(
+          <div key={i} style={{display:'flex',justifyContent:m.role==='user'?'flex-end':'flex-start',marginBottom:12}}>
+            <div style={{
+              maxWidth:'90%',padding:'12px 16px',borderRadius:14,
+              background:m.role==='user'?C.teal+'20':C.surface,
+              border:`1px solid ${m.role==='user'?C.teal+'40':C.border}`,
+            }}>
+              {m.role==='user'?<div style={{fontSize:13,color:C.text,lineHeight:1.7,whiteSpace:'pre-wrap'}}>{m.content}</div>:<MDMessage content={m.content}/>}
+            </div>
           </div>
         ))}
+        {thinking&&(
+          <div style={{display:'flex',justifyContent:'flex-start',marginBottom:12}}>
+            <div style={{padding:'12px 16px',borderRadius:14,background:C.surface,border:`1px solid ${C.border}`,fontSize:13,color:C.textMut}}>Computing from your data...</div>
+          </div>
+        )}
       </div>
-
-      <Divider label="End of Day Charts"/>
-
-      <InstrumentLabel name="ES" color={C.blue}/>
-      <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:20}}>
-        <ImageSlot label="15min — Full Day" value={data.img15ES} onChange={set('img15ES')} accent={C.blue} userId={userId}/>
-        <ImageSlot label="TPO — Full Day" value={data.imgTPOES} onChange={set('imgTPOES')} accent={C.blue} userId={userId}/>
+      <div style={{display:'flex',gap:8,paddingTop:12,borderTop:`1px solid ${C.border}`}}>
+        <textarea value={input} onChange={e=>setInput(e.target.value)}
+          onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}}}
+          placeholder='Ask, then refine: "now only shorts", "last 30 days", "exclude Entry 1"...'
+          rows={1}
+          style={{flex:1,padding:'12px 16px',borderRadius:12,border:`1.5px solid ${C.border}`,
+            background:C.surface,color:C.text,fontSize:13,fontFamily:'inherit',outline:'none',resize:'none'}}/>
+        <button onClick={send} disabled={thinking||!input.trim()} style={{
+          padding:'0 20px',borderRadius:12,border:'none',
+          background:thinking||!input.trim()?C.surface:C.teal,
+          color:thinking||!input.trim()?C.textMut:'#fff',
+          fontFamily:'inherit',fontSize:13,fontWeight:700,cursor:thinking||!input.trim()?'not-allowed':'pointer',
+        }}>Send</button>
       </div>
-
-      <InstrumentLabel name="NQ" color={C.purple}/>
-      <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:8}}>
-        <ImageSlot label="15min — Full Day" value={data.img15NQ} onChange={set('img15NQ')} accent={C.purple} userId={userId}/>
-        <ImageSlot label="TPO — Full Day" value={data.imgTPONQ} onChange={set('imgTPONQ')} accent={C.purple} userId={userId}/>
-      </div>
-
-      <Divider label="Review"/>
-      <Field label="General Review" placeholder="Write freely — market narrative, what happened, mistakes, good reads, levels for tomorrow..." value={data.review} onChange={set('review')} rows={6}/>
-
-      <button onClick={organiseReview} disabled={organising||!data.review} style={{
-        width:'100%',padding:'13px',marginBottom:16,
-        background:organising?C.surface:'transparent',
-        border:`1.5px solid ${organising?C.border:C.yellow}`,
-        borderRadius:12,color:organising?C.textMut:C.yellow,
-        fontSize:13,fontFamily:'inherit',cursor:organising||!data.review?'not-allowed':'pointer',
-        fontWeight:700,transition:'all 0.2s',opacity:!data.review?0.4:1,
-      }}>{organising?'Organising…':'✦ Organise with AI'}</button>
-
-      {data.well&&(
-        <div style={{background:C.green+'10',border:`1px solid ${C.green}30`,borderRadius:12,padding:'14px 16px',marginBottom:12}}>
-          <div style={{fontSize:11,color:C.green,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700,marginBottom:8}}>✅ What I Did Well</div>
-          <div style={{fontSize:13,color:C.text,lineHeight:1.7,whiteSpace:'pre-wrap'}}>{data.well}</div>
-        </div>
-      )}
-      {data.fix&&(
-        <div style={{background:C.red+'10',border:`1px solid ${C.red}30`,borderRadius:12,padding:'14px 16px',marginBottom:16}}>
-          <div style={{fontSize:11,color:C.red,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700,marginBottom:8}}>❌ What I Must Fix</div>
-          <div style={{fontSize:13,color:C.text,lineHeight:1.7,whiteSpace:'pre-wrap'}}>{data.fix}</div>
-        </div>
-      )}
-
-      <Divider label="Claude Analysis Prompt"/>
-      <div style={{background:C.bg,border:`1px solid ${C.border}`,borderRadius:10,padding:'14px 16px',fontSize:11,color:C.textMut,lineHeight:1.8,fontFamily:'monospace',marginBottom:12,whiteSpace:'pre-wrap',maxHeight:140,overflowY:'auto'}}>{prompt}</div>
-      <button onClick={copy} style={{
-        width:'100%',padding:'13px',
-        background:copied?C.green+'18':'transparent',
-        border:`1.5px solid ${copied?C.green:C.border}`,
-        borderRadius:12,color:copied?C.green:C.textSub,
-        fontSize:13,fontFamily:'inherit',cursor:'pointer',fontWeight:700,transition:'all 0.2s',
-      }}>{copied?'✓ Copied — paste into Claude':'Copy Claude Prompt'}</button>
     </div>
   );
 }
@@ -1761,7 +2224,7 @@ function CalendarModal({selectedDate,onSelect,onClose,index}){
   const nextM=()=>{if(month===11){setMonth(0);setYear(y=>y+1);}else setMonth(m=>m+1);};
   return(
     <div style={{position:'fixed',inset:0,background:'#000000cc',zIndex:100,display:'flex',alignItems:'flex-end',justifyContent:'center'}} onClick={onClose}>
-      <div onClick={e=>e.stopPropagation()} style={{background:'#111',border:`1px solid ${C.border}`,borderRadius:'18px 18px 0 0',padding:'22px 18px 36px',width:'100%',maxWidth:560}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:'18px 18px 0 0',padding:'22px 18px 36px',width:'100%',maxWidth:560}}>
         <div style={{width:36,height:4,background:C.border,borderRadius:2,margin:'0 auto 20px'}}/>
         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:18}}>
           <button onClick={prevM} style={{background:C.surface2,border:`1px solid ${C.border}`,borderRadius:8,color:C.textSub,width:36,height:36,cursor:'pointer',fontSize:18}}>‹</button>
@@ -1879,6 +2342,9 @@ export default function App(){
   const[index,setIndex]=useState({});
   const[loading,setLoading]=useState(true);
   const[saveStatus,setSaveStatus]=useState('idle');
+  const [theme,setTheme]=useState(initialTheme());
+  applyTheme(theme);
+  useEffect(()=>{applyTheme(theme);try{localStorage.setItem('journal_theme',theme);}catch(_){}},[theme]);
   const[showCal,setShowCal]=useState(false);
   const saveTimer=useRef(null);
 
@@ -1921,7 +2387,6 @@ export default function App(){
     return()=>clearTimeout(saveTimer.current);
   },[dayData]);
 
-  const updatePre=pre=>setDayData(d=>({...d,pre}));
   const updateTrades=trades=>setDayData(d=>({...d,trades}));
   const updateEod=eod=>setDayData(d=>({...d,eod}));
 
@@ -1932,11 +2397,6 @@ export default function App(){
     setTab(0);
   };
 
-  const esResult = dayData?.pre?.esInputs ? computeBias(dayData.pre.esInputs) : null;
-  const nqResult = dayData?.pre?.nqInputs ? computeBias(dayData.pre.nqInputs) : null;
-  const alignment = (esResult && nqResult) ? computeAlignment(esResult, nqResult) : null;
-  const activeBias = alignment?.combined || dayData?.pre?.dailyBias || '';
-  const biasColor = activeBias === 'bullish' ? C.green : activeBias === 'bearish' ? C.red : activeBias === 'neutral' ? C.yellow : activeBias === 'conflict' ? C.orange : null;
   const isToday=selectedDate===today;
   const dayIdx=index[selectedDate];
   const sideW=260;
@@ -1963,7 +2423,7 @@ export default function App(){
         textarea,input{transition:border-color 0.15s;}
       `}</style>
 
-      <div style={{maxWidth:isMobile?'100%':1280,margin:'0 auto',display:isMobile?'block':'flex',minHeight:'100vh'}}>
+      <div style={{maxWidth:'100%',margin:'0 auto',display:isMobile?'block':'flex',minHeight:'100vh'}}>
 
         {/* Desktop Sidebar */}
         {!isMobile&&(
@@ -1972,8 +2432,11 @@ export default function App(){
               <div style={{fontSize:10,color:C.textMut,letterSpacing:'0.14em',textTransform:'uppercase',marginBottom:6}}>Trading Journal</div>
               <div style={{fontSize:24,fontWeight:800,color:C.text}}>📈</div>
             </div>
-            <div style={{fontSize:12,color:saveStatus==='saving'?C.yellow:saveStatus==='saved'?C.green:C.textDim}}>
-              {saveStatus==='saving'?'● Saving...':saveStatus==='saved'?'✓ Saved':'○ Auto-save on'}
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+              <div style={{fontSize:12,color:saveStatus==='saving'?C.yellow:saveStatus==='saved'?C.green:C.textDim}}>
+                {saveStatus==='saving'?'● Saving...':saveStatus==='saved'?'✓ Saved':'○ Auto-save on'}
+              </div>
+              <button onClick={()=>setTheme(theme==='dark'?'light':'dark')} title="Toggle light / dark" style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,color:C.textSub,width:34,height:30,cursor:'pointer',fontSize:14,display:'flex',alignItems:'center',justifyContent:'center'}}>{theme==='dark'?'☀️':'🌙'}</button>
             </div>
             <div style={{marginTop:'auto',paddingTop:16,borderTop:`1px solid ${C.border}`}}>
               
@@ -1997,23 +2460,11 @@ export default function App(){
               <div style={{display:'flex',flexDirection:'column',gap:4}}>
                 {TABS.map((t,i)=>(
                   <button key={t} onClick={()=>setTab(i)} style={{padding:'10px 14px',borderRadius:9,textAlign:'left',background:tab===i?C.surface2:'transparent',border:tab===i?`1px solid ${C.border}`:'1px solid transparent',color:tab===i?C.text:C.textMut,fontSize:13,fontFamily:'inherit',cursor:'pointer',fontWeight:tab===i?700:400,transition:'all 0.15s'}}>
-                    {i===0?'📋 ':i===1?'📊 ':'🔚 '}{t}
+                    {i===0?'📊 ':i===1?'📈 ':'🤖 '}{t}
                   </button>
                 ))}
               </div>
             </div>
-            {activeBias&&(
-              <div style={{padding:'12px 14px',borderRadius:10,border:`1px solid ${biasColor}44`,background:biasColor+'10'}}>
-                <div style={{fontSize:10,color:C.textMut,letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:6}}>Alignment</div>
-                <div style={{fontSize:16,color:biasColor,fontWeight:800,textTransform:'capitalize',marginBottom:6}}>
-                  {activeBias==='bullish'?'🟢':activeBias==='bearish'?'🔴':activeBias==='conflict'?'⚡':'⚪'} {activeBias}
-                </div>
-                <div style={{display:'flex',gap:6}}>
-                  {esResult?.bias&&<div style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:esResult.color+'22',color:esResult.color,fontWeight:600}}>ES {esResult.bias}</div>}
-                  {nqResult?.bias&&<div style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:nqResult.color+'22',color:nqResult.color,fontWeight:600}}>NQ {nqResult.bias}</div>}
-                </div>
-              </div>
-            )}
             {dayIdx&&(
               <div style={{marginTop:'auto',paddingTop:20,borderTop:`1px solid ${C.surface2}`}}>
                 <div style={{fontSize:10,color:C.textMut,letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:8}}>Day P&L</div>
@@ -2033,7 +2484,7 @@ export default function App(){
                 <div style={{fontSize:11,color:C.textMut,letterSpacing:'0.12em',textTransform:'uppercase'}}>Trading Journal</div>
                 <div style={{display:'flex',gap:8,alignItems:'center'}}>
                   <span style={{fontSize:11,color:saveStatus==='saving'?C.yellow:saveStatus==='saved'?C.green:'transparent'}}>{saveStatus==='saving'?'saving...':'✓ saved'}</span>
-                  {activeBias&&<div style={{padding:'4px 10px',borderRadius:20,border:`1px solid ${biasColor}44`,background:biasColor+'12',fontSize:11,color:biasColor,fontWeight:700,textTransform:'uppercase'}}>{activeBias==='conflict'?'⚡':activeBias==='bullish'?'🟢':activeBias==='bearish'?'🔴':'⚪'} {activeBias}</div>}
+                  <button onClick={()=>setTheme(theme==='dark'?'light':'dark')} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,color:C.textSub,width:30,height:28,cursor:'pointer',fontSize:13}}>{theme==='dark'?'☀️':'🌙'}</button>
                 </div>
               </div>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:16}}>
@@ -2057,7 +2508,7 @@ export default function App(){
           {!isMobile&&(
             <div style={{marginBottom:28}}>
               <div style={{fontSize:22,fontWeight:800,color:C.text,marginBottom:4}}>
-                {tab===0?'📋 Pre-Market Bias':tab===1?'📊 Trades':'🔚 End of Day Review'}
+                {tab===0?'📊 Trades':tab===1?'📈 Analytics':'🤖 Ask Claude'}
               </div>
               <div style={{fontSize:14,color:C.textMut}}>{fmtDate(selectedDate)}{isToday?' · Today':''}</div>
             </div>
@@ -2067,20 +2518,9 @@ export default function App(){
             <div style={{textAlign:'center',color:C.textMut,fontSize:13,padding:'60px 0'}}>Loading...</div>
           ):(
             <>
-              {tab===0&&<PreMarketTab data={dayData.pre} onChange={updatePre} isMobile={isMobile} userId={user?.id}/>}
-              {tab===1&&<TradesTab trades={dayData.trades} onChange={updateTrades} isMobile={isMobile} userId={user?.id}/>}
-              {tab===2&&<EODTab data={{...dayData.eod,
-                dailyBias:dayData.pre.dailyBias,
-                alignmentBias:dayData.pre.alignmentBias,
-                esComputedBias:dayData.pre.esComputedBias,
-                nqComputedBias:dayData.pre.nqComputedBias,
-                esInputs:dayData.pre.esInputs,
-                nqInputs:dayData.pre.nqInputs,
-                esPlan:dayData.pre.esPlan,
-                nqPlan:dayData.pre.nqPlan,
-                dayType:dayData.pre.dayType,
-
-              }} onChange={updateEod} trades={dayData.trades} date={selectedDate} isMobile={isMobile} userId={user?.id}/> }
+              {tab===0&&<TradesTab trades={dayData.trades} onChange={updateTrades} eod={dayData.eod} onEodChange={updateEod} date={selectedDate} isMobile={isMobile} userId={user?.id}/>}
+              {tab===1&&<AnalyticsTab userId={user?.id} isMobile={isMobile} onJumpToDate={d=>{setSelectedDate(d);setTab(0);}}/>}
+              {tab===2&&<ClaudeTab userId={user?.id} isMobile={isMobile}/>}
             </>
           )}
         </div>
