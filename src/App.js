@@ -1998,6 +1998,18 @@ function monthId(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2
 
 function ClaudeTab({userId,isMobile}){
   const chatKey='journal_chat_'+(userId||'anon');
+  const nameKey='journal_ai_name_'+(userId||'anon');
+  const[assistantName,setAssistantName]=useState(()=>{
+    try{return localStorage.getItem(nameKey)||'Claude';}catch(_){return 'Claude';}
+  });
+  const[editingName,setEditingName]=useState(false);
+  const[nameDraft,setNameDraft]=useState(assistantName);
+  const saveName=()=>{
+    const n=(nameDraft||'Claude').trim().slice(0,24)||'Claude';
+    setAssistantName(n);
+    try{localStorage.setItem(nameKey,n);}catch(_){}
+    setEditingName(false);
+  };
   const[days,setDays]=useState(null);
   const[messages,setMessages]=useState(()=>{
     try{const saved=JSON.parse(localStorage.getItem(chatKey));return Array.isArray(saved)?saved:[];}catch(_){return[];}
@@ -2083,7 +2095,7 @@ ${reviews}`;
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({
           max_tokens:2500,
-          system:`You are a natural-language analytics engine over this trader's real journal data. STRICT RULES:
+          system:`You are ${assistantName}, a natural-language analytics engine over this trader's real journal data. If asked your name, answer ${assistantName}. STRICT RULES:
 1. GROUNDING: Every number you state must come from the PRE-COMPUTED AGGREGATES or be computed from the RAW TRADES lines below. Never estimate or invent. If the data can't answer, say so.
 2. SAMPLE SIZE: Always state N for every stat. If N < 8, append "⚠ small sample" and treat the number as indicative only.
 3. TABLES: Use markdown tables for any multi-row comparison.
@@ -2163,7 +2175,19 @@ ${buildContext()}`,
         {messages.length===0&&(
           <div style={{textAlign:'center',padding:'30px 20px'}}>
             <div style={{fontSize:32,marginBottom:12}}>🤖</div>
-            <div style={{fontSize:15,fontWeight:700,color:C.text,marginBottom:6}}>Ask anything about your data</div>
+            {editingName?(
+              <div style={{display:'flex',gap:6,justifyContent:'center',marginBottom:6}}>
+                <input autoFocus value={nameDraft} onChange={e=>setNameDraft(e.target.value)}
+                  onKeyDown={e=>{if(e.key==='Enter')saveName();if(e.key==='Escape'){setNameDraft(assistantName);setEditingName(false);}}}
+                  style={{padding:'6px 10px',borderRadius:8,border:`1.5px solid ${C.teal}`,background:C.bg,color:C.text,fontSize:14,fontFamily:'inherit',outline:'none',textAlign:'center',width:160}}/>
+                <button onClick={saveName} style={{padding:'6px 12px',borderRadius:8,border:'none',background:C.teal,color:'#fff',fontSize:12,fontFamily:'inherit',fontWeight:700,cursor:'pointer'}}>Save</button>
+              </div>
+            ):(
+              <div style={{fontSize:15,fontWeight:700,color:C.text,marginBottom:6}}>
+                Ask {assistantName} anything about your data
+                <span onClick={()=>{setNameDraft(assistantName);setEditingName(true);}} title="Rename" style={{marginLeft:8,fontSize:11,color:C.textMut,cursor:'pointer',fontWeight:400,textDecoration:'underline'}}>rename</span>
+              </div>
+            )}
             <div style={{fontSize:12,color:C.textMut,marginBottom:24,lineHeight:1.6}}>Grounded in your real Supabase trades — with tables, charts,<br/>sample-size warnings, and follow-up refinement.</div>
             <div style={{display:'flex',flexDirection:'column',gap:8,maxWidth:420,margin:'0 auto'}}>
               {suggestions.map((sg,i)=>(
@@ -2343,6 +2367,11 @@ export default function App(){
   const [theme,setTheme]=useState(initialTheme());
   applyTheme(theme);
   useEffect(()=>{applyTheme(theme);try{localStorage.setItem('journal_theme',theme);}catch(_){}},[theme]);
+  const [aiName,setAiName]=useState('Claude');
+  useEffect(()=>{
+    const key='journal_ai_name_'+(user?.id||'anon');
+    try{setAiName(localStorage.getItem(key)||'Claude');}catch(_){setAiName('Claude');}
+  },[user,tab]);
   const[showCal,setShowCal]=useState(false);
   const saveTimer=useRef(null);
 
@@ -2458,7 +2487,7 @@ export default function App(){
               <div style={{display:'flex',flexDirection:'column',gap:4}}>
                 {TABS.map((t,i)=>(
                   <button key={t} onClick={()=>setTab(i)} style={{padding:'10px 14px',borderRadius:9,textAlign:'left',background:tab===i?C.surface2:'transparent',border:tab===i?`1px solid ${C.border}`:'1px solid transparent',color:tab===i?C.text:C.textMut,fontSize:13,fontFamily:'inherit',cursor:'pointer',fontWeight:tab===i?700:400,transition:'all 0.15s'}}>
-                    {i===0?'📊 ':i===1?'📈 ':'🤖 '}{t}
+                    {i===0?'📊 ':i===1?'📈 ':'🤖 '}{i===2?aiName:t}
                   </button>
                 ))}
               </div>
