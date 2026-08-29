@@ -60,6 +60,29 @@ function emptyDay(){
     eod:{emotions:'',well:'',fix:'',review:''},
   };
 }
+const SETUP_OPTIONS = [
+  {label:'BPB', value:'BPB'}, {label:'RPB', value:'RPB'}, {label:'ROT', value:'ROT'}, {label:'Fade', value:'FADE'},
+];
+const TRIGGER_OPTIONS = [
+  {label:'b shape FP', value:'b_shape_FP'}, {label:'P shape FP', value:'P_shape_FP'},
+  {label:'Exhaustion', value:'exhaustion'}, {label:'Absorption', value:'absorption'},
+  {label:'Volume Spike', value:'volume_spike'}, {label:'Initiative Participants', value:'initiative_participants'},
+];
+const ATTEMPT_OPTIONS = [
+  {label:'Entry 1', value:'entry_1'}, {label:'Entry 2', value:'entry_2'}, {label:'Entry 3', value:'entry_3'},
+];
+const ST_OPTIONS = [
+  {label:'Bullish Short Term', value:'bullish_st'}, {label:'Bearish Short Term', value:'bearish_st'}, {label:'Balanced Short Term', value:'balanced_st'},
+];
+const HTF_OPTIONS = [
+  {label:'Bullish HTF', value:'bullish_htf'}, {label:'Bearish HTF', value:'bearish_htf'},
+];
+const OPENING_OPTIONS = [
+  {label:'In Range In Value', value:'ir_iv'}, {label:'In Range Out of Value', value:'ir_ov'}, {label:'Out of Range Out of Value', value:'or_ov'},
+];
+const DIRECTION_OPTIONS = [
+  {label:'Long', value:'long'}, {label:'Short', value:'short'},
+];
 const MONTHLY_LEVELS = [
   {label:'M DVAH', value:'m_dvah'},   // Monthly Developing Value Area High
   {label:'M DVAL', value:'m_dval'},   // Monthly Developing Value Area Low
@@ -1477,18 +1500,18 @@ const PRETTY = {
 const pretty=v=>PRETTY[v]||v;
 
 const DIMENSIONS = {
-  setup:{label:'Setup', get:t=>t.setup},
-  trigger:{label:'Entry Trigger', get:t=>t.triggers, multi:true},
-  attempt:{label:'Entry Attempt', get:t=>t.attempt},
-  stContext:{label:'Short-Term Context', get:t=>t.stContext},
-  htfContext:{label:'HTF Context', get:t=>t.htfContext},
-  openingType:{label:'Opening Type', get:t=>t.openingType},
-  monthlyLevel:{label:'Monthly Composite Level', get:t=>t.monthlyLevel, multi:true},
-  weeklyLevel:{label:'Weekly Composite Level', get:t=>t.weeklyLevel, multi:true},
-  priorDayLevel:{label:'Prior Day Value Area', get:t=>t.priorDayLevel, multi:true},
-  direction:{label:'Direction', get:t=>t.direction},
-  ticker:{label:'Instrument', get:t=>t.ticker},
-  session:{label:'Session', get:t=>t.session},
+  setup:{label:'Setup', get:t=>t.setup, options:SETUP_OPTIONS},
+  trigger:{label:'Entry Trigger', get:t=>t.triggers, multi:true, options:TRIGGER_OPTIONS},
+  attempt:{label:'Entry Attempt', get:t=>t.attempt, options:ATTEMPT_OPTIONS},
+  stContext:{label:'Short-Term Context', get:t=>t.stContext, options:ST_OPTIONS},
+  htfContext:{label:'HTF Context', get:t=>t.htfContext, options:HTF_OPTIONS},
+  openingType:{label:'Opening Type', get:t=>t.openingType, options:OPENING_OPTIONS},
+  monthlyLevel:{label:'Monthly Composite Level', get:t=>t.monthlyLevel, multi:true, options:MONTHLY_LEVELS},
+  weeklyLevel:{label:'Weekly Composite Level', get:t=>t.weeklyLevel, multi:true, options:WEEKLY_LEVELS},
+  priorDayLevel:{label:'Prior Day Value Area', get:t=>t.priorDayLevel, multi:true, options:PRIOR_DAY_LEVELS},
+  direction:{label:'Direction', get:t=>t.direction, options:DIRECTION_OPTIONS},
+  ticker:{label:'Instrument', get:t=>t.ticker}, // no static list — genuinely data-driven (whatever you've traded)
+  session:{label:'Session', get:t=>t.session}, // derived from entry time, not a taggable field
 };
 
 function dimValues(trades,key){
@@ -1685,7 +1708,7 @@ function FilterBar({allTrades,filters,setFilters,isMobile}){
       {open&&(
         <div style={{marginTop:14,display:'flex',flexDirection:'column',gap:12}}>
           {Object.entries(DIMENSIONS).map(([key,dim])=>{
-            const vals=dimValues(allTrades,key);
+            const vals=dim.options?dim.options.map(o=>o.value):dimValues(allTrades,key);
             if(vals.length===0)return null;
             return(
               <div key={key}>
@@ -2044,11 +2067,19 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
             {key:'stContext',label:'ST',fmt:v=>v==='—'?'—':pretty(v).replace(' ST','')},
             {key:'htfContext',label:'HTF',fmt:v=>v==='—'?'—':pretty(v).replace(' HTF','')},
             {key:'openingType',label:'Open',fmt:v=>v==='—'?'—':v==='ir_iv'?'IR-IV':v==='ir_ov'?'IR-OV':'OR-OV'},
+            {key:'monthlyStr',label:'Monthly Lvl',align:'left'},
+            {key:'weeklyStr',label:'Weekly Lvl',align:'left'},
+            {key:'pdvaStr',label:'PDVA',align:'left'},
             {key:'result',label:'R',fmt:v=>v,color:r=>r.result==='W'?C.green:r.result==='L'?C.red:C.yellow,bold:true},
             {key:'pnl',label:'PnL',fmt:v=>(v>=0?'+':'')+'$'+v.toFixed(0),color:r=>r.pnl>=0?C.green:C.red,bold:true},
             {key:'rawRR',label:'RR',fmt:(v,r)=>r.result==='W'?v.toFixed(2)+'R':r.result==='L'?'-1R':'0R'},
             {key:'entryTime',label:'Entry'},
-          ]} rows={trades.map(t=>({...t,triggersStr:(t.triggers||[]).map(pretty).join(', ')||'—',__onClick:()=>onJumpToDate&&onJumpToDate(t.date)}))} defaultSort="date" isMobile={isMobile}/>
+          ]} rows={trades.map(t=>({...t,
+            triggersStr:(t.triggers||[]).map(pretty).join(', ')||'—',
+            monthlyStr:(t.monthlyLevel||[]).map(pretty).join(', ')||'—',
+            weeklyStr:(t.weeklyLevel||[]).map(pretty).join(', ')||'—',
+            pdvaStr:(t.priorDayLevel||[]).map(pretty).join(', ')||'—',
+            __onClick:()=>onJumpToDate&&onJumpToDate(t.date)}))} defaultSort="date" isMobile={isMobile}/>
         </ChartCard>
       )}
       </>)}
