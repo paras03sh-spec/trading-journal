@@ -780,6 +780,43 @@ function fillsToTrades(fills, orders) {
 
 // Sierra Chart CSV parser — feeds the same position-tracking engine as
 // Tradovate so multi-leg entries and partial exits group into one trade.
+// Parses a Sierra Chart "Trade Activity Log" export (File>>Export or File>>Save
+// Log As). Real column headers confirmed from an actual export: ActivityType,
+// DateTime, Symbol, Quantity, BuySell, Price, FillPrice, FilledQuantity, etc.
+// Two things make this format tricky:
+//  1. For Stop/Limit orders, "Price" is the trigger/order price — the actual
+//     execution price is in "FillPrice". We must always read FillPrice.
+//  2. File>>Export writes prices in raw exchange-native format (e.g. ES fill
+//     "747075" means 7470.75) rather than the display format. The multiplier
+//     isn't given in the file, so we auto-detect it per row: try dividing by
+//     1/10/100/1000/10000 and keep the result that (a) falls in a plausible
+//     price range for that instrument and (b) lands on a 0.25 tick.
+const PRICE_RANGE = {
+  ES: [3000, 12000], MES: [3000, 12000],
+  NQ: [10000, 45000], MNQ: [10000, 45000],
+};
+function normalizeSierraPrice(ticker, raw) {
+  const range = PRICE_RANGE[ticker];
+  if (!range || !raw) return raw;
+  for (const div of [1, 10, 100, 1000, 10000]) {
+    const val = raw / div;
+    if (val >= range[0] && val <= range[1] && Math.abs(val * 4 - Math.round(val * 4)) < 0.02) {
+      return val;
+    }
+  }
+  return raw; // couldn't confidently detect — return as-is rather than guess wrong
+}
+// "2026-07-28  15:27:58.285967" -> ms timestamp, using the components AS-IS
+// (no timezone conversion) so downstream formatTime()'s getUTCHours() reads
+// back exactly the same H:M Sierra Chart showed, regardless of the browser's
+// local timezone.
+function parseSierraDateTime(str) {
+  const m = String(str).match(/(\d{4})-(\d{2})-(\d{2})[ T]+(\d{2}):(\d{2}):(\d{2})/);
+  if (!m) return null;
+  const [, y, mo, d, h, mi, s] = m.map(Number);
+  return Date.UTC(y, mo - 1, d, h, mi, s);
+}
+
 function parseSierraCSV(csvText) {
   const lines = csvText.trim().split('\n').filter(l => l.trim().length > 0);
   if (lines.length < 2) return [];
@@ -790,7 +827,7 @@ function parseSierraCSV(csvText) {
     ? line.split('\t').map(c => c.trim().replace(/^"|"$/g, ''))
     : line.split(',').map(c => c.trim().replace(/^"|"$/g, ''));
 
-  const headers = splitLine(lines[0]).map(h => h.toLowerCase());
+  const headers = splitLine(lines[0]).map(h => h.toLowerCase().replace(/\s+/g, ''));
 
   const fills = [];
   for (let i = 1; i < lines.length; i++) {
@@ -799,14 +836,18 @@ function parseSierraCSV(csvText) {
     const row = {};
     headers.forEach((h, idx) => { row[h] = cols[idx] || ''; });
 
-    const ticker = parseTicker(row['symbol'] || row['contract'] || row['instrument'] || '');
-    const sideRaw = (row['side'] || row['action'] || row['buy/sell'] || '').toLowerCase();
-    const side = sideRaw.includes('buy') ? 'Buy' : sideRaw.includes('sell') ? 'Sell' : '';
-    const qty = parseFloat(row['qty'] || row['quantity'] || row['contracts'] || '0');
-    const price = parseFloat(row['fill price'] || row['price'] || row['entry price'] || row['exit price'] || '0');
-    const time = row['fill time'] || row['time'] || row['entry time'] || row['exit time'] || '';
+    // Only real fills — skip Order status changes / Position / Balance / Info rows
+    if (row['activitytype'] && !/^fill/i.test(row['activitytype'])) continue;
 
-    if (!ticker || !side || !qty || !price) continue;
+    const ticker = parseTicker(row['symbol'] || row['contract'] || row['instrument'] || '');
+    const sideRaw = (row['buysell'] || row['side'] || row['action'] || '').toLowerCase();
+    const side = sideRaw.includes('buy') ? 'Buy' : sideRaw.includes('sell') ? 'Sell' : '';
+    const qty = parseFloat(row['filledquantity'] || row['quantity'] || row['qty'] || row['contracts'] || '0');
+    const rawPrice = parseFloat(row['fillprice'] || row['price'] || row['entryprice'] || row['exitprice'] || '0');
+    const price = normalizeSierraPrice(ticker, rawPrice);
+    const time = parseSierraDateTime(row['datetime'] || row['transdatetime'] || row['time'] || '');
+
+    if (!ticker || !side || !qty || !price || !time) continue;
     fills.push({ ticker, side, qty, price, time });
   }
 
