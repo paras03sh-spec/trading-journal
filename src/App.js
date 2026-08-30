@@ -807,8 +807,15 @@ function groupFillsIntoTrades(fills) {
       if (lastExit && lastExit.orderType && lastExit.orderType.includes('stop')) {
         sl = Math.abs(avgEntry - lastExit.price).toFixed(2);
       }
+      // Real calendar date of entry — used to route this trade to the correct
+      // day when saving (not just wherever the app happens to be open to).
+      // Uses UTC getters to match the Date.UTC(y,mo,d,...) trick used to build
+      // fill.time, avoiding any local-timezone shift.
+      const entryDateObj = new Date(pos.entryLegs[0].time);
+      const _importDate = `${entryDateObj.getUTCFullYear()}-${String(entryDateObj.getUTCMonth()+1).padStart(2,'0')}-${String(entryDateObj.getUTCDate()).padStart(2,'0')}`;
       trades.push({
         ...newTrade(),
+        _importDate,
         ticker,
         direction: pos.direction === 'Long' ? 'long' : 'short', // matches the Direction pill values ('long'/'short')
         contracts: totalEntryQty.toString(),
@@ -924,6 +931,71 @@ function parseSierraDateTime(str) {
   if (!m) return null;
   const [, y, mo, d, h, mi, s] = m.map(Number);
   return Date.UTC(y, mo - 1, d, h, mi, s);
+}
+
+// Converts a UTC timestamp string to US Eastern time components, correctly
+// handling the EDT/EST switch via Intl (rather than a fixed offset). Returns
+// the same Date.UTC-embedded-as-local-values trick used elsewhere, so it
+// plugs into formatTime()/groupFillsIntoTrades unchanged.
+function utcToEasternMs(utcStr) {
+  const iso = String(utcStr).trim().replace(' ', 'T');
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return null;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).formatToParts(d);
+  const get = t => parts.find(p => p.type === t)?.value;
+  const h = get('hour') === '24' ? 0 : +get('hour');
+  return Date.UTC(+get('year'), +get('month') - 1, +get('day'), h, +get('minute'), +get('second'));
+}
+
+// Parses a native Tradovate fills CSV export (columns: _timestamp, B/S,
+// Quantity, Price, Product, Contract, etc.) — a different format from Sierra
+// Chart's Trade Activity Log. Detected automatically by parseFillsCSV below.
+// Prices here are already in display format (no exchange-native scaling
+// needed). No High/LowDuringPosition equivalent, so MFE/MAE stay blank. No
+// order-type column, so SL auto-fill doesn't apply to this source either.
+function parseTradovateCSV(csvText) {
+  const lines = csvText.trim().split('\n').filter(l => l.trim().length > 0);
+  if (lines.length < 2) return [];
+  const splitLine = line => line.split(',').map(c => c.trim().replace(/^"|"$/g, ''));
+  const headers = splitLine(lines[0]).map(h => h.toLowerCase().replace(/\s+/g, ''));
+
+  const fills = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitLine(lines[i]);
+    if (cols.length < 3) continue;
+    const row = {};
+    headers.forEach((h, idx) => { row[h] = cols[idx] || ''; });
+
+    const ticker = parseTicker(row['product'] || row['contract'] || '');
+    const sideRaw = (row['b/s'] || '').toLowerCase();
+    const side = sideRaw.includes('buy') ? 'Buy' : sideRaw.includes('sell') ? 'Sell' : '';
+    const qty = parseFloat(row['quantity'] || row['_qty'] || '0');
+    const price = parseFloat(row['price'] || row['_price'] || '0'); // already display-scale
+    const time = utcToEasternMs(row['_timestamp']);
+
+    if (!ticker || !side || !qty || !price || !time) continue;
+    fills.push({ ticker, side, qty, price, time, high: null, low: null, orderType: '', rawSymbol: row['contract'] || '' });
+  }
+  const trades = groupFillsIntoTrades(fills);
+  return trades.length > 0 ? trades : [newTrade()];
+}
+
+// Single entry point the import button calls — auto-detects which format the
+// file is (Sierra Chart Trade Activity Log vs native Tradovate fills export)
+// from its header row, so the person never has to pick a format manually.
+function parseFillsCSV(csvText) {
+  const firstLine = (csvText.trim().split('\n')[0] || '').toLowerCase();
+  if (firstLine.includes('activitytype') || firstLine.includes('fillprice') || firstLine.includes('highduringposition')) {
+    return parseSierraCSV(csvText);
+  }
+  if (firstLine.includes('b/s') || firstLine.includes('_timestamp') || firstLine.includes('fill id')) {
+    return parseTradovateCSV(csvText);
+  }
+  return parseSierraCSV(csvText); // fall back to the more common one
 }
 
 function parseSierraCSV(csvText) {
@@ -1073,6 +1145,7 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId}){
   const [showTradovate,setShowTradovate] = useState(false);
   const fileRef = useRef();
   const [organising,setOrganising]=useState(false);
+  const [importing,setImporting]=useState(false);
   const setEod=k=>v=>onEodChange({...eod,[k]:v});
 
   const handleTradovateImport = (imported) => {
@@ -1080,17 +1153,43 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId}){
     setShowTradovate(false);
   };
 
+  // Groups parsed trades by their real entry date (not whatever day happens
+  // to be open) and writes each group directly to its correct day in
+  // Supabase. If the currently-open day is among them, also updates the live
+  // view so it's visible immediately without a manual date-navigate+reload.
+  const routeTradesByDate = async (parsed) => {
+    setImporting(true);
+    const groups = {};
+    parsed.forEach(t => {
+      const d = t._importDate || date; // fallback to open day if somehow missing
+      (groups[d] = groups[d] || []).push({ ...t, _importDate: undefined });
+    });
+    const summary = [];
+    for (const [d, newTrades] of Object.entries(groups)) {
+      let dayData;
+      try { dayData = await loadDay(d, userId); } catch (_) { dayData = null; }
+      if (!dayData) dayData = emptyDay();
+      const merged = [...(dayData.trades || []).filter(t => t.ticker || t.notes), ...newTrades];
+      const updatedDay = { ...dayData, trades: merged };
+      await saveDay(d, updatedDay, userId);
+      summary.push(`${d}: +${newTrades.length}`);
+      if (d === date) onChange(merged); // reflect immediately if it's the open day
+    }
+    setImporting(false);
+    window.alert(`Imported ${parsed.length} trade${parsed.length!==1?'s':''} across ${Object.keys(groups).length} day${Object.keys(groups).length!==1?'s':''}:\n\n${summary.join('\n')}\n\nSwitch dates in the sidebar to see days other than today.`);
+  };
+
   const handleSierraCSV = (e) => {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
-      const parsed = parseSierraCSV(ev.target.result);
+      const parsed = parseFillsCSV(ev.target.result);
       if (parsed.length === 0 || (parsed.length === 1 && !parsed[0].ticker)) {
         window.alert("Couldn't find any trades in that file. This usually means the column names in your Sierra Chart export don't match what the app expects. Send this file to Claude in your project chat and it'll fix the column mapping.");
         return;
       }
-      onChange([...trades.filter(t=>t.ticker||t.notes), ...parsed]);
+      routeTradesByDate(parsed);
     };
     reader.readAsText(file);
     e.target.value = '';
@@ -1112,13 +1211,13 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId}){
         }}>
           📥 Import from Tradovate
         </button>
-        <button onClick={()=>fileRef.current.click()} style={{
+        <button onClick={()=>fileRef.current.click()} disabled={importing} style={{
           flex:1,padding:'11px 14px',borderRadius:12,
           border:`1.5px solid ${C.purple}`,background:C.purple+'15',
-          color:C.purple,fontFamily:'inherit',fontSize:12,fontWeight:600,cursor:'pointer',
-          display:'flex',alignItems:'center',justifyContent:'center',gap:6,
+          color:C.purple,fontFamily:'inherit',fontSize:12,fontWeight:600,cursor:importing?'not-allowed':'pointer',
+          display:'flex',alignItems:'center',justifyContent:'center',gap:6,opacity:importing?0.6:1,
         }}>
-          📂 Import Sierra Chart CSV
+          {importing?'⏳ Sorting into days...':'📂 Import Sierra Chart CSV'}
         </button>
       </div>
 
