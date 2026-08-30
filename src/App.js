@@ -95,7 +95,7 @@ const W_EXTREME_DEV_BAND = [
   {label:'PDVAH', value:'pdvah'}, {label:'PDVAL', value:'pdval'},
 ];
 
-function newTrade(){return{ticker:'',direction:'',contracts:'',sl:'',plan:'',confluences:[],triggers:[],attempt:'',stContext:'',htfContext:'',openingType:'',compositeBalanceExtreme:[],mExtremeDevBand:[],wExtremeDevBand:[],mfe:'',mae:'',result:'',points:'',entryTime:'',exitTime:'',emotions:'',notes:'',img1:'',img15:'',partials:[],avgEntry:'',multiEntry:false,open:true};}
+function newTrade(){return{ticker:'',direction:'',contracts:'',sl:'',plan:'',confluences:[],triggers:[],attempt:'',stContext:'',htfContext:'',openingType:'',compositeBalanceExtreme:[],mExtremeDevBand:[],wExtremeDevBand:[],mfe:'',mae:'',commission:'',result:'',points:'',entryTime:'',exitTime:'',emotions:'',notes:'',img1:'',img15:'',partials:[],avgEntry:'',multiEntry:false,open:true};}
 
 // Generate 5-min interval time options for 10:30am - 4:00pm EST
 function timeOptions(){
@@ -590,6 +590,7 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
               value={trade.result} onChange={set('result')} colors={{W:C.green,L:C.red,BE:C.yellow}}/>
           </div>
           <Input label="Total Points (all contracts combined)" type="number" value={trade.points} onChange={set('points')}/>
+          <Input label="Commission ($, total for trade)" type="number" value={trade.commission} onChange={set('commission')}/>
 
           {trade.partials && trade.partials.length > 0 && (
             <div style={{marginBottom:16,padding:'12px 14px',background:C.surface,border:`1px solid ${C.border}`,borderRadius:12}}>
@@ -680,7 +681,8 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
 }
 
 function SummaryBar({trades}){
-  const total=trades.reduce((s,t)=>s+calcPnL(t.ticker,t.contracts,t.points),0);
+  const total=trades.reduce((s,t)=>s+calcPnL(t.ticker,t.contracts,t.points)-(parseFloat(t.commission)||0),0);
+  const totalComm=trades.reduce((s,t)=>s+(parseFloat(t.commission)||0),0);
   const wins=trades.filter(t=>t.result==='W').length;
   const losses=trades.filter(t=>t.result==='L').length;
   const counted=trades.filter(t=>t.result).length;
@@ -693,11 +695,12 @@ function SummaryBar({trades}){
   const ptsLabel=hasES&&hasNQ?`ES ${esPts>=0?'+':''}${esPts.toFixed(1)} / NQ ${nqPts>=0?'+':''}${nqPts.toFixed(1)}`:hasES?`${esPts>=0?'+':''}${esPts.toFixed(1)} ES`:hasNQ?`${nqPts>=0?'+':''}${nqPts.toFixed(1)} NQ`:'—';
   const ptsColor=hasES&&hasNQ?C.textSub:hasES?(esPts>=0?C.green:C.red):(nqPts>=0?C.green:C.red);
   return(
-    <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:16}}>
-      <StatBox label="P&L" val={`${total>=0?'+':''}$${total.toFixed(0)}`} color={total>=0?C.green:C.red}/>
+    <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:8,marginBottom:16}}>
+      <StatBox label="Net P&L" val={`${total>=0?'+':''}$${total.toFixed(0)}`} color={total>=0?C.green:C.red}/>
       <StatBox label="Points" val={ptsLabel} color={ptsColor}/>
       <StatBox label="W Rate" val={`${wr}%`} color={C.yellow}/>
       <StatBox label="Trades" val={`${wins}W ${losses}L`} color={C.textSub}/>
+      <StatBox label="Commission" val={totalComm?`-$${totalComm.toFixed(2)}`:'—'} color={C.textMut}/>
     </div>
   );
 }
@@ -824,6 +827,7 @@ function groupFillsIntoTrades(fills) {
         points: totalExitQty > 0 ? combinedPoints.toFixed(2) : '',
         result,
         mfe, mae, sl,
+        commission: pos.commission ? pos.commission.toFixed(2) : '',
         avgEntry: avgEntry.toFixed(4),
         multiEntry: pos.entryLegs.length > 1,
         partials,
@@ -836,12 +840,13 @@ function groupFillsIntoTrades(fills) {
       if (f.high != null) pos.high = pos.high == null ? f.high : Math.max(pos.high, f.high);
       if (f.low != null) pos.low = pos.low == null ? f.low : Math.min(pos.low, f.low);
       if (f.rawSymbol && !pos.rawSymbol) pos.rawSymbol = f.rawSymbol;
+      if (f.commission) pos.commission = (pos.commission || 0) + f.commission;
     };
 
     list.forEach(f => {
       const isBuy = f.side === 'Buy';
       if (!pos) {
-        pos = { direction: isBuy ? 'Long' : 'Short', entryLegs: [{ qty: f.qty, price: f.price, time: f.time }], exitLegs: [], remaining: f.qty, high: null, low: null };
+        pos = { direction: isBuy ? 'Long' : 'Short', entryLegs: [{ qty: f.qty, price: f.price, time: f.time }], exitLegs: [], remaining: f.qty, high: null, low: null, commission: 0 };
         trackExtremes(pos, f);
         return;
       }
@@ -861,7 +866,7 @@ function groupFillsIntoTrades(fills) {
           pos.exitLegs.push({ qty: pos.remaining, price: f.price, time: f.time, orderType: f.orderType });
           const leftover = f.qty - pos.remaining;
           finalize(false);
-          pos = { direction: isBuy ? 'Long' : 'Short', entryLegs: [{ qty: leftover, price: f.price, time: f.time }], exitLegs: [], remaining: leftover, high: null, low: null };
+          pos = { direction: isBuy ? 'Long' : 'Short', entryLegs: [{ qty: leftover, price: f.price, time: f.time }], exitLegs: [], remaining: leftover, high: null, low: null, commission: 0 };
         }
       }
     });
@@ -976,9 +981,10 @@ function parseTradovateCSV(csvText) {
     const qty = parseFloat(row['quantity'] || row['_qty'] || '0');
     const price = parseFloat(row['price'] || row['_price'] || '0'); // already display-scale
     const time = utcToEasternMs(row['_timestamp']);
+    const commission = parseFloat(row['commission'] || '0') || 0;
 
     if (!ticker || !side || !qty || !price || !time) continue;
-    fills.push({ ticker, side, qty, price, time, high: null, low: null, orderType: '', rawSymbol: row['contract'] || '' });
+    fills.push({ ticker, side, qty, price, time, high: null, low: null, orderType: '', rawSymbol: row['contract'] || '', commission });
   }
   const trades = groupFillsIntoTrades(fills);
   return trades.length > 0 ? trades : [newTrade()];
@@ -1287,7 +1293,9 @@ function extractAllTrades(days){
       const points=parseFloat(t.points)||0;
       const sl=parseFloat(t.sl)||0;
       const pv=POINT_VALUES[t.ticker]||0;
-      const pnl=points*pv;
+      const grossPnl=points*pv;
+      const commission=parseFloat(t.commission)||0;
+      const pnl=grossPnl-commission; // net — every downstream stat (equity, PF, expectancy, all tag breakdowns) reads this
       const risk=sl*pv*contracts;
       const ptsPerC=contracts?points/contracts:0;
       // Real signed R-multiple: points-per-contract ÷ SL, sign comes naturally
@@ -1298,7 +1306,7 @@ function extractAllTrades(days){
       const mfeR = (t.mfe && sl) ? parseFloat(t.mfe)/sl : null; // max R that was available on the table
       out.push({
         date:row.date, ticker:t.ticker, direction:t.direction||'—',
-        contracts, points, sl, pnl, risk,
+        contracts, points, sl, pnl, grossPnl, commission, risk,
         rr:rr, // real signed R for every trade — no more hardcoded -1 for losses
         rawRR:rr, mfeR, result:t.result,
         setup:t.plan||'—', confluences:t.confluences||[], triggers:t.triggers||[],
@@ -1391,6 +1399,20 @@ function computeStats(trades){
   let cumR=0;
   const rCurve=seqR.map((t,i)=>{cumR+=t.rawRR;return{date:String(i+1),val:+cumR.toFixed(2)};});
 
+  // Sharpe / Sortino — risk-adjusted return, computed from daily $ P&L
+  // (already net of commission). Not annualized — raw per-trading-day ratio,
+  // since sample sizes here are small and an annualized number would imply
+  // false precision. Sortino only penalizes downside days; Sharpe penalizes
+  // any volatility, up or down.
+  const dailyVals=dailyPnl.map(d=>d.val);
+  const nDays=dailyVals.length;
+  const meanDaily=nDays?dailyVals.reduce((s,v)=>s+v,0)/nDays:0;
+  const stdDaily=nDays>1?Math.sqrt(dailyVals.reduce((s,v)=>s+(v-meanDaily)**2,0)/nDays):0;
+  const downside=dailyVals.filter(v=>v<0);
+  const downsideDev=downside.length?Math.sqrt(downside.reduce((s,v)=>s+v**2,0)/downside.length):0;
+  const sharpe=stdDaily?meanDaily/stdDaily:0;
+  const sortino=downsideDev?meanDaily/downsideDev:0;
+
   return {
     totalTrades:closed.length, wins:wins.length, losses:losses.length,
     be:closed.filter(t=>t.result==='BE').length,
@@ -1408,6 +1430,8 @@ function computeStats(trades){
     byOpeningType:breakdown(t=>t.openingType),
     rrList:wins.map(t=>t.rawRR),
     allR, avgR, stdR, rCurve,
+    sharpe, sortino, nDays,
+    totalCommission:closed.reduce((s,t)=>s+(t.commission||0),0),
   };
 }
 
@@ -1991,12 +2015,17 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
       {/* ══ EQUITY & DRAWDOWN ══ */}
       {section==='equity'&&(<>
         <InsightsCard insights={insightsFor(trades)}/>
-        <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(5,1fr)',gap:10,marginBottom:16}}>
+        <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(5,1fr)',gap:10,marginBottom:10}}>
           <BigStat label="Net P&L" val={`${s.totalPnl>=0?'+':''}$${s.totalPnl.toFixed(0)}`} col={s.totalPnl>=0?C.green:C.red}/>
           <BigStat label="Win Rate" val={`${s.winRate.toFixed(1)}%`} col={s.winRate>=50?C.green:s.winRate>=40?C.yellow:C.red} sub={`${s.wins}W · ${s.losses}L · ${s.be}BE`}/>
           <BigStat label="Profit Factor" val={s.profitFactor>=99?'∞':s.profitFactor.toFixed(2)} col={s.profitFactor>=1.5?C.green:s.profitFactor>=1?C.yellow:C.red}/>
           <BigStat label="Expectancy" val={`${s.expectancy>=0?'+':''}$${s.expectancy.toFixed(0)}`} col={s.expectancy>=0?C.green:C.red} sub="per trade"/>
           <BigStat label="Avg R" val={s.allR.length?`${s.avgR>=0?'+':''}${s.avgR.toFixed(2)}R`:'—'} col={s.avgR>=0?C.green:C.red} sub={s.allR.length?`σ ${s.stdR.toFixed(2)}R`:'needs SL entered'}/>
+        </div>
+        <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(5,1fr)',gap:10,marginBottom:16}}>
+          <BigStat label="Sharpe (daily)" val={s.nDays>=5?s.sharpe.toFixed(2):'—'} col={s.sharpe>=0.5?C.green:s.sharpe>=0?C.yellow:C.red} sub={s.nDays<15?`⚠ only ${s.nDays} days`:`${s.nDays} trading days`}/>
+          <BigStat label="Sortino (daily)" val={s.nDays>=5?s.sortino.toFixed(2):'—'} col={s.sortino>=0.7?C.green:s.sortino>=0?C.yellow:C.red} sub={s.nDays<15?`⚠ only ${s.nDays} days`:'downside-only'}/>
+          <BigStat label="Total Commission" val={s.totalCommission?`-$${s.totalCommission.toFixed(2)}`:'—'} col={C.textMut} sub={s.totalCommission?`${((s.totalCommission/Math.max(Math.abs(s.totalPnl+s.totalCommission),1))*100).toFixed(1)}% of gross`:'none tracked'}/>
         </div>
         <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
           <ChartCard title="Equity Curve" sub="Responds live to the tag filters above">
@@ -2284,7 +2313,8 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
             {key:'mDevStr',label:'M Dev Band',align:'left'},
             {key:'wDevStr',label:'W Dev Band',align:'left'},
             {key:'result',label:'R',fmt:v=>v,color:r=>r.result==='W'?C.green:r.result==='L'?C.red:C.yellow,bold:true},
-            {key:'pnl',label:'PnL',fmt:v=>(v>=0?'+':'')+'$'+v.toFixed(0),color:r=>r.pnl>=0?C.green:C.red,bold:true},
+            {key:'pnl',label:'Net PnL',fmt:v=>(v>=0?'+':'')+'$'+v.toFixed(0),color:r=>r.pnl>=0?C.green:C.red,bold:true},
+            {key:'commission',label:'Comm.',fmt:v=>v?'-$'+v.toFixed(2):'—',color:()=>C.textMut},
             {key:'rawRR',label:'RR',fmt:(v,r)=>r.sl>0?(v>=0?'+':'')+v.toFixed(2)+'R':'—',color:r=>r.rawRR>=0?C.green:C.red},
             {key:'mfe',label:'MFE',fmt:v=>v?parseFloat(v).toFixed(1):'—',color:()=>C.green},
             {key:'mae',label:'MAE',fmt:v=>v?parseFloat(v).toFixed(1):'—',color:()=>C.red},
@@ -2574,7 +2604,7 @@ function ClaudeTab({userId,isMobile}){
     const insights=insightsFor(trades).map(i=>i.text);
 
     const tradeLines=trades.map(t=>
-      `${t.date}|${t.ticker}|${t.direction}|${t.setup}|${t.result}|${t.contracts}c|SL:${t.sl}|Pts:${t.points}|P&L:$${t.pnl.toFixed(0)}|RR:${t.rawRR.toFixed(2)}|Entry:${t.entryTime}(${t.session}/${session3(t.entryTime)})|Attempt:${t.attempt}|Triggers:${t.triggers.join(',')}|ST:${t.stContext}|HTF:${t.htfContext}|Open:${t.openingType}|BalExt:${(t.compositeBalanceExtreme||[]).join(',')}|MDevBand:${(t.mExtremeDevBand||[]).join(',')}|WDevBand:${(t.wExtremeDevBand||[]).join(',')}|MFE:${t.mfe||0}|MAE:${t.mae||0}|Notes:${t.notes.slice(0,100)}`
+      `${t.date}|${t.ticker}|${t.direction}|${t.setup}|${t.result}|${t.contracts}c|SL:${t.sl}|Pts:${t.points}|NetP&L:$${t.pnl.toFixed(0)}|Commission:$${(t.commission||0).toFixed(2)}|RR:${t.rawRR.toFixed(2)}|Entry:${t.entryTime}(${t.session}/${session3(t.entryTime)})|Attempt:${t.attempt}|Triggers:${t.triggers.join(',')}|ST:${t.stContext}|HTF:${t.htfContext}|Open:${t.openingType}|BalExt:${(t.compositeBalanceExtreme||[]).join(',')}|MDevBand:${(t.mExtremeDevBand||[]).join(',')}|WDevBand:${(t.wExtremeDevBand||[]).join(',')}|MFE:${t.mfe||0}|MAE:${t.mae||0}|Notes:${t.notes.slice(0,100)}`
     ).join('\n');
     const reviews=days.filter(d=>d.data?.eod?.review).map(d=>`${d.date}: ${d.data.eod.review.slice(0,300)}`).join('\n');
 
