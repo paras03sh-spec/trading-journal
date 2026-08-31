@@ -1146,7 +1146,20 @@ function TradovateImportModal({onClose, onImport}) {
 }
 
 function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId}){
-  const update=(i,t)=>onChange(trades.map((x,j)=>j===i?t:x));
+  const update=(i,t)=>{
+    let newTrades = trades.map((x,j)=>j===i?t:x);
+    // HTF/Short-Term context describe the whole session, not one trade — once
+    // set on any trade, carry it forward to any other trade THIS DAY that's
+    // still blank on that field, so it doesn't need re-entering per trade.
+    // Already-tagged trades are left alone (respects a manual override).
+    const prevT = trades[i];
+    ['htfContext','stContext'].forEach(field=>{
+      if (t[field] && t[field] !== prevT[field]) {
+        newTrades = newTrades.map((x,j)=> (j!==i && !x[field]) ? {...x,[field]:t[field]} : x);
+      }
+    });
+    onChange(newTrades);
+  };
   const remove=(i)=>onChange(trades.filter((_,j)=>j!==i));
   const [showTradovate,setShowTradovate] = useState(false);
   const fileRef = useRef();
@@ -1154,8 +1167,26 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId}){
   const [importing,setImporting]=useState(false);
   const setEod=k=>v=>onEodChange({...eod,[k]:v});
 
+  // If any existing trade this day already has HTF/ST context tagged, apply
+  // that same value to newly-imported trades that come in blank — same
+  // "whole day" carry-forward as the live update() propagation above.
+  const inheritDayContext = (existing, incoming) => {
+    const found = {};
+    ['htfContext','stContext'].forEach(field=>{
+      const src = existing.find(t=>t[field]);
+      if (src) found[field] = src[field];
+    });
+    if (Object.keys(found).length === 0) return incoming;
+    return incoming.map(t => ({
+      ...t,
+      ...(!t.htfContext && found.htfContext ? {htfContext:found.htfContext} : {}),
+      ...(!t.stContext && found.stContext ? {stContext:found.stContext} : {}),
+    }));
+  };
+
   const handleTradovateImport = (imported) => {
-    onChange([...trades.filter(t=>t.ticker||t.notes), ...imported]);
+    const kept = trades.filter(t=>t.ticker||t.notes);
+    onChange([...kept, ...inheritDayContext(kept, imported)]);
     setShowTradovate(false);
   };
 
@@ -1171,11 +1202,13 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId}){
       (groups[d] = groups[d] || []).push({ ...t, _importDate: undefined });
     });
     const summary = [];
-    for (const [d, newTrades] of Object.entries(groups)) {
+    for (const [d, newTradesRaw] of Object.entries(groups)) {
       let dayData;
       try { dayData = await loadDay(d, userId); } catch (_) { dayData = null; }
       if (!dayData) dayData = emptyDay();
-      const merged = [...(dayData.trades || []).filter(t => t.ticker || t.notes), ...newTrades];
+      const existingKept = (dayData.trades || []).filter(t => t.ticker || t.notes);
+      const newTrades = inheritDayContext(existingKept, newTradesRaw);
+      const merged = [...existingKept, ...newTrades];
       const updatedDay = { ...dayData, trades: merged };
       await saveDay(d, updatedDay, userId);
       summary.push(`${d}: +${newTrades.length}`);
