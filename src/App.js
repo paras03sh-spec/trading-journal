@@ -457,6 +457,7 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
           {trade.plan&&<span style={{fontSize:11,color:C.textMut}}>{({balance:'balance',failedexp:'failed exp',reclaim:'reclaim',breakout:'breakout'})[trade.plan]||trade.plan}</span>}
         </div>
         <div style={{display:'flex',alignItems:'center',gap:12}}>
+          {!trade.sl && trade.ticker && <span title="No SL entered — R-multiples and MFE capture can't compute without it" style={{fontSize:10,color:C.red,background:C.red+'15',padding:'2px 7px',borderRadius:10,fontWeight:700}}>⚠ NO SL</span>}
           {trade.points!==''&&<span style={{fontSize:13,fontWeight:700,color:parseFloat(trade.points)>=0?C.green:C.red,fontVariantNumeric:'tabular-nums'}}>{parseFloat(trade.points)>=0?'+':''}{trade.points}pts</span>}
           <span style={{color:C.textMut,fontSize:13}}>{trade.open?'▲':'▼'}</span>
           <button onClick={(e)=>{e.stopPropagation();onRemove();}} style={{background:'none',border:'none',color:C.textMut,fontSize:16,cursor:'pointer',padding:0,lineHeight:1}}>✕</button>
@@ -1145,15 +1146,16 @@ function TradovateImportModal({onClose, onImport}) {
   );
 }
 
-function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId}){
+function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId,onJumpToDate}){
   const update=(i,t)=>{
     let newTrades = trades.map((x,j)=>j===i?t:x);
-    // HTF/Short-Term context describe the whole session, not one trade — once
-    // set on any trade, carry it forward to any other trade THIS DAY that's
-    // still blank on that field, so it doesn't need re-entering per trade.
-    // Already-tagged trades are left alone (respects a manual override).
+    // HTF/Short-Term context and Opening Type describe the whole session, not
+    // one trade — once set on any trade, carry it forward to any other trade
+    // THIS DAY that's still blank on that field, so it doesn't need
+    // re-entering per trade. Already-tagged trades are left alone (respects
+    // a manual override).
     const prevT = trades[i];
-    ['htfContext','stContext'].forEach(field=>{
+    ['htfContext','stContext','openingType'].forEach(field=>{
       if (t[field] && t[field] !== prevT[field]) {
         newTrades = newTrades.map((x,j)=> (j!==i && !x[field]) ? {...x,[field]:t[field]} : x);
       }
@@ -1163,16 +1165,35 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId}){
   const remove=(i)=>onChange(trades.filter((_,j)=>j!==i));
   const [showTradovate,setShowTradovate] = useState(false);
   const fileRef = useRef();
+  const [pending,setPending] = useState(null); // days with untagged setup/SL, loaded once per visit
+
+  useEffect(()=>{
+    let live = true;
+    loadAllDays(userId).then(days=>{
+      if (!live) return;
+      const result = [];
+      days.forEach(row=>{
+        const dayTrades = (row.data?.trades||[]).filter(t=>t.ticker||t.notes);
+        const noSetup = dayTrades.filter(t=>!t.plan).length;
+        const noSL = dayTrades.filter(t=>!t.sl).length;
+        if (noSetup>0 || noSL>0) result.push({date:row.date, noSetup, noSL, total:dayTrades.length});
+      });
+      result.sort((a,b)=>b.date.localeCompare(a.date));
+      setPending(result);
+    });
+    return ()=>{live=false;};
+  },[userId,trades]); // re-check whenever the open day's trades change too
   const [organising,setOrganising]=useState(false);
   const [importing,setImporting]=useState(false);
   const setEod=k=>v=>onEodChange({...eod,[k]:v});
 
-  // If any existing trade this day already has HTF/ST context tagged, apply
-  // that same value to newly-imported trades that come in blank — same
-  // "whole day" carry-forward as the live update() propagation above.
+  // If any existing trade this day already has HTF/ST context or Opening
+  // Type tagged, apply that same value to newly-imported trades that come in
+  // blank — same "whole day" carry-forward as the live update() propagation
+  // above.
   const inheritDayContext = (existing, incoming) => {
     const found = {};
-    ['htfContext','stContext'].forEach(field=>{
+    ['htfContext','stContext','openingType'].forEach(field=>{
       const src = existing.find(t=>t[field]);
       if (src) found[field] = src[field];
     });
@@ -1181,6 +1202,7 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId}){
       ...t,
       ...(!t.htfContext && found.htfContext ? {htfContext:found.htfContext} : {}),
       ...(!t.stContext && found.stContext ? {stContext:found.stContext} : {}),
+      ...(!t.openingType && found.openingType ? {openingType:found.openingType} : {}),
     }));
   };
 
@@ -1239,6 +1261,28 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId}){
     <div>
       {showTradovate && <TradovateImportModal onClose={()=>setShowTradovate(false)} onImport={handleTradovateImport}/>}
       <input ref={fileRef} type="file" accept=".csv,.txt" style={{display:'none'}} onChange={handleSierraCSV}/>
+
+      {/* Pending tags — visible before importing more, so you see the backlog first */}
+      {pending && pending.length > 0 && (
+        <div style={{background:C.yellow+'0d',border:`1px solid ${C.yellow}40`,borderRadius:12,padding:'12px 16px',marginBottom:14}}>
+          <div style={{fontSize:11,color:C.yellow,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700,marginBottom:8}}>
+            ⚠ {pending.length} day{pending.length!==1?'s':''} need tagging ({pending.reduce((s,p)=>s+p.noSetup,0)} untagged setup, {pending.reduce((s,p)=>s+p.noSL,0)} missing SL)
+          </div>
+          <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+            {pending.map(p=>(
+              <button key={p.date} onClick={()=>onJumpToDate&&onJumpToDate(p.date)} style={{
+                padding:'5px 11px',borderRadius:16,fontSize:11,fontFamily:'inherit',cursor:'pointer',
+                border:`1.5px solid ${C.border}`,background:C.surface,color:C.textSub,
+                display:'flex',alignItems:'center',gap:5,
+              }}>
+                <b style={{color:C.text}}>{p.date}</b>
+                {p.noSetup>0 && <span style={{color:C.yellow}}>· {p.noSetup} untagged</span>}
+                {p.noSL>0 && <span style={{color:C.red}}>· {p.noSL} no SL</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Import buttons */}
       <div style={{display:'flex',gap:10,marginBottom:16}}>
@@ -2537,23 +2581,29 @@ function ClaudeTab({userId,isMobile}){
       const saved=JSON.parse(localStorage.getItem(usageKey));
       if(saved&&saved.month===curMonth)return saved;
     }catch(_){}
-    return{month:curMonth,messages:0,tokensIn:0,tokensOut:0};
+    return{month:curMonth,messages:0,tokensIn:0,tokensOut:0,cacheWrite:0,cacheRead:0};
   });
-  const recordUsage=(tokensIn,tokensOut)=>{
+  const recordUsage=(tokensIn,tokensOut,cacheWrite,cacheRead)=>{
     setUsage(prev=>{
-      const base=prev.month===curMonth?prev:{month:curMonth,messages:0,tokensIn:0,tokensOut:0};
+      const base=prev.month===curMonth?prev:{month:curMonth,messages:0,tokensIn:0,tokensOut:0,cacheWrite:0,cacheRead:0};
       const next={
         month:curMonth,
         messages:base.messages+1,
         tokensIn:base.tokensIn+(tokensIn||0),
         tokensOut:base.tokensOut+(tokensOut||0),
+        cacheWrite:(base.cacheWrite||0)+(cacheWrite||0),
+        cacheRead:(base.cacheRead||0)+(cacheRead||0),
       };
       try{localStorage.setItem(usageKey,JSON.stringify(next));}catch(_){}
       return next;
     });
   };
-  // Sonnet 5 API pricing: $3/M input, $10/M output — token counts are exact (from API response), cost is a close estimate. Check console.anthropic.com for exact billing.
-  const estCost=(usage.tokensIn/1e6*3)+(usage.tokensOut/1e6*10);
+  // Sonnet 5 pricing: $3/M input, $10/M output, $3.75/M cache write, $0.30/M
+  // cache read. Once caching kicks in (2nd+ message in a session), most of
+  // the big context block bills at the cache-read rate instead of full
+  // input price — this is where the real savings from caching show up.
+  const estCost=(usage.tokensIn/1e6*3)+(usage.tokensOut/1e6*10)+((usage.cacheWrite||0)/1e6*3.75)+((usage.cacheRead||0)/1e6*0.30);
+  const cacheSavings=(usage.cacheRead||0)/1e6*(3-0.30); // rough $ saved vs paying full input rate for those tokens
   const[days,setDays]=useState(null);
   const[messages,setMessages]=useState(()=>{
     try{const saved=JSON.parse(localStorage.getItem(chatKey));return Array.isArray(saved)?saved:[];}catch(_){return[];}
@@ -2636,9 +2686,19 @@ function ClaudeTab({userId,isMobile}){
     topPivots.sort((a,b)=>b.exp-a.exp);
     const insights=insightsFor(trades).map(i=>i.text);
 
-    const tradeLines=trades.map(t=>
+    // Raw trade lines are the one part of this context that grows unbounded
+    // with history — cap to the most recent MAX_RAW trades so cost doesn't
+    // keep climbing forever. Aggregates/stats above still cover the FULL
+    // account regardless of this cap.
+    const sortedTrades = [...trades].sort((a,b)=>(a.date+a.entryTime).localeCompare(b.date+b.entryTime));
+    const MAX_RAW = 150;
+    const rawSubset = sortedTrades.length > MAX_RAW ? sortedTrades.slice(-MAX_RAW) : sortedTrades;
+    const tradeLines=rawSubset.map(t=>
       `${t.date}|${t.ticker}|${t.direction}|${t.setup}|${t.result}|${t.contracts}c|SL:${t.sl}|Pts:${t.points}|NetP&L:$${t.pnl.toFixed(0)}|Commission:$${(t.commission||0).toFixed(2)}|RR:${t.rawRR.toFixed(2)}|Entry:${t.entryTime}(${t.session}/${session3(t.entryTime)})|Attempt:${t.attempt}|Triggers:${t.triggers.join(',')}|ST:${t.stContext}|HTF:${t.htfContext}|Open:${t.openingType}|BalExt:${(t.compositeBalanceExtreme||[]).join(',')}|MDevBand:${(t.mExtremeDevBand||[]).join(',')}|WDevBand:${(t.wExtremeDevBand||[]).join(',')}|MFE:${t.mfe||0}|MAE:${t.mae||0}|Notes:${t.notes.slice(0,100)}`
     ).join('\n');
+    const trimmedNote = sortedTrades.length > MAX_RAW
+      ? `\n(Showing the most recent ${MAX_RAW} of ${sortedTrades.length} total trades. The aggregates and lifetime stats above cover the FULL account regardless. If asked about older trades specifically, say only the most recent ${MAX_RAW} are loaded here.)`
+      : '';
     const reviews=days.filter(d=>d.data?.eod?.review).map(d=>`${d.date}: ${d.data.eod.review.slice(0,300)}`).join('\n');
 
     return `TRADER PROFILE: Futures day trader (ES/NQ via MES/MNQ micros on sim). System: Auction Market Theory, Market Profile, order flow. Trades 10:30-4pm EST after IB forms. Setups: BPB (break from value pullback), RPB (return to value pullback), ROT (rotational), Fade (reversal at extremes). Risk: $200/trade full, $100 half. Targeting Tradeify Select 50K eval ($3000 target, $2000 max DD, 40% consistency). Point values: ES=$50 NQ=$20 MES=$5 MNQ=$2. Points are TOTAL across contracts; SL/MFE/MAE are per contract.
@@ -2656,7 +2716,7 @@ CURRENT INSIGHTS:
 ${insights.join('\n')}
 
 RAW TRADES (for custom filters/aggregations you compute yourself):
-${tradeLines}
+${tradeLines}${trimmedNote}
 
 EOD REVIEWS:
 ${reviews}`;
@@ -2669,15 +2729,32 @@ ${reviews}`;
         method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({
-          max_tokens:2500,
-          system:`You are ${assistantName}, a natural-language analytics engine over this trader's real journal data. If asked your name, answer ${assistantName}. STRICT RULES:
-1. GROUNDING: Every number you state must come from the PRE-COMPUTED AGGREGATES or be computed from the RAW TRADES lines below. Never estimate or invent. If the data can't answer, say so.
-2. SAMPLE SIZE: Always state N for every stat. If N < 8, append "⚠ small sample" and treat the number as indicative only.
-3. TABLES: Use markdown tables for any multi-row comparison.
-4. CHARTS: When a visual helps, emit exactly one fenced block: \u0060\u0060\u0060chart\n{"type":"bar","title":"...","unit":"$","series":[{"label":"...","value":123}]}\n\u0060\u0060\u0060 (or {"type":"line","title":"...","points":[{"label":"...","value":123}]}). Valid JSON only, max 8 bars / 30 points.
-5. REFINEMENT: Conversation is stateful — "now only shorts" / "last 30 days" / "exclude Entry 1" refine the previous question. Restate the active filters in one short line at the top of each answer.
-6. STYLE: Direct, professional, no padding. All trades are legitimate — analyze performance, not behavior.
-7. REVIEWS: If asked for a weekly/monthly review, output NUMBERS ONLY in this structure: "## The Numbers" (markdown table: Trades, W-L-BE, Win rate, Net P&L, PF, Expectancy, Best day, Worst day, Max DD), "## Strongest Tags" (top 3 by expectancy with N), "## Weakest Tags" (bottom 3 with N). No psychology, no advice paragraphs — numbers and one-line factual observations only.
+          max_tokens:1400,
+          system:`You are ${assistantName}, a ruthless-efficiency trading journal analytics engine. If asked your name, answer ${assistantName}.
+
+NON-NEGOTIABLE (never break these, no matter how terse the response):
+1. GROUNDING: Every number comes from PRE-COMPUTED AGGREGATES or is computed from RAW TRADES below. Never estimate or invent. Insufficient data → say "Insufficient data" + what's missing. Nothing more.
+2. SAMPLE SIZE: State N for every stat. N<8 → append "⚠N=X" (compressed, not a sentence). Never drop this to save words.
+3. SCOPE: If filters/refinements are active ("now only shorts", "last 30 days"), state them in one short line at the top — not the same as repeating the question, this prevents ambiguity about what the numbers cover. Never drop this either.
+
+EFFICIENCY (apply everywhere else):
+- Max token efficiency. Every word earns its place. Default: as short as possible while still answering.
+- Never repeat the question. Never greet, close, encourage, or pad.
+- Never narrate what you're about to do — just answer.
+- Structured output (table/bullets/numbered) over paragraphs, always.
+- Abbreviate freely once context is clear: RR, PnL, BE, SL, TP, R, WR, PF.
+- One sentence or one table beats a paragraph, every time.
+- Round aggressively (2.47R → 2.5R) unless the person asks for precision.
+- Only answer what's asked — no volunteered extra analysis unless requested.
+- Order: (1) direct answer, (2) key numbers as table/bullets, (3) one-line insight only if it adds real value, (4) stop.
+
+CHARTS: when a visual genuinely helps, emit exactly one fenced block: \u0060\u0060\u0060chart\n{"type":"bar","title":"...","unit":"$","series":[{"label":"...","value":123}]}\n\u0060\u0060\u0060 (or {"type":"line","title":"...","points":[{"label":"...","value":123}]}). Valid JSON only, max 8 bars / 30 points.
+
+REVIEWS: weekly/monthly review → NUMBERS ONLY: "## The Numbers" (table: Trades, W-L-BE, WR, Net PnL, PF, Expectancy, Best day, Worst day, Max DD), "## Strongest Tags" (top 3 by expectancy, with N), "## Weakest Tags" (bottom 3, with N). No psychology, no advice paragraphs.
+
+HAND-OFF: if the question is genuinely open-ended strategic/conceptual discussion, or needs deep multi-angle reasoning that can't honestly compress into a table or a few lines (not just "has multiple parts" — most multi-part data questions still fit the efficient format above) — don't force it into a short answer. Instead reply with ONLY: "This needs more depth than fits here — ask Claude directly in your claude.ai chat for the full breakdown." One line, nothing else. Reserve this for real cases, not as a way to dodge normal analysis.
+
+All trades are legitimate — analyze performance, not behavior.
 
 ${buildContext()}`,
           messages:newMessages,
@@ -2691,7 +2768,7 @@ ${buildContext()}`,
       }
       const text=json.content?.filter(b=>b.type==='text').map(b=>b.text).join('\n');
       setMessages([...newMessages,{role:'assistant',content:text||'Claude returned an empty response — try rephrasing the question.'}]);
-      if(json.usage)recordUsage(json.usage.input_tokens,json.usage.output_tokens);
+      if(json.usage)recordUsage(json.usage.input_tokens,json.usage.output_tokens,json.usage.cache_creation_input_tokens,json.usage.cache_read_input_tokens);
     }catch(e){
       setMessages([...newMessages,{role:'assistant',content:'Error: could not reach the server — '+e.message}]);
     }
@@ -2771,7 +2848,7 @@ ${buildContext()}`,
       </div>
       {usage.messages>0&&(
         <div style={{fontSize:11,color:C.textMut,marginBottom:12,display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
-          <span>📊 This month: <b style={{color:C.textSub}}>{usage.messages}</b> message{usage.messages!==1?'s':''} · ~<b style={{color:C.textSub}}>{(usage.tokensIn+usage.tokensOut).toLocaleString()}</b> tokens · ~<b style={{color:estCost>1?C.yellow:C.textSub}}>${estCost.toFixed(3)}</b></span>
+          <span>📊 This month: <b style={{color:C.textSub}}>{usage.messages}</b> message{usage.messages!==1?'s':''} · ~<b style={{color:C.textSub}}>{(usage.tokensIn+usage.tokensOut).toLocaleString()}</b> tokens · ~<b style={{color:estCost>1?C.yellow:C.textSub}}>${estCost.toFixed(3)}</b>{cacheSavings>0.001&&<span style={{color:C.green}}> · saved ~${cacheSavings.toFixed(3)} via caching</span>}</span>
           <span style={{color:C.textDim}}>· estimate — exact billing at console.anthropic.com</span>
         </div>
       )}
@@ -2804,7 +2881,10 @@ ${buildContext()}`,
             </div>
           </div>
         )}
-        {messages.map((m,i)=>(
+        {messages.map((m,i)=>{
+          const isHandoff = m.role==='assistant' && /ask Claude directly in your claude\.ai chat/i.test(m.content);
+          const originalQuestion = isHandoff && i>0 ? messages[i-1].content : null;
+          return(
           <div key={i} style={{display:'flex',justifyContent:m.role==='user'?'flex-end':'flex-start',marginBottom:12}}>
             <div style={{
               maxWidth:'90%',padding:'12px 16px',borderRadius:14,
@@ -2812,9 +2892,19 @@ ${buildContext()}`,
               border:`1px solid ${m.role==='user'?C.teal+'40':C.border}`,
             }}>
               {m.role==='user'?<div style={{fontSize:13,color:C.text,lineHeight:1.7,whiteSpace:'pre-wrap'}}>{m.content}</div>:<MDMessage content={m.content}/>}
+              {isHandoff && originalQuestion && (
+                <button onClick={()=>{
+                  try{navigator.clipboard.writeText(originalQuestion);}catch(_){}
+                  window.open('https://claude.ai/new?q='+encodeURIComponent(originalQuestion), '_blank');
+                }} style={{
+                  marginTop:10,padding:'8px 14px',borderRadius:9,border:`1.5px solid ${C.teal}`,
+                  background:C.teal+'15',color:C.teal,fontFamily:'inherit',fontSize:12,fontWeight:700,cursor:'pointer',
+                }}>↗ Open in Claude (question copied — paste if it's not already there)</button>
+              )}
             </div>
           </div>
-        ))}
+          );
+        })}
         {thinking&&(
           <div style={{display:'flex',justifyContent:'flex-start',marginBottom:12}}>
             <div style={{padding:'12px 16px',borderRadius:14,background:C.surface,border:`1px solid ${C.border}`,fontSize:13,color:C.textMut}}>Computing from your data...</div>
@@ -3007,7 +3097,7 @@ export default function App(){
     saveTimer.current=setTimeout(async()=>{
       await saveDay(selectedDate,dayData,user.id);
       const trades=dayData.trades||[];
-      const total=trades.reduce((s,t)=>s+calcPnL(t.ticker,t.contracts,t.points),0);
+      const total=trades.reduce((s,t)=>s+calcPnL(t.ticker,t.contracts,t.points)-(parseFloat(t.commission)||0),0);
       const esPts=trades.filter(t=>['ES','MES'].includes(t.ticker)).reduce((s,t)=>s+(parseFloat(t.points)||0),0);
       const nqPts=trades.filter(t=>['NQ','MNQ'].includes(t.ticker)).reduce((s,t)=>s+(parseFloat(t.points)||0),0);
       const wins=trades.filter(t=>t.result==='W').length;
@@ -3154,7 +3244,7 @@ export default function App(){
             <div style={{textAlign:'center',color:C.textMut,fontSize:13,padding:'60px 0'}}>Loading...</div>
           ):(
             <>
-              {tab===0&&<TradesTab trades={dayData.trades} onChange={updateTrades} eod={dayData.eod} onEodChange={updateEod} date={selectedDate} isMobile={isMobile} userId={user?.id}/>}
+              {tab===0&&<TradesTab trades={dayData.trades} onChange={updateTrades} eod={dayData.eod} onEodChange={updateEod} date={selectedDate} isMobile={isMobile} userId={user?.id} onJumpToDate={d=>setSelectedDate(d)}/>}
               {tab===1&&<AnalyticsTab userId={user?.id} isMobile={isMobile} onJumpToDate={d=>{setSelectedDate(d);setTab(0);}}/>}
               {tab===2&&<ClaudeTab userId={user?.id} isMobile={isMobile}/>}
             </>

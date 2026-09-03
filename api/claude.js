@@ -17,6 +17,37 @@ export default async function handler(req, res) {
   const { system, messages, max_tokens } = req.body || {};
   if (!messages) return res.status(400).json({ error: 'Missing messages' });
 
+  // Prompt caching: the system prompt (trader profile + aggregates + raw
+  // trade history) is identical across messages in a session as long as the
+  // underlying trade data hasn't changed. Caching it means only the FIRST
+  // message in a sitting pays full price — every follow-up within the TTL
+  // reuses the cache at roughly 10% of normal input cost. 1-hour TTL (not
+  // the 5-minute default) since real usage has gaps longer than 5 min
+  // between messages. No beta header required for this as of 2026.
+  const systemBlock = typeof system === 'string'
+    ? [{ type: 'text', text: system, cache_control: { type: 'ephemeral', ttl: '1h' } }]
+    : system;
+
+  // Also cache the growing CONVERSATION itself, not just the system block.
+  // Every call resends the full message history (that's how the API works),
+  // so a long back-and-forth thread would otherwise repay full price for the
+  // entire prior transcript on every single new message. Marking the last
+  // "old" message (everything before the newest turn) as a cache breakpoint
+  // means only the newest message is fresh/full-price — everything before it
+  // reads from cache. This is what makes staying in one ongoing chat actually
+  // cheaper than starting fresh ones, the way it should be.
+  let cachedMessages = messages;
+  if (Array.isArray(messages) && messages.length >= 2) {
+    const idx = messages.length - 2; // last message before the newest turn
+    cachedMessages = messages.map((m, i) => {
+      if (i !== idx) return m;
+      const content = typeof m.content === 'string'
+        ? [{ type: 'text', text: m.content, cache_control: { type: 'ephemeral', ttl: '1h' } }]
+        : m.content;
+      return { ...m, content };
+    });
+  }
+
   try {
     const aRes = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -28,8 +59,8 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model: 'claude-sonnet-5',
         max_tokens: max_tokens || 2500,
-        system,
-        messages,
+        system: systemBlock,
+        messages: cachedMessages,
       }),
     });
     const data = await aRes.json();
