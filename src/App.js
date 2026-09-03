@@ -963,6 +963,61 @@ function utcToEasternMs(utcStr) {
 // Prices here are already in display format (no exchange-native scaling
 // needed). No High/LowDuringPosition equivalent, so MFE/MAE stay blank. No
 // order-type column, so SL auto-fill doesn't apply to this source either.
+// Parses a raw Sierra Chart intraday bar export (Date, Time, High, Low
+// columns — a chart's "Graph Data" export, not a fills/trade list). Used
+// only to backfill MFE/MAE on trades that already exist, by looking up the
+// real high/low reached during each trade's entry-to-exit window. Some of
+// these exports repeat "High"/"Low" column names later in the row for an
+// unrelated study (e.g. CVD) — always take the FIRST occurrence, which is
+// the real price bar.
+function parseIntradayBars(csvText) {
+  const lines = csvText.trim().split('\n').filter(l => l.trim().length > 0);
+  if (lines.length < 2) return { bars: [], priceMin: null, priceMax: null };
+  const delim = lines[0].includes('\t') ? '\t' : ',';
+  const splitLine = line => delim === '\t'
+    ? line.split('\t').map(c => c.trim().replace(/^"|"$/g, ''))
+    : line.split(',').map(c => c.trim().replace(/^"|"$/g, ''));
+  const headers = splitLine(lines[0]).map(h => h.toLowerCase());
+  const dateIdx = headers.indexOf('date');
+  const timeIdx = headers.indexOf('time');
+  const highIdx = headers.indexOf('high'); // first occurrence = real price bar
+  const lowIdx = headers.indexOf('low');
+  if (dateIdx < 0 || timeIdx < 0 || highIdx < 0 || lowIdx < 0) return { bars: [], priceMin: null, priceMax: null };
+
+  const bars = [];
+  let priceMin = Infinity, priceMax = -Infinity;
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitLine(lines[i]);
+    if (cols.length <= Math.max(dateIdx, timeIdx, highIdx, lowIdx)) continue;
+    const date = cols[dateIdx];
+    const timeRaw = cols[timeIdx];
+    const high = parseFloat(cols[highIdx]);
+    const low = parseFloat(cols[lowIdx]);
+    if (!date || !timeRaw || isNaN(high) || isNaN(low)) continue;
+    const m = timeRaw.match(/(\d{2}):(\d{2})/);
+    if (!m) continue;
+    // normalize date to Y-M-D numeric parts for reliable matching regardless of leading zeros
+    const dm = date.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (!dm) continue;
+    const dateKey = `${+dm[1]}-${+dm[2]}-${+dm[3]}`;
+    const minutes = (+m[1]) * 60 + (+m[2]);
+    bars.push({ dateKey, minutes, high, low });
+    if (high > priceMax) priceMax = high;
+    if (low < priceMin) priceMin = low;
+  }
+  return { bars, priceMin: bars.length ? priceMin : null, priceMax: bars.length ? priceMax : null };
+}
+
+function timeToMinutes(hhmm) {
+  const m = String(hhmm || '').match(/(\d{1,2}):(\d{2})/);
+  return m ? (+m[1]) * 60 + (+m[2]) : null;
+}
+function dayKeyFromDate(dateStr) {
+  // journal_days date is stored as YYYY-MM-DD — normalize to match parseIntradayBars' dateKey
+  const m = String(dateStr).match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  return m ? `${+m[1]}-${+m[2]}-${+m[3]}` : null;
+}
+
 function parseTradovateCSV(csvText) {
   const lines = csvText.trim().split('\n').filter(l => l.trim().length > 0);
   if (lines.length < 2) return [];
@@ -1256,6 +1311,72 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId,onJumpT
     e.target.value = '';
   };
 
+  // Backfills MFE/MAE across the WHOLE account (not just the open day) by
+  // matching each trade missing MFE/MAE against an uploaded intraday bar
+  // file, using the trade's own entry/exit time window. Never overwrites a
+  // trade that already has MFE/MAE — only fills genuine blanks. A price-range
+  // sanity check guards against silently computing garbage numbers if the
+  // uploaded file is the wrong instrument.
+  const backfillFileRef = useRef();
+  const handleIntradayBackfill = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = '';
+    const text = await file.text();
+    const { bars, priceMin, priceMax } = parseIntradayBars(text);
+    if (bars.length === 0) {
+      window.alert("Couldn't read any bars from that file — expected Date/Time/High/Low columns from a Sierra Chart intraday export. Send it to Claude in your project chat if this keeps happening.");
+      return;
+    }
+    setImporting(true);
+    const barsByDate = {};
+    bars.forEach(b => { (barsByDate[b.dateKey] = barsByDate[b.dateKey] || []).push(b); });
+
+    const allDays = await loadAllDays(userId);
+    let updatedCount = 0, skippedWrongInstrument = 0, daysTouched = 0;
+
+    for (const row of allDays) {
+      const dKey = dayKeyFromDate(row.date);
+      const dayBars = barsByDate[dKey];
+      if (!dayBars) continue;
+      const trades = row.data?.trades || [];
+      let changed = false;
+      const newTrades = trades.map(t => {
+        if (!t.ticker || t.mfe || t.mae || !t.entryTime || !t.avgEntry) return t; // only fill genuine blanks
+        const avgEntry = parseFloat(t.avgEntry);
+        if (isNaN(avgEntry)) return t;
+        // sanity check: skip if this trade's price is nowhere near the file's range (wrong instrument)
+        if (priceMin != null && (avgEntry < priceMin - 1000 || avgEntry > priceMax + 1000)) {
+          skippedWrongInstrument++;
+          return t;
+        }
+        const entryMin = timeToMinutes(t.entryTime);
+        const exitMin = timeToMinutes(t.exitTime) ?? entryMin;
+        if (entryMin == null) return t;
+        let window = dayBars.filter(b => b.minutes >= entryMin && b.minutes <= exitMin);
+        if (window.length === 0) window = dayBars.filter(b => Math.abs(b.minutes - entryMin) <= 3);
+        if (window.length === 0) return t;
+        const hi = Math.max(...window.map(b => b.high));
+        const lo = Math.min(...window.map(b => b.low));
+        const mfe = t.direction === 'long' ? Math.max(0, hi - avgEntry) : Math.max(0, avgEntry - lo);
+        const mae = t.direction === 'long' ? Math.max(0, avgEntry - lo) : Math.max(0, hi - avgEntry);
+        changed = true; updatedCount++;
+        return { ...t, mfe: mfe.toFixed(2), mae: mae.toFixed(2) };
+      });
+      if (changed) {
+        daysTouched++;
+        await saveDay(row.date, { ...row.data, trades: newTrades }, userId);
+        if (row.date === date) onChange(newTrades); // reflect immediately if it's the open day
+      }
+    }
+    setImporting(false);
+    window.alert(
+      `MFE/MAE backfill complete.\n\n` +
+      `Updated: ${updatedCount} trade${updatedCount!==1?'s':''} across ${daysTouched} day${daysTouched!==1?'s':''}\n` +
+      (skippedWrongInstrument ? `Skipped (price didn't match this file's instrument): ${skippedWrongInstrument}\n` : '') +
+      `\nTrades that already had MFE/MAE were left untouched.`
+    );
+  };
 
   return(
     <div>
@@ -1302,6 +1423,15 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId,onJumpT
         }}>
           {importing?'⏳ Sorting into days...':'📂 Import Sierra Chart CSV'}
         </button>
+        <button onClick={()=>backfillFileRef.current.click()} disabled={importing} title="Upload an intraday (1-min) chart export to fill in real MFE/MAE for any trade missing it, across your whole account" style={{
+          flex:1,padding:'11px 14px',borderRadius:12,
+          border:`1.5px solid ${C.orange}`,background:C.orange+'15',
+          color:C.orange,fontFamily:'inherit',fontSize:12,fontWeight:600,cursor:importing?'not-allowed':'pointer',
+          display:'flex',alignItems:'center',justifyContent:'center',gap:6,opacity:importing?0.6:1,
+        }}>
+          {importing?'⏳ Computing...':'🎯 Backfill MFE/MAE'}
+        </button>
+        <input ref={backfillFileRef} type="file" accept=".csv,.txt" style={{display:'none'}} onChange={handleIntradayBackfill}/>
       </div>
 
       <SummaryBar trades={trades}/>
