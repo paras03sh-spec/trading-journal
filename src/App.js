@@ -751,10 +751,11 @@ function formatTime(ts) {
   const d = new Date(ts);
   const h = d.getUTCHours();
   const m = d.getUTCMinutes();
-  // Round to nearest 5 min
-  const rm = Math.round(m / 5) * 5;
+  // Exact minute — no rounding. Source timestamps (Tradovate/Sierra Chart)
+  // are real to the second; storing the precise minute instead of rounding
+  // to a 5-min bucket means entry/exit times reflect what actually happened.
   const fh = (h % 24).toString().padStart(2,'0');
-  const fm = (rm === 60 ? '00' : rm.toString().padStart(2,'0'));
+  const fm = m.toString().padStart(2,'0');
   return `${fh}:${fm}`;
 }
 
@@ -1018,6 +1019,134 @@ function dayKeyFromDate(dateStr) {
   return m ? `${+m[1]}-${+m[2]}-${+m[3]}` : null;
 }
 
+// Parses a Tradovate "Cash History" export. This is the ONLY export that
+// shows the TRUE all-in cost per fill — Fills.csv only has a "commission"
+// column, but every fill actually also carries an Exchange Fee, Clearing
+// Fee, and NFA Fee that don't appear there at all (confirmed: for MES on
+// this account, commission alone was only 41% of the real per-fill cost).
+// Each row here is one fee line item; we sum all fee-type rows (skipping
+// "Trade Paired" rows, which are realized P&L, not a fee) per timestamp to
+// get the true total cost of each fill.
+function parseCashHistory(csvText) {
+  const lines = csvText.trim().split('\n').filter(l => l.trim().length > 0);
+  if (lines.length < 2) return [];
+  const splitLine = line => {
+    // Amount column is quoted with a comma (e.g. "49,876.50") — can't just split on every comma
+    const out = []; let cur = ''; let inQuotes = false;
+    for (const ch of line) {
+      if (ch === '"') inQuotes = !inQuotes;
+      else if (ch === ',' && !inQuotes) { out.push(cur); cur = ''; }
+      else cur += ch;
+    }
+    out.push(cur);
+    return out.map(c => c.trim());
+  };
+  const headers = splitLine(lines[0]).map(h => h.toLowerCase());
+  const dateIdx = headers.indexOf('date');
+  const tsIdx = headers.indexOf('timestamp');
+  const deltaIdx = headers.indexOf('delta');
+  const typeIdx = headers.indexOf('cash change type');
+  const contractIdx = headers.indexOf('contract');
+  if (dateIdx < 0 || tsIdx < 0 || deltaIdx < 0 || typeIdx < 0) return [];
+
+  const feeTypes = ['exchange fee', 'clearing fee', 'nfa fee', 'commission'];
+  const entries = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitLine(lines[i]);
+    if (cols.length <= Math.max(dateIdx, tsIdx, deltaIdx, typeIdx)) continue;
+    const type = (cols[typeIdx] || '').toLowerCase();
+    if (!feeTypes.some(f => type.includes(f))) continue; // skip Trade Paired and anything else
+    const delta = Math.abs(parseFloat(cols[deltaIdx]) || 0);
+    const ts = cols[tsIdx]; // "MM/DD/YYYY HH:MM:SS" local time
+    const tm = ts.match(/(\d{1,2}):(\d{2}):(\d{2})/);
+    if (!tm) continue;
+    const dm = cols[dateIdx].match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (!dm) continue;
+    // Raw, uncorrected time — Cash History's own timezone is not guaranteed
+    // (confirmed once to be Mountain Time, not Eastern, but this could
+    // change). The actual offset is auto-detected and applied by the caller
+    // (applyCashHistoryToTrades) by calibrating against Fills.csv's reliable
+    // UTC timestamp, rather than assumed here.
+    entries.push({
+      dateKey: `${+dm[1]}-${+dm[2]}-${+dm[3]}`,
+      minutes: (+tm[1]) * 60 + (+tm[2]),
+      ticker: parseTicker(cols[contractIdx] || ''),
+      fee: delta,
+    });
+  }
+  return entries;
+}
+
+// Applies real Cash History fees onto a freshly-parsed batch of trades,
+// matching by (ticker, date, entry-exit time window) — same matching logic
+// as the standalone Correct Commission backfill, but run inline at import
+// time so trades come in with the TRUE commission from the start.
+// Auto-detects the time offset between Cash History's local timestamps and
+// the trades' already-correct Eastern times (derived from Fills.csv's
+// reliable UTC timestamp). Confirmed once that Cash History uses Mountain
+// Time, not Eastern — but that could change, or a different broker's export
+// could use a different zone entirely. Rather than hardcode an assumption OR
+// naively match each trade to its "closest" Cash History entry (which fails
+// when trades are spaced closer together than the offset itself, causing
+// wrong pairings), this votes: compute the rounded-to-nearest-hour gap for
+// EVERY (trade, same-day-same-ticker cash entry) pair, and take the most
+// common value. The correct offset aligns many pairs at once; a wrong one
+// only coincidentally aligns a few — the vote finds the real signal.
+function detectCashHistoryOffsetMinutes(trades, cashEntries) {
+  const byDateTicker = {};
+  cashEntries.forEach(en => {
+    const key = `${en.dateKey}|${en.ticker}`;
+    (byDateTicker[key] = byDateTicker[key] || []).push(en);
+  });
+  const votes = {};
+  trades.forEach(t => {
+    if (!t.ticker || !t.entryTime || !t._importDate) return;
+    const key = `${dayKeyFromDate(t._importDate)}|${t.ticker}`;
+    const dayFees = byDateTicker[key];
+    if (!dayFees || dayFees.length === 0) return;
+    [t.entryTime, t.exitTime].forEach(timeStr => {
+      const min = timeToMinutes(timeStr);
+      if (min == null) return;
+      dayFees.forEach(f => {
+        const roundedGap = Math.round((min - f.minutes) / 60) * 60;
+        votes[roundedGap] = (votes[roundedGap] || 0) + 1;
+      });
+    });
+  });
+  const entries = Object.entries(votes);
+  if (entries.length === 0) return null; // couldn't calibrate — caller must fall back safely
+  entries.sort((a, b) => b[1] - a[1]); // most votes first
+  return +entries[0][0];
+}
+
+function applyCashHistoryToTrades(trades, cashEntries) {
+  if (!cashEntries || cashEntries.length === 0) return { trades, offsetApplied: null, calibrated: false };
+  const offset = detectCashHistoryOffsetMinutes(trades, cashEntries);
+  const calibrated = offset != null;
+  const finalOffset = calibrated ? offset : 0; // uncalibrated: apply no shift rather than guess wrong
+
+  const adjusted = cashEntries.map(en => ({ ...en, minutes: en.minutes + finalOffset }));
+  const byDateTicker = {};
+  adjusted.forEach(en => {
+    const key = `${en.dateKey}|${en.ticker}`;
+    (byDateTicker[key] = byDateTicker[key] || []).push(en);
+  });
+  const newTrades = trades.map(t => {
+    if (!t.ticker || !t.entryTime || !t._importDate) return t;
+    const key = `${dayKeyFromDate(t._importDate)}|${t.ticker}`;
+    const dayFees = byDateTicker[key];
+    if (!dayFees) return t;
+    const entryMin = timeToMinutes(t.entryTime);
+    const exitMin = timeToMinutes(t.exitTime) ?? entryMin;
+    if (entryMin == null) return t;
+    const window = dayFees.filter(f => f.minutes >= entryMin - 1 && f.minutes <= exitMin + 1);
+    if (window.length === 0) return t;
+    const trueFee = window.reduce((s, f) => s + f.fee, 0);
+    return { ...t, commission: trueFee.toFixed(2) };
+  });
+  return { trades: newTrades, offsetApplied: finalOffset, calibrated };
+}
+
 function parseTradovateCSV(csvText) {
   const lines = csvText.trim().split('\n').filter(l => l.trim().length > 0);
   if (lines.length < 2) return [];
@@ -1271,7 +1400,7 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId,onJumpT
   // to be open) and writes each group directly to its correct day in
   // Supabase. If the currently-open day is among them, also updates the live
   // view so it's visible immediately without a manual date-navigate+reload.
-  const routeTradesByDate = async (parsed) => {
+  const routeTradesByDate = async (parsed, commissionStatus) => {
     setImporting(true);
     const groups = {};
     parsed.forEach(t => {
@@ -1292,23 +1421,52 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId,onJumpT
       if (d === date) onChange(merged); // reflect immediately if it's the open day
     }
     setImporting(false);
-    window.alert(`Imported ${parsed.length} trade${parsed.length!==1?'s':''} across ${Object.keys(groups).length} day${Object.keys(groups).length!==1?'s':''}:\n\n${summary.join('\n')}\n\nSwitch dates in the sidebar to see days other than today.`);
+    window.alert(`Imported ${parsed.length} trade${parsed.length!==1?'s':''} across ${Object.keys(groups).length} day${Object.keys(groups).length!==1?'s':''}:\n\n${summary.join('\n')}\n\n` +
+      (commissionStatus ? commissionStatus + '\n\n' : '') +
+      `Switch dates in the sidebar to see days other than today.`);
   };
 
-  const handleSierraCSV = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const parsed = parseFillsCSV(ev.target.result);
-      if (parsed.length === 0 || (parsed.length === 1 && !parsed[0].ticker)) {
-        window.alert("Couldn't find any trades in that file. This usually means the column names in your Sierra Chart export don't match what the app expects. Send this file to Claude in your project chat and it'll fix the column mapping.");
-        return;
-      }
-      routeTradesByDate(parsed);
-    };
-    reader.readAsText(file);
+  const handleSierraCSV = async (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
     e.target.value = '';
+
+    const texts = await Promise.all(files.map(f => f.text()));
+
+    // Separate Cash History file(s) from the trade/fills file(s) — detect by
+    // the "cash change type" header, which only Cash History exports have.
+    let fillsText = null;
+    let cashEntries = [];
+    texts.forEach(text => {
+      const firstLine = (text.trim().split('\n')[0] || '').toLowerCase();
+      if (firstLine.includes('cash change type')) {
+        cashEntries = cashEntries.concat(parseCashHistory(text));
+      } else if (!fillsText) {
+        fillsText = text;
+      }
+    });
+
+    if (!fillsText) {
+      window.alert("Didn't find a trades/fills file — only Cash History was selected. Select your Fills.csv (or Sierra Chart export) too, optionally together with Cash History for accurate commission in one step.");
+      return;
+    }
+
+    let parsed = parseFillsCSV(fillsText);
+    if (parsed.length === 0 || (parsed.length === 1 && !parsed[0].ticker)) {
+      window.alert("Couldn't find any trades in that file. This usually means the column names in your Sierra Chart export don't match what the app expects. Send this file to Claude in your project chat and it'll fix the column mapping.");
+      return;
+    }
+
+    let commissionStatus = null; // null = no Cash History given at all
+    if (cashEntries.length > 0) {
+      const result = applyCashHistoryToTrades(parsed, cashEntries);
+      parsed = result.trades;
+      commissionStatus = result.calibrated
+        ? `✓ Commission set from Cash History (auto-detected ${result.offsetApplied >= 0 ? '+' : ''}${result.offsetApplied/60}h offset, true all-in fee).`
+        : `⚠ Cash History was provided, but couldn't auto-calibrate its timezone against your trades — commission was NOT corrected. Try importing again, or check the file covers the same dates as your trades.`;
+    }
+
+    routeTradesByDate(parsed, commissionStatus);
   };
 
   // Backfills MFE/MAE across the WHOLE account (not just the open day) by
@@ -1378,10 +1536,91 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId,onJumpT
     );
   };
 
+  // Corrects commission across the WHOLE account using a Tradovate Cash
+  // History export — the only export with the TRUE all-in fee (Exchange +
+  // Clearing + NFA + Commission), vs. Fills.csv which only has the
+  // Commission portion alone. Unlike MFE/MAE backfill, this OVERWRITES the
+  // existing commission value, since we're correcting a wrong number, not
+  // filling a blank — the old value understated the real cost.
+  const commissionFileRef = useRef();
+  const handleCommissionBackfill = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    e.target.value = '';
+    const text = await file.text();
+    const entries = parseCashHistory(text);
+    if (entries.length === 0) {
+      window.alert("Couldn't find fee rows in that file — expected a Tradovate Cash History export (Date/Timestamp/Delta/Cash Change Type columns). Send it to Claude in your project chat if this keeps happening.");
+      return;
+    }
+    setImporting(true);
+    const allDays = await loadAllDays(userId);
+    // Flatten every real trade (with its day-date attached) so we can
+    // calibrate Cash History's timezone against ALL of them at once, same
+    // as the inline-import path — self-detecting, not a hardcoded offset.
+    const allTradesFlat = [];
+    allDays.forEach(row => (row.data?.trades || []).forEach(t => {
+      if (t.ticker && t.entryTime) allTradesFlat.push({ ...t, _importDate: row.date });
+    }));
+    const offset = detectCashHistoryOffsetMinutes(allTradesFlat, entries);
+    if (offset == null) {
+      setImporting(false);
+      window.alert("Couldn't auto-calibrate this file's timezone against any of your trades — no matching dates/tickers found. Nothing was changed.");
+      return;
+    }
+    const adjustedEntries = entries.map(en => ({ ...en, minutes: en.minutes + offset }));
+
+    const byDateTicker = {};
+    adjustedEntries.forEach(en => {
+      const key = `${en.dateKey}|${en.ticker}`;
+      (byDateTicker[key] = byDateTicker[key] || []).push(en);
+    });
+
+    let updatedCount = 0, unchangedCount = 0, daysTouched = 0;
+    let totalOldComm = 0, totalNewComm = 0;
+
+    for (const row of allDays) {
+      const dKey = dayKeyFromDate(row.date);
+      const trades = row.data?.trades || [];
+      let changed = false;
+      const newTrades = trades.map(t => {
+        if (!t.ticker || !t.entryTime) return t;
+        const key = `${dKey}|${t.ticker}`;
+        const dayFees = byDateTicker[key];
+        if (!dayFees) return t;
+        const entryMin = timeToMinutes(t.entryTime);
+        const exitMin = timeToMinutes(t.exitTime) ?? entryMin;
+        if (entryMin == null) return t;
+        const window = dayFees.filter(f => f.minutes >= entryMin - 1 && f.minutes <= exitMin + 1);
+        if (window.length === 0) return t;
+        const trueFee = window.reduce((s, f) => s + f.fee, 0);
+        const oldFee = parseFloat(t.commission) || 0;
+        if (Math.abs(trueFee - oldFee) < 0.01) { unchangedCount++; return t; }
+        totalOldComm += oldFee; totalNewComm += trueFee;
+        changed = true; updatedCount++;
+        return { ...t, commission: trueFee.toFixed(2) };
+      });
+      if (changed) {
+        daysTouched++;
+        await saveDay(row.date, { ...row.data, trades: newTrades }, userId);
+        if (row.date === date) onChange(newTrades);
+      }
+    }
+    setImporting(false);
+    window.alert(
+      `Commission correction complete.\n\n` +
+      `Auto-detected timezone offset: ${offset >= 0 ? '+' : ''}${offset/60}h\n` +
+      `Corrected: ${updatedCount} trade${updatedCount!==1?'s':''} across ${daysTouched} day${daysTouched!==1?'s':''}\n` +
+      (updatedCount ? `Total commission: $${totalOldComm.toFixed(2)} → $${totalNewComm.toFixed(2)}\n` : '') +
+      (unchangedCount ? `Already correct: ${unchangedCount}\n` : '') +
+      `\nOnly trades with a matching fee window in this file were touched.`
+    );
+  };
+
   return(
     <div>
       {showTradovate && <TradovateImportModal onClose={()=>setShowTradovate(false)} onImport={handleTradovateImport}/>}
-      <input ref={fileRef} type="file" accept=".csv,.txt" style={{display:'none'}} onChange={handleSierraCSV}/>
+      <input ref={fileRef} type="file" accept=".csv,.txt" multiple style={{display:'none'}} onChange={handleSierraCSV}/>
 
       {/* Pending tags — visible before importing more, so you see the backlog first */}
       {pending && pending.length > 0 && (
@@ -1406,7 +1645,7 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId,onJumpT
       )}
 
       {/* Import buttons */}
-      <div style={{display:'flex',gap:10,marginBottom:16}}>
+      <div style={{display:'flex',gap:10,marginBottom:10}}>
         <button onClick={()=>setShowTradovate(true)} style={{
           flex:1,padding:'11px 14px',borderRadius:12,
           border:`1.5px solid ${C.blue}`,background:(C.blue)+'15',
@@ -1415,14 +1654,17 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId,onJumpT
         }}>
           📥 Import from Tradovate
         </button>
-        <button onClick={()=>fileRef.current.click()} disabled={importing} style={{
+        <button onClick={()=>fileRef.current.click()} disabled={importing} title="Select your Fills/Sierra Chart file — hold Ctrl/Cmd to also select a Cash History export for accurate commission in one step" style={{
           flex:1,padding:'11px 14px',borderRadius:12,
           border:`1.5px solid ${C.purple}`,background:C.purple+'15',
           color:C.purple,fontFamily:'inherit',fontSize:12,fontWeight:600,cursor:importing?'not-allowed':'pointer',
           display:'flex',alignItems:'center',justifyContent:'center',gap:6,opacity:importing?0.6:1,
         }}>
-          {importing?'⏳ Sorting into days...':'📂 Import Sierra Chart CSV'}
+          {importing?'⏳ Sorting into days...':'📂 Import CSV (+ Cash History)'}
         </button>
+      </div>
+      <div style={{fontSize:10,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700,marginBottom:8}}>Corrections — run anytime, safe to repeat</div>
+      <div style={{display:'flex',gap:10,marginBottom:16}}>
         <button onClick={()=>backfillFileRef.current.click()} disabled={importing} title="Upload an intraday (1-min) chart export to fill in real MFE/MAE for any trade missing it, across your whole account" style={{
           flex:1,padding:'11px 14px',borderRadius:12,
           border:`1.5px solid ${C.orange}`,background:C.orange+'15',
@@ -1431,7 +1673,16 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId,onJumpT
         }}>
           {importing?'⏳ Computing...':'🎯 Backfill MFE/MAE'}
         </button>
+        <button onClick={()=>commissionFileRef.current.click()} disabled={importing} title="Upload a Tradovate Cash History export to correct commission with the true all-in fee (Exchange + Clearing + NFA + Commission), across your whole account" style={{
+          flex:1,padding:'11px 14px',borderRadius:12,
+          border:`1.5px solid ${C.red}`,background:C.red+'15',
+          color:C.red,fontFamily:'inherit',fontSize:12,fontWeight:600,cursor:importing?'not-allowed':'pointer',
+          display:'flex',alignItems:'center',justifyContent:'center',gap:6,opacity:importing?0.6:1,
+        }}>
+          {importing?'⏳ Correcting...':'💰 Correct Commission'}
+        </button>
         <input ref={backfillFileRef} type="file" accept=".csv,.txt" style={{display:'none'}} onChange={handleIntradayBackfill}/>
+        <input ref={commissionFileRef} type="file" accept=".csv,.txt" style={{display:'none'}} onChange={handleCommissionBackfill}/>
       </div>
 
       <SummaryBar trades={trades}/>
@@ -1559,6 +1810,23 @@ function computeStats(trades){
     ddSeries.push({date:d,val:-dd});
   });
 
+  // Per-day R total + win/loss counts, for the calendar's "1.46 · 1W 1L" cells
+  const dayRMap={};
+  closed.forEach(t=>{
+    if(!dayRMap[t.date])dayRMap[t.date]={r:0,w:0,l:0,be:0,hasR:false};
+    const dr=dayRMap[t.date];
+    if(t.rawRR!=null&&t.sl>0){dr.r+=t.rawRR;dr.hasR=true;}
+    if(t.result==='W')dr.w++; else if(t.result==='L')dr.l++; else if(t.result==='BE')dr.be++;
+  });
+
+  // Gain-to-Pain Ratio: sum of all UP days ÷ |sum of all DOWN days| — a
+  // period-level risk-adjusted-return measure, distinct from Profit Factor
+  // (which compares individual trades, not days). >1 means gains outweigh
+  // the pain of drawdown days; higher is more resilient.
+  const upDaysSum=dailyPnl.filter(d=>d.val>0).reduce((s,d)=>s+d.val,0);
+  const downDaysSum=Math.abs(dailyPnl.filter(d=>d.val<0).reduce((s,d)=>s+d.val,0));
+  const gainToPain=downDaysSum>0?upDaysSum/downDaysSum:(upDaysSum>0?99:0);
+
   // Streak
   let streak=0;
   for(let i=closed.length-1;i>=0;i--){
@@ -1624,7 +1892,7 @@ function computeStats(trades){
     totalTrades:closed.length, wins:wins.length, losses:losses.length,
     be:closed.filter(t=>t.result==='BE').length,
     winRate, totalPnl, profitFactor, avgWin, avgLoss, avgWinRR, expectancy,
-    maxDD, streak, equity, dailyPnl, ddSeries, dayMap,
+    maxDD, streak, equity, dailyPnl, ddSeries, dayMap, dayRMap, gainToPain,
     bySetup:breakdown(t=>t.setup),
     bySession:breakdown(t=>t.session),
     byInstrument:breakdown(t=>t.ticker),
@@ -1775,7 +2043,7 @@ function RMultipleHistogram({allR,height=160}){
   );
 }
 
-function HeatCalendar({dayMap}){
+function HeatCalendar({dayMap, dayRMap}){
   const dates=Object.keys(dayMap).sort();
   if(dates.length===0)return <div style={{color:C.textDim,fontSize:12,padding:'16px 0',textAlign:'center'}}>No data yet</div>;
   // Group by month
@@ -1792,7 +2060,7 @@ function HeatCalendar({dayMap}){
         for(let i=0;i<startDow;i++)cells.push(null);
         for(let d=1;d<=daysInMonth;d++){
           const ds2=`${m}-${d.toString().padStart(2,'0')}`;
-          cells.push({day:d,pnl:dayMap[ds2]});
+          cells.push({day:d,pnl:dayMap[ds2],r:dayRMap?.[ds2]});
         }
         return(
           <div key={m}>
@@ -1804,14 +2072,27 @@ function HeatCalendar({dayMap}){
                 const has=c.pnl!==undefined;
                 const intensity=has?Math.min(Math.abs(c.pnl)/maxAbs,1):0;
                 const col=has?(c.pnl>=0?C.green:C.red):null;
+                const r=c.r;
                 return(
-                  <div key={i} title={has?`$${c.pnl.toFixed(0)}`:''} style={{
-                    aspectRatio:'1',borderRadius:4,display:'flex',alignItems:'center',justifyContent:'center',
-                    background:has?col+Math.round(20+intensity*60).toString(16).padStart(2,'0'):C.surface,
+                  <div key={i} title={has?`$${c.pnl.toFixed(0)}${r?.hasR?` · ${r.r>=0?'+':''}${r.r.toFixed(2)}R`:''}`:''} style={{
+                    minHeight:56,borderRadius:4,display:'flex',flexDirection:'column',padding:'3px 4px',
+                    background:has?col+Math.round(14+intensity*40).toString(16).padStart(2,'0'):C.surface,
                     border:`1px solid ${has?col+'44':C.border}`,
-                    fontSize:9,color:has?C.text:C.textDim,fontWeight:has?700:400,
-                    cursor:has?'default':'default',
-                  }}>{c.day}</div>
+                  }}>
+                    <span style={{fontSize:9,color:has?C.textMut:C.textDim,fontWeight:400}}>{c.day}</span>
+                    {has&&(
+                      <div style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:1}}>
+                        {r?.hasR ? (
+                          <span style={{fontSize:12,fontWeight:800,color:r.r>=0?C.green:C.red}}>{r.r>=0?'+':''}{r.r.toFixed(2)}</span>
+                        ) : (
+                          <span style={{fontSize:11,fontWeight:700,color:col}}>{c.pnl>=0?'+':''}${Math.abs(c.pnl)>=1000?(c.pnl/1000).toFixed(1)+'k':c.pnl.toFixed(0)}</span>
+                        )}
+                        {r&&(r.w||r.l)?(
+                          <span style={{fontSize:8,color:C.textMut}}>{r.w?`${r.w}W`:''}{r.w&&r.l?' ':''}{r.l?`${r.l}L`:''}</span>
+                        ):null}
+                      </div>
+                    )}
+                  </div>
                 );
               })}
             </div>
@@ -2232,6 +2513,7 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
         <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(5,1fr)',gap:10,marginBottom:16}}>
           <BigStat label="Sharpe (daily)" val={s.nDays>=5?s.sharpe.toFixed(2):'—'} col={s.sharpe>=0.5?C.green:s.sharpe>=0?C.yellow:C.red} sub={s.nDays<15?`⚠ only ${s.nDays} days`:`${s.nDays} trading days`}/>
           <BigStat label="Sortino (daily)" val={s.nDays>=5?s.sortino.toFixed(2):'—'} col={s.sortino>=0.7?C.green:s.sortino>=0?C.yellow:C.red} sub={s.nDays<15?`⚠ only ${s.nDays} days`:'downside-only'}/>
+          <BigStat label="Gain-to-Pain" val={s.nDays>=1?(s.gainToPain>=99?'∞':s.gainToPain.toFixed(2)):'—'} col={s.gainToPain>=1.5?C.green:s.gainToPain>=1?C.yellow:C.red} sub="up days ÷ down days ($)"/>
           <BigStat label="Total Commission" val={s.totalCommission?`-$${s.totalCommission.toFixed(2)}`:'—'} col={C.textMut} sub={s.totalCommission?`${((s.totalCommission/Math.max(Math.abs(s.totalPnl+s.totalCommission),1))*100).toFixed(1)}% of gross`:'none tracked'}/>
         </div>
         <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
@@ -2242,7 +2524,7 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
             <SvgLineChart series={s.ddSeries} color={C.orange}/>
           </ChartCard>
           <ChartCard title="Daily P&L"><SvgBarChart series={s.dailyPnl}/></ChartCard>
-          <ChartCard title="P&L Calendar"><HeatCalendar dayMap={s.dayMap}/></ChartCard>
+          <ChartCard title="P&L Calendar" sub="R-value + win/loss count when SL is entered, otherwise $ P&L"><HeatCalendar dayMap={s.dayMap} dayRMap={s.dayRMap}/></ChartCard>
           <ChartCard title="R-Multiple Distribution" sub="Every closed trade, real signed R — not an assumed -1R on losses">
             <RMultipleHistogram allR={s.allR}/>
           </ChartCard>
