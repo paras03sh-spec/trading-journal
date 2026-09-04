@@ -1348,7 +1348,6 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId,onJumpT
   };
   const remove=(i)=>onChange(trades.filter((_,j)=>j!==i));
   const [showTradovate,setShowTradovate] = useState(false);
-  const fileRef = useRef();
   const [pending,setPending] = useState(null); // days with untagged setup/SL, loaded once per visit
 
   useEffect(()=>{
@@ -1400,227 +1399,181 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId,onJumpT
   // to be open) and writes each group directly to its correct day in
   // Supabase. If the currently-open day is among them, also updates the live
   // view so it's visible immediately without a manual date-navigate+reload.
-  const routeTradesByDate = async (parsed, commissionStatus) => {
-    setImporting(true);
-    const groups = {};
-    parsed.forEach(t => {
-      const d = t._importDate || date; // fallback to open day if somehow missing
-      (groups[d] = groups[d] || []).push({ ...t, _importDate: undefined });
-    });
-    const summary = [];
-    for (const [d, newTradesRaw] of Object.entries(groups)) {
-      let dayData;
-      try { dayData = await loadDay(d, userId); } catch (_) { dayData = null; }
-      if (!dayData) dayData = emptyDay();
-      const existingKept = (dayData.trades || []).filter(t => t.ticker || t.notes);
-      const newTrades = inheritDayContext(existingKept, newTradesRaw);
-      const merged = [...existingKept, ...newTrades];
-      const updatedDay = { ...dayData, trades: merged };
-      await saveDay(d, updatedDay, userId);
-      summary.push(`${d}: +${newTrades.length}`);
-      if (d === date) onChange(merged); // reflect immediately if it's the open day
-    }
-    setImporting(false);
-    window.alert(`Imported ${parsed.length} trade${parsed.length!==1?'s':''} across ${Object.keys(groups).length} day${Object.keys(groups).length!==1?'s':''}:\n\n${summary.join('\n')}\n\n` +
-      (commissionStatus ? commissionStatus + '\n\n' : '') +
-      `Switch dates in the sidebar to see days other than today.`);
-  };
-
-  const handleSierraCSV = async (e) => {
+  // ONE import handler for everything: select any combination of files —
+  // Fills/Sierra Chart trades, Cash History (true commission), intraday bars
+  // (MFE/MAE) — and it auto-detects each by header signature and runs
+  // whatever applies. No need to remember which button does what.
+  const backfillFileRef = useRef();
+  const handleUnifiedImport = async (e) => {
     const files = Array.from(e.target.files || []);
     if (files.length === 0) return;
     e.target.value = '';
-
     const texts = await Promise.all(files.map(f => f.text()));
 
-    // Separate Cash History file(s) from the trade/fills file(s) — detect by
-    // the "cash change type" header, which only Cash History exports have.
     let fillsText = null;
     let cashEntries = [];
-    texts.forEach(text => {
+    let intradayData = null; // { bars, priceMin, priceMax }
+    const unrecognized = [];
+
+    texts.forEach((text, i) => {
       const firstLine = (text.trim().split('\n')[0] || '').toLowerCase();
       if (firstLine.includes('cash change type')) {
         cashEntries = cashEntries.concat(parseCashHistory(text));
-      } else if (!fillsText) {
-        fillsText = text;
+      } else if (firstLine.includes('activitytype') || firstLine.includes('fillprice') || firstLine.includes('highduringposition') || firstLine.includes('b/s') || firstLine.includes('_timestamp') || firstLine.includes('fill id')) {
+        if (!fillsText) fillsText = text;
+      } else if (firstLine.includes('date') && firstLine.includes('time') && firstLine.includes('high') && firstLine.includes('low')) {
+        const parsed = parseIntradayBars(text);
+        if (parsed.bars.length > 0) intradayData = parsed;
+      } else {
+        unrecognized.push(files[i].name);
       }
     });
 
-    if (!fillsText) {
-      window.alert("Didn't find a trades/fills file — only Cash History was selected. Select your Fills.csv (or Sierra Chart export) too, optionally together with Cash History for accurate commission in one step.");
+    if (!fillsText && cashEntries.length === 0 && !intradayData) {
+      window.alert("Couldn't recognize any of the selected file(s). Expected a Fills/Sierra Chart export, a Cash History export, and/or an intraday bar chart export. Send it to Claude in your project chat if this keeps happening.");
       return;
     }
 
-    let parsed = parseFillsCSV(fillsText);
-    if (parsed.length === 0 || (parsed.length === 1 && !parsed[0].ticker)) {
-      window.alert("Couldn't find any trades in that file. This usually means the column names in your Sierra Chart export don't match what the app expects. Send this file to Claude in your project chat and it'll fix the column mapping.");
-      return;
-    }
-
-    let commissionStatus = null; // null = no Cash History given at all
-    if (cashEntries.length > 0) {
-      const result = applyCashHistoryToTrades(parsed, cashEntries);
-      parsed = result.trades;
-      commissionStatus = result.calibrated
-        ? `✓ Commission set from Cash History (auto-detected ${result.offsetApplied >= 0 ? '+' : ''}${result.offsetApplied/60}h offset, true all-in fee).`
-        : `⚠ Cash History was provided, but couldn't auto-calibrate its timezone against your trades — commission was NOT corrected. Try importing again, or check the file covers the same dates as your trades.`;
-    }
-
-    routeTradesByDate(parsed, commissionStatus);
-  };
-
-  // Backfills MFE/MAE across the WHOLE account (not just the open day) by
-  // matching each trade missing MFE/MAE against an uploaded intraday bar
-  // file, using the trade's own entry/exit time window. Never overwrites a
-  // trade that already has MFE/MAE — only fills genuine blanks. A price-range
-  // sanity check guards against silently computing garbage numbers if the
-  // uploaded file is the wrong instrument.
-  const backfillFileRef = useRef();
-  const handleIntradayBackfill = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    e.target.value = '';
-    const text = await file.text();
-    const { bars, priceMin, priceMax } = parseIntradayBars(text);
-    if (bars.length === 0) {
-      window.alert("Couldn't read any bars from that file — expected Date/Time/High/Low columns from a Sierra Chart intraday export. Send it to Claude in your project chat if this keeps happening.");
-      return;
-    }
     setImporting(true);
-    const barsByDate = {};
-    bars.forEach(b => { (barsByDate[b.dateKey] = barsByDate[b.dateKey] || []).push(b); });
+    const summaryParts = [];
 
-    const allDays = await loadAllDays(userId);
-    let updatedCount = 0, skippedWrongInstrument = 0, daysTouched = 0;
-
-    for (const row of allDays) {
-      const dKey = dayKeyFromDate(row.date);
-      const dayBars = barsByDate[dKey];
-      if (!dayBars) continue;
-      const trades = row.data?.trades || [];
-      let changed = false;
-      const newTrades = trades.map(t => {
-        if (!t.ticker || t.mfe || t.mae || !t.entryTime || !t.avgEntry) return t; // only fill genuine blanks
-        const avgEntry = parseFloat(t.avgEntry);
-        if (isNaN(avgEntry)) return t;
-        // sanity check: skip if this trade's price is nowhere near the file's range (wrong instrument)
-        if (priceMin != null && (avgEntry < priceMin - 1000 || avgEntry > priceMax + 1000)) {
-          skippedWrongInstrument++;
-          return t;
+    // 1. New trades, if a Fills/Sierra Chart file was included
+    if (fillsText) {
+      let parsed = parseFillsCSV(fillsText);
+      if (parsed.length === 0 || (parsed.length === 1 && !parsed[0].ticker)) {
+        summaryParts.push("Couldn't find any trades in the fills file — column names may not match what the app expects.");
+      } else {
+        if (cashEntries.length > 0) {
+          const result = applyCashHistoryToTrades(parsed, cashEntries);
+          parsed = result.trades;
+          summaryParts.push(result.calibrated
+            ? `✓ New trades' commission set from Cash History (auto-detected ${result.offsetApplied >= 0 ? '+' : ''}${result.offsetApplied/60}h offset).`
+            : `⚠ Cash History given, but couldn't auto-calibrate its timezone for the new trades.`);
         }
-        const entryMin = timeToMinutes(t.entryTime);
-        const exitMin = timeToMinutes(t.exitTime) ?? entryMin;
-        if (entryMin == null) return t;
-        let window = dayBars.filter(b => b.minutes >= entryMin && b.minutes <= exitMin);
-        if (window.length === 0) window = dayBars.filter(b => Math.abs(b.minutes - entryMin) <= 3);
-        if (window.length === 0) return t;
-        const hi = Math.max(...window.map(b => b.high));
-        const lo = Math.min(...window.map(b => b.low));
-        const mfe = t.direction === 'long' ? Math.max(0, hi - avgEntry) : Math.max(0, avgEntry - lo);
-        const mae = t.direction === 'long' ? Math.max(0, avgEntry - lo) : Math.max(0, hi - avgEntry);
-        changed = true; updatedCount++;
-        return { ...t, mfe: mfe.toFixed(2), mae: mae.toFixed(2) };
-      });
-      if (changed) {
-        daysTouched++;
-        await saveDay(row.date, { ...row.data, trades: newTrades }, userId);
-        if (row.date === date) onChange(newTrades); // reflect immediately if it's the open day
+        const groups = {};
+        parsed.forEach(t => {
+          const d = t._importDate || date;
+          (groups[d] = groups[d] || []).push({ ...t, _importDate: undefined });
+        });
+        let totalNew = 0;
+        for (const [d, newTradesRaw] of Object.entries(groups)) {
+          let dayData;
+          try { dayData = await loadDay(d, userId); } catch (_) { dayData = null; }
+          if (!dayData) dayData = emptyDay();
+          const existingKept = (dayData.trades || []).filter(t => t.ticker || t.notes);
+          const newTrades = inheritDayContext(existingKept, newTradesRaw);
+          const merged = [...existingKept, ...newTrades];
+          await saveDay(d, { ...dayData, trades: merged }, userId);
+          totalNew += newTrades.length;
+          if (d === date) onChange(merged);
+        }
+        summaryParts.push(`Imported ${totalNew} trade${totalNew!==1?'s':''} across ${Object.keys(groups).length} day${Object.keys(groups).length!==1?'s':''}.`);
       }
     }
-    setImporting(false);
-    window.alert(
-      `MFE/MAE backfill complete.\n\n` +
-      `Updated: ${updatedCount} trade${updatedCount!==1?'s':''} across ${daysTouched} day${daysTouched!==1?'s':''}\n` +
-      (skippedWrongInstrument ? `Skipped (price didn't match this file's instrument): ${skippedWrongInstrument}\n` : '') +
-      `\nTrades that already had MFE/MAE were left untouched.`
-    );
-  };
 
-  // Corrects commission across the WHOLE account using a Tradovate Cash
-  // History export — the only export with the TRUE all-in fee (Exchange +
-  // Clearing + NFA + Commission), vs. Fills.csv which only has the
-  // Commission portion alone. Unlike MFE/MAE backfill, this OVERWRITES the
-  // existing commission value, since we're correcting a wrong number, not
-  // filling a blank — the old value understated the real cost.
-  const commissionFileRef = useRef();
-  const handleCommissionBackfill = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    e.target.value = '';
-    const text = await file.text();
-    const entries = parseCashHistory(text);
-    if (entries.length === 0) {
-      window.alert("Couldn't find fee rows in that file — expected a Tradovate Cash History export (Date/Timestamp/Delta/Cash Change Type columns). Send it to Claude in your project chat if this keeps happening.");
-      return;
-    }
-    setImporting(true);
-    const allDays = await loadAllDays(userId);
-    // Flatten every real trade (with its day-date attached) so we can
-    // calibrate Cash History's timezone against ALL of them at once, same
-    // as the inline-import path — self-detecting, not a hardcoded offset.
-    const allTradesFlat = [];
-    allDays.forEach(row => (row.data?.trades || []).forEach(t => {
-      if (t.ticker && t.entryTime) allTradesFlat.push({ ...t, _importDate: row.date });
-    }));
-    const offset = detectCashHistoryOffsetMinutes(allTradesFlat, entries);
-    if (offset == null) {
-      setImporting(false);
-      window.alert("Couldn't auto-calibrate this file's timezone against any of your trades — no matching dates/tickers found. Nothing was changed.");
-      return;
-    }
-    const adjustedEntries = entries.map(en => ({ ...en, minutes: en.minutes + offset }));
-
-    const byDateTicker = {};
-    adjustedEntries.forEach(en => {
-      const key = `${en.dateKey}|${en.ticker}`;
-      (byDateTicker[key] = byDateTicker[key] || []).push(en);
-    });
-
-    let updatedCount = 0, unchangedCount = 0, daysTouched = 0;
-    let totalOldComm = 0, totalNewComm = 0;
-
-    for (const row of allDays) {
-      const dKey = dayKeyFromDate(row.date);
-      const trades = row.data?.trades || [];
-      let changed = false;
-      const newTrades = trades.map(t => {
-        if (!t.ticker || !t.entryTime) return t;
-        const key = `${dKey}|${t.ticker}`;
-        const dayFees = byDateTicker[key];
-        if (!dayFees) return t;
-        const entryMin = timeToMinutes(t.entryTime);
-        const exitMin = timeToMinutes(t.exitTime) ?? entryMin;
-        if (entryMin == null) return t;
-        const window = dayFees.filter(f => f.minutes >= entryMin - 1 && f.minutes <= exitMin + 1);
-        if (window.length === 0) return t;
-        const trueFee = window.reduce((s, f) => s + f.fee, 0);
-        const oldFee = parseFloat(t.commission) || 0;
-        if (Math.abs(trueFee - oldFee) < 0.01) { unchangedCount++; return t; }
-        totalOldComm += oldFee; totalNewComm += trueFee;
-        changed = true; updatedCount++;
-        return { ...t, commission: trueFee.toFixed(2) };
-      });
-      if (changed) {
-        daysTouched++;
-        await saveDay(row.date, { ...row.data, trades: newTrades }, userId);
-        if (row.date === date) onChange(newTrades);
+    // 2. Cash History — ALSO correct commission across the WHOLE account
+    // (covers trades from past imports, not just this batch)
+    if (cashEntries.length > 0) {
+      const allDays = await loadAllDays(userId);
+      const allTradesFlat = [];
+      allDays.forEach(row => (row.data?.trades || []).forEach(t => {
+        if (t.ticker && t.entryTime) allTradesFlat.push({ ...t, _importDate: row.date });
+      }));
+      const offset = detectCashHistoryOffsetMinutes(allTradesFlat, cashEntries);
+      if (offset == null) {
+        summaryParts.push(`Cash History: couldn't auto-calibrate timezone against existing trades — no retroactive corrections made.`);
+      } else {
+        const adjustedEntries = cashEntries.map(en => ({ ...en, minutes: en.minutes + offset }));
+        const byDateTicker = {};
+        adjustedEntries.forEach(en => {
+          const key = `${en.dateKey}|${en.ticker}`;
+          (byDateTicker[key] = byDateTicker[key] || []).push(en);
+        });
+        let commUpdated = 0, commDays = 0;
+        for (const row of allDays) {
+          const dKey = dayKeyFromDate(row.date);
+          const trades = row.data?.trades || [];
+          let changed = false;
+          const newTrades = trades.map(t => {
+            if (!t.ticker || !t.entryTime) return t;
+            const key = `${dKey}|${t.ticker}`;
+            const dayFees = byDateTicker[key];
+            if (!dayFees) return t;
+            const entryMin = timeToMinutes(t.entryTime);
+            const exitMin = timeToMinutes(t.exitTime) ?? entryMin;
+            if (entryMin == null) return t;
+            const window = dayFees.filter(f => f.minutes >= entryMin - 1 && f.minutes <= exitMin + 1);
+            if (window.length === 0) return t;
+            const trueFee = window.reduce((s, f) => s + f.fee, 0);
+            const oldFee = parseFloat(t.commission) || 0;
+            if (Math.abs(trueFee - oldFee) < 0.01) return t;
+            changed = true; commUpdated++;
+            return { ...t, commission: trueFee.toFixed(2) };
+          });
+          if (changed) {
+            commDays++;
+            await saveDay(row.date, { ...row.data, trades: newTrades }, userId);
+            if (row.date === date) onChange(newTrades);
+          }
+        }
+        if (commUpdated > 0) summaryParts.push(`Commission corrected on ${commUpdated} existing trade${commUpdated!==1?'s':''} across ${commDays} day${commDays!==1?'s':''}.`);
       }
     }
+
+    // 3. Intraday bars — MFE/MAE backfill across the WHOLE account, only
+    // filling genuine blanks, with a price-range sanity check against the
+    // wrong instrument being uploaded by mistake.
+    if (intradayData) {
+      const { bars, priceMin, priceMax } = intradayData;
+      const barsByDate = {};
+      bars.forEach(b => { (barsByDate[b.dateKey] = barsByDate[b.dateKey] || []).push(b); });
+      const allDays = await loadAllDays(userId);
+      let mfeUpdated = 0, mfeSkipped = 0, mfeDays = 0;
+      for (const row of allDays) {
+        const dKey = dayKeyFromDate(row.date);
+        const dayBars = barsByDate[dKey];
+        if (!dayBars) continue;
+        const trades = row.data?.trades || [];
+        let changed = false;
+        const newTrades = trades.map(t => {
+          if (!t.ticker || t.mfe || t.mae || !t.entryTime || !t.avgEntry) return t;
+          const avgEntry = parseFloat(t.avgEntry);
+          if (isNaN(avgEntry)) return t;
+          if (priceMin != null && (avgEntry < priceMin - 1000 || avgEntry > priceMax + 1000)) { mfeSkipped++; return t; }
+          const entryMin = timeToMinutes(t.entryTime);
+          const exitMin = timeToMinutes(t.exitTime) ?? entryMin;
+          if (entryMin == null) return t;
+          let window = dayBars.filter(b => b.minutes >= entryMin && b.minutes <= exitMin);
+          if (window.length === 0) window = dayBars.filter(b => Math.abs(b.minutes - entryMin) <= 3);
+          if (window.length === 0) return t;
+          const hi = Math.max(...window.map(b => b.high));
+          const lo = Math.min(...window.map(b => b.low));
+          const mfe = t.direction === 'long' ? Math.max(0, hi - avgEntry) : Math.max(0, avgEntry - lo);
+          const mae = t.direction === 'long' ? Math.max(0, avgEntry - lo) : Math.max(0, hi - avgEntry);
+          changed = true; mfeUpdated++;
+          return { ...t, mfe: mfe.toFixed(2), mae: mae.toFixed(2) };
+        });
+        if (changed) {
+          mfeDays++;
+          await saveDay(row.date, { ...row.data, trades: newTrades }, userId);
+          if (row.date === date) onChange(newTrades);
+        }
+      }
+      summaryParts.push(`MFE/MAE filled on ${mfeUpdated} trade${mfeUpdated!==1?'s':''} across ${mfeDays} day${mfeDays!==1?'s':''}${mfeSkipped ? `, skipped ${mfeSkipped} (wrong instrument)` : ''}.`);
+    }
+
+    if (unrecognized.length > 0) {
+      summaryParts.push(`Couldn't identify: ${unrecognized.join(', ')}.`);
+    }
+
     setImporting(false);
-    window.alert(
-      `Commission correction complete.\n\n` +
-      `Auto-detected timezone offset: ${offset >= 0 ? '+' : ''}${offset/60}h\n` +
-      `Corrected: ${updatedCount} trade${updatedCount!==1?'s':''} across ${daysTouched} day${daysTouched!==1?'s':''}\n` +
-      (updatedCount ? `Total commission: $${totalOldComm.toFixed(2)} → $${totalNewComm.toFixed(2)}\n` : '') +
-      (unchangedCount ? `Already correct: ${unchangedCount}\n` : '') +
-      `\nOnly trades with a matching fee window in this file were touched.`
-    );
+    window.alert(summaryParts.join('\n\n'));
   };
 
   return(
     <div>
       {showTradovate && <TradovateImportModal onClose={()=>setShowTradovate(false)} onImport={handleTradovateImport}/>}
-      <input ref={fileRef} type="file" accept=".csv,.txt" multiple style={{display:'none'}} onChange={handleSierraCSV}/>
+      <input ref={backfillFileRef} type="file" accept=".csv,.txt" multiple style={{display:'none'}} onChange={handleUnifiedImport}/>
 
       {/* Pending tags — visible before importing more, so you see the backlog first */}
       {pending && pending.length > 0 && (
@@ -1644,45 +1597,21 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId,onJumpT
         </div>
       )}
 
-      {/* Import buttons */}
-      <div style={{display:'flex',gap:10,marginBottom:10}}>
+      {/* Import — one click, straight to the file picker */}
+      <button onClick={()=>backfillFileRef.current.click()} disabled={importing} title="Select any combination: Tradovate Fills, Sierra Chart trades, Cash History (true commission), intraday bars (MFE/MAE) — hold Ctrl/Cmd to select several at once, the app identifies what each one is" style={{
+        width:'100%',padding:'11px 14px',borderRadius:12,marginBottom:6,
+        border:`1.5px solid ${C.purple}`,background:C.purple+'15',
+        color:C.purple,fontFamily:'inherit',fontSize:12,fontWeight:600,cursor:importing?'not-allowed':'pointer',
+        display:'flex',alignItems:'center',justifyContent:'center',gap:6,opacity:importing?0.6:1,
+      }}>
+        {importing?'⏳ Processing...':'📥 Import / Correct Trades (select files)'}
+      </button>
+      <div style={{textAlign:'center',marginBottom:16}}>
         <button onClick={()=>setShowTradovate(true)} style={{
-          flex:1,padding:'11px 14px',borderRadius:12,
-          border:`1.5px solid ${C.blue}`,background:(C.blue)+'15',
-          color:C.blue,fontFamily:'inherit',fontSize:12,fontWeight:600,cursor:'pointer',
-          display:'flex',alignItems:'center',justifyContent:'center',gap:6,
+          background:'none',border:'none',color:C.textMut,fontSize:11,fontFamily:'inherit',cursor:'pointer',textDecoration:'underline',
         }}>
-          📥 Import from Tradovate
+          or connect live to Tradovate (needs $1,000+ funded equity)
         </button>
-        <button onClick={()=>fileRef.current.click()} disabled={importing} title="Select your Fills/Sierra Chart file — hold Ctrl/Cmd to also select a Cash History export for accurate commission in one step" style={{
-          flex:1,padding:'11px 14px',borderRadius:12,
-          border:`1.5px solid ${C.purple}`,background:C.purple+'15',
-          color:C.purple,fontFamily:'inherit',fontSize:12,fontWeight:600,cursor:importing?'not-allowed':'pointer',
-          display:'flex',alignItems:'center',justifyContent:'center',gap:6,opacity:importing?0.6:1,
-        }}>
-          {importing?'⏳ Sorting into days...':'📂 Import CSV (+ Cash History)'}
-        </button>
-      </div>
-      <div style={{fontSize:10,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700,marginBottom:8}}>Corrections — run anytime, safe to repeat</div>
-      <div style={{display:'flex',gap:10,marginBottom:16}}>
-        <button onClick={()=>backfillFileRef.current.click()} disabled={importing} title="Upload an intraday (1-min) chart export to fill in real MFE/MAE for any trade missing it, across your whole account" style={{
-          flex:1,padding:'11px 14px',borderRadius:12,
-          border:`1.5px solid ${C.orange}`,background:C.orange+'15',
-          color:C.orange,fontFamily:'inherit',fontSize:12,fontWeight:600,cursor:importing?'not-allowed':'pointer',
-          display:'flex',alignItems:'center',justifyContent:'center',gap:6,opacity:importing?0.6:1,
-        }}>
-          {importing?'⏳ Computing...':'🎯 Backfill MFE/MAE'}
-        </button>
-        <button onClick={()=>commissionFileRef.current.click()} disabled={importing} title="Upload a Tradovate Cash History export to correct commission with the true all-in fee (Exchange + Clearing + NFA + Commission), across your whole account" style={{
-          flex:1,padding:'11px 14px',borderRadius:12,
-          border:`1.5px solid ${C.red}`,background:C.red+'15',
-          color:C.red,fontFamily:'inherit',fontSize:12,fontWeight:600,cursor:importing?'not-allowed':'pointer',
-          display:'flex',alignItems:'center',justifyContent:'center',gap:6,opacity:importing?0.6:1,
-        }}>
-          {importing?'⏳ Correcting...':'💰 Correct Commission'}
-        </button>
-        <input ref={backfillFileRef} type="file" accept=".csv,.txt" style={{display:'none'}} onChange={handleIntradayBackfill}/>
-        <input ref={commissionFileRef} type="file" accept=".csv,.txt" style={{display:'none'}} onChange={handleCommissionBackfill}/>
       </div>
 
       <SummaryBar trades={trades}/>
