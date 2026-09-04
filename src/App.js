@@ -591,6 +591,7 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
               value={trade.result} onChange={set('result')} colors={{W:C.green,L:C.red,BE:C.yellow}}/>
           </div>
           <Input label="Total Points (all contracts combined)" type="number" value={trade.points} onChange={set('points')}/>
+          <Input label="Entry Price" type="number" value={trade.avgEntry} onChange={set('avgEntry')}/>
           <Input label="Commission ($, total for trade)" type="number" value={trade.commission} onChange={set('commission')}/>
 
           {trade.partials && trade.partials.length > 0 && (
@@ -598,7 +599,6 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
               <div style={{fontSize:11,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700,marginBottom:2}}>
                 Partial Exits (from import{trade.multiEntry?' — scaled-in entry':''})
               </div>
-              {trade.multiEntry && <div style={{fontSize:11,color:C.textSub,marginBottom:8}}>Avg entry: {trade.avgEntry}</div>}
               <div style={{display:'flex',flexDirection:'column',gap:6,marginTop:8}}>
                 {trade.partials.map((p,i)=>{
                   const sl=parseFloat(trade.sl);
@@ -623,6 +623,14 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
           </div>
 
           {/* Entry / Exit time */}
+          {(() => {
+            const isOutsideRTH = (t) => {
+              const m = String(t||'').match(/(\d{1,2}):(\d{2})/);
+              if (!m) return false;
+              const mins = (+m[1])*60 + (+m[2]);
+              return mins < 570 || mins > 960; // before 9:30 or after 4:00
+            };
+            return (
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:16}}>
             <div>
               <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Entry Time (EST)</div>
@@ -632,8 +640,11 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
                 cursor:'pointer',outline:'none',
               }}>
                 <option value=''>-- select --</option>
-                {trade.entryTime && !TIME_OPTIONS.some(o=>o.value===trade.entryTime) &&
-                  <option value={trade.entryTime}>⚠ {trade.entryTime} (outside 10:30–4:00 — check Sierra's Global Time Zone setting)</option>}
+                {trade.entryTime && !TIME_OPTIONS.some(o=>o.value===trade.entryTime) && (
+                  isOutsideRTH(trade.entryTime)
+                    ? <option value={trade.entryTime}>⚠ {trade.entryTime} (outside 9:30–4:00 — check Sierra's Global Time Zone setting)</option>
+                    : <option value={trade.entryTime}>{trade.entryTime} (exact time)</option>
+                )}
                 {TIME_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </div>
@@ -645,12 +656,17 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
                 cursor:'pointer',outline:'none',
               }}>
                 <option value=''>-- select --</option>
-                {trade.exitTime && !TIME_OPTIONS.some(o=>o.value===trade.exitTime) &&
-                  <option value={trade.exitTime}>⚠ {trade.exitTime} (outside 10:30–4:00 — check Sierra's Global Time Zone setting)</option>}
+                {trade.exitTime && !TIME_OPTIONS.some(o=>o.value===trade.exitTime) && (
+                  isOutsideRTH(trade.exitTime)
+                    ? <option value={trade.exitTime}>⚠ {trade.exitTime} (outside 9:30–4:00 — check Sierra's Global Time Zone setting)</option>
+                    : <option value={trade.exitTime}>{trade.exitTime} (exact time)</option>
+                )}
                 {TIME_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </div>
           </div>
+            );
+          })()}
 
           {/* Hold time + session window auto-display */}
           {(trade.entryTime||trade.exitTime)&&(
@@ -830,7 +846,7 @@ function groupFillsIntoTrades(fills) {
         result,
         mfe, mae, sl,
         commission: pos.commission ? pos.commission.toFixed(2) : '',
-        avgEntry: avgEntry.toFixed(4),
+        avgEntry: avgEntry.toFixed(2),
         multiEntry: pos.entryLegs.length > 1,
         partials,
         notes: `Imported (${pos.rawSymbol || ticker})${pos.entryLegs.length > 1 ? ` — scaled in (avg entry ${avgEntry.toFixed(2)})` : ''}${partials.length > 1 ? `, ${partials.length} partial exits` : ''}${sl ? `, SL auto-set from stop fill` : ''}${open ? ' — position still open, not closed in this data' : ''}.`,
