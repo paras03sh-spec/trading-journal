@@ -3141,20 +3141,28 @@ function SwingPositionCard({position, onChange, onDelete, onSave, isMobile}){
       </div>
       {open && (
         <div style={{padding:16}}>
-          <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'1fr 1fr 1fr 1fr',gap:12,marginBottom:14}}>
+          <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'1fr 1fr 1fr',gap:12,marginBottom:10}}>
             <Input label="Symbol" value={position.symbol} onChange={v=>set('symbol')(v.toUpperCase())}/>
             <div>
               <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Direction</div>
               <Pills options={[{label:'Long',value:'long'},{label:'Short',value:'short'}]} value={position.direction} onChange={set('direction')} colors={{long:C.green,short:C.red}}/>
             </div>
             <div>
-              <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Account</div>
-              <Pills options={[{label:'Questrade',value:'Questrade'},{label:'Wealthsimple',value:'Wealthsimple'},{label:'Manual',value:'Manual'}]} value={position.account} onChange={set('account')} colors={{Questrade:C.blue,Wealthsimple:C.purple,Manual:C.textMut}}/>
-            </div>
-            <div>
               <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Currency</div>
               <Pills options={[{label:'CAD',value:'CAD'},{label:'USD',value:'USD'}]} value={position.currency||'CAD'} onChange={set('currency')} colors={{CAD:C.red,USD:C.green}}/>
+              <div style={{fontSize:10,color:C.textDim,marginTop:4}}>Picks the right listing (e.g. NFLX CDR vs NASDAQ NFLX share the same ticker)</div>
             </div>
+          </div>
+          <div style={{marginBottom:14}}>
+            <span style={{fontSize:11,color:C.textMut}}>Held at: </span>
+            {['Questrade','Wealthsimple','Manual'].map(a=>(
+              <button key={a} onClick={()=>set('account')(a)} style={{
+                marginRight:4,padding:'3px 9px',borderRadius:12,fontSize:11,fontFamily:'inherit',cursor:'pointer',
+                border:`1px solid ${position.account===a?C.border:'transparent'}`,
+                background:position.account===a?C.surface2:'transparent',
+                color:position.account===a?C.textSub:C.textDim,
+              }}>{a}</button>
+            ))}
           </div>
 
           <div style={{marginBottom:14}}>
