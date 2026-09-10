@@ -1,3 +1,6 @@
 {
-  "rewrites": [{ "source": "/(.*)", "destination": "/" }]
+  "rewrites": [{ "source": "/(.*)", "destination": "/" }],
+  "crons": [
+    { "path": "/api/questrade-refresh-prices", "schedule": "30 21 * * 1-5" }
+  ]
 }

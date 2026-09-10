@@ -1,10 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { supabase, loadDay, saveDay, loadIndex, saveIndex, loadAllDays, getCurrentUser, signIn, signUp, signOut } from './supabase';
+import { supabase, loadDay, saveDay, loadIndex, saveIndex, loadAllDays, getCurrentUser, signIn, signUp, signOut, loadSwingPositions, saveSwingPosition, deleteSwingPosition } from './supabase';
 
 const POINT_VALUES = { ES: 50, NQ: 20, MES: 5, MNQ: 2 };
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const DAYS_HDR = ["Su","Mo","Tu","We","Th","Fr","Sa"];
-const TABS = ["Trades", "Analytics", "Ask Claude"];
+const TABS = ["Trades", "Analytics", "Ask Claude", "Swing"];
 
 const THEMES = {
   dark:{
@@ -1890,6 +1890,45 @@ function SvgLineChart({series,color,height=180,fill=true,fmtY=v=>'$'+v.toFixed(0
   );
 }
 
+// Simple donut chart via stroke-dasharray on a circle — clean segments,
+// no manual arc-path math needed. data: [{label, value, color}]
+function SvgDonutChart({data, height=220}){
+  const total = data.reduce((s,d)=>s+d.value,0);
+  if(!data.length || total<=0) return <div style={{height,display:'flex',alignItems:'center',justifyContent:'center',color:C.textDim,fontSize:12}}>No data yet</div>;
+  const r=70, cx=90, cy=90, circumference=2*Math.PI*r;
+  let cumOffset=0;
+  const segments = data.map(d=>{
+    const frac = d.value/total;
+    const dash = frac*circumference;
+    const seg = {...d, frac, dashArray:`${dash} ${circumference-dash}`, dashOffset: -cumOffset};
+    cumOffset += dash;
+    return seg;
+  });
+  return(
+    <div style={{display:'flex',alignItems:'center',gap:20,flexWrap:'wrap'}}>
+      <svg width={180} height={180} viewBox="0 0 180 180" style={{flexShrink:0}}>
+        <g transform={`rotate(-90 ${cx} ${cy})`}>
+          {segments.map((s,i)=>(
+            <circle key={i} cx={cx} cy={cy} r={r} fill="none" stroke={s.color}
+              strokeWidth="26" strokeDasharray={s.dashArray} strokeDashoffset={s.dashOffset}/>
+          ))}
+        </g>
+        <text x={cx} y={cy-4} textAnchor="middle" fontSize="18" fontWeight="800" fill={C.text}>${total>=1000?(total/1000).toFixed(1)+'k':total.toFixed(0)}</text>
+        <text x={cx} y={cy+14} textAnchor="middle" fontSize="10" fill={C.textMut}>total</text>
+      </svg>
+      <div style={{display:'flex',flexDirection:'column',gap:7,flex:1,minWidth:140}}>
+        {segments.map((s,i)=>(
+          <div key={i} style={{display:'flex',alignItems:'center',gap:8,fontSize:12}}>
+            <span style={{width:10,height:10,borderRadius:3,background:s.color,flexShrink:0}}/>
+            <span style={{color:C.textSub,flex:1}}>{s.label}</span>
+            <span style={{color:C.text,fontWeight:700}}>{(s.frac*100).toFixed(0)}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SvgBarChart({series,height=160,posColor,negColor,fmtY=v=>'$'+v.toFixed(0)}){
   const W=600,H=height,P={t:12,r:8,b:22,l:52};
   if(!series||series.length===0)return <div style={{height,display:'flex',alignItems:'center',justifyContent:'center',color:C.textDim,fontSize:12}}>No data yet</div>;
@@ -2852,13 +2891,81 @@ function mdInline(text,key){
   return <span key={key}>{parts.map((p,i)=>i%2===1?<b key={i} style={{color:C.text}}>{p}</b>:p)}</span>;
 }
 
-function MDMessage({content}){
+// Confirmation card for a position Big Daddy parsed from a chat message.
+// Editable, not a blind-trust auto-save — natural language is ambiguous
+// (currency, account, exact date) and this is real financial data, so the
+// person reviews/corrects before anything gets written.
+function LogPositionConfirmCard({spec, userId}){
+  const [form, setForm] = useState({
+    symbol: (spec.symbol||'').toUpperCase(),
+    direction: spec.direction==='short'?'short':'long',
+    qty: spec.qty!=null?String(spec.qty):'',
+    price: spec.price!=null?String(spec.price):'',
+    date: spec.date || new Date().toISOString().slice(0,10),
+    account: spec.account || 'Manual',
+    currency: spec.currency || 'CAD',
+  });
+  const [status, setStatus] = useState('pending'); // 'pending' | 'saving' | 'saved' | 'error'
+  const set = (field) => (val) => setForm({...form, [field]: val});
+
+  const handleConfirm = async () => {
+    if (!form.symbol || !form.qty || !form.price) { window.alert('Symbol, quantity, and price are required.'); return; }
+    setStatus('saving');
+    const position = {
+      ...emptySwingPosition(),
+      symbol: form.symbol, direction: form.direction, account: form.account, currency: form.currency,
+      opened_date: form.date,
+      entries: [{ date: form.date, qty: parseFloat(form.qty), price: parseFloat(form.price) }],
+    };
+    const derived = computeSwingDerived(position);
+    const saved = await saveSwingPosition(derived, userId);
+    setStatus(saved ? 'saved' : 'error');
+  };
+
+  if (status === 'saved') {
+    return (
+      <div style={{padding:'12px 14px',borderRadius:12,background:C.green+'15',border:`1px solid ${C.green}40`,margin:'10px 0',fontSize:13,color:C.green,fontWeight:600}}>
+        ✓ Added to Swing Journal — {form.symbol}, {form.qty} @ ${form.price}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{padding:14,borderRadius:12,background:C.surface,border:`1px solid ${C.border}`,margin:'10px 0'}}>
+      <div style={{fontSize:11,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700,marginBottom:10}}>New Swing Position — review before saving</div>
+      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:10}}>
+        <Input label="Symbol" value={form.symbol} onChange={v=>set('symbol')(v.toUpperCase())}/>
+        <div>
+          <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Direction</div>
+          <Pills options={[{label:'Long',value:'long'},{label:'Short',value:'short'}]} value={form.direction} onChange={set('direction')} colors={{long:C.green,short:C.red}}/>
+        </div>
+        <Input label="Quantity" type="number" value={form.qty} onChange={set('qty')}/>
+        <Input label="Price" type="number" value={form.price} onChange={set('price')}/>
+        <div>
+          <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Date</div>
+          <input type="date" value={form.date} onChange={e=>set('date')(e.target.value)} style={{width:'100%',padding:'9px 12px',borderRadius:10,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:13,fontFamily:'inherit'}}/>
+        </div>
+        <div>
+          <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Currency</div>
+          <Pills options={[{label:'CAD',value:'CAD'},{label:'USD',value:'USD'}]} value={form.currency} onChange={set('currency')} colors={{CAD:C.red,USD:C.green}}/>
+        </div>
+      </div>
+      <div style={{display:'flex',gap:8}}>
+        <button onClick={handleConfirm} disabled={status==='saving'} style={{flex:1,padding:'9px',borderRadius:10,border:`1.5px solid ${C.teal}`,background:C.teal+'15',color:C.teal,fontFamily:'inherit',fontSize:13,fontWeight:700,cursor:status==='saving'?'not-allowed':'pointer'}}>
+          {status==='saving'?'Saving...':status==='error'?'Failed — try again':'✓ Confirm & Save'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MDMessage({content, userId}){
   const segments=[];
-  const re=/```chart\s*\n?([\s\S]*?)```/g;
+  const re=/```(chart|log_position)\s*\n?([\s\S]*?)```/g;
   let last=0,m;
   while((m=re.exec(content))!==null){
     if(m.index>last)segments.push({t:'text',v:content.slice(last,m.index)});
-    segments.push({t:'chart',v:m[1]});
+    segments.push({t:m[1],v:m[2]});
     last=m.index+m[0].length;
   }
   if(last<content.length)segments.push({t:'text',v:content.slice(last)});
@@ -2867,6 +2974,10 @@ function MDMessage({content}){
   segments.forEach((seg,si)=>{
     if(seg.t==='chart'){
       try{render.push(<MiniChart key={'c'+si} spec={JSON.parse(seg.v.trim())}/>);}catch(_){render.push(<pre key={'c'+si} style={{fontSize:11,color:C.textMut}}>{seg.v}</pre>);}
+      return;
+    }
+    if(seg.t==='log_position'){
+      try{render.push(<LogPositionConfirmCard key={'lp'+si} spec={JSON.parse(seg.v.trim())} userId={userId}/>);}catch(_){render.push(<pre key={'lp'+si} style={{fontSize:11,color:C.textMut}}>{seg.v}</pre>);}
       return;
     }
     const lines=seg.v.split('\n');
@@ -2911,6 +3022,709 @@ function MDMessage({content}){
 // ─── Ask Claude Tab ───────────────────────────────────────────────────────────
 function weekId(d){const y=d.getFullYear();const start=new Date(y,0,1);return y+'-W'+Math.ceil(((d-start)/864e5+1)/7);}
 function monthId(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');}
+
+// ─── Swing Positions ────────────────────────────────────────────────────────
+// Stock/ETF swing trading — separate from the intraday futures journal above.
+// Positions span days/weeks/months, can be scaled into over time, and may
+// still be open (no exit yet) — none of which fits the day-scoped trades[]
+// model, hence the separate swing_positions table.
+function emptySwingPosition(){
+  return {
+    account:'Manual', symbol:'', direction:'long', status:'open', currency:'CAD',
+    entries:[], exits:[], dividends:[], setup:'', sector:'', notes:'', commission:'0',
+    current_price:'', opened_date: new Date().toISOString().slice(0,10),
+  };
+}
+
+// Recomputes avg_entry, quantities, status, realized P&L, unrealized P&L
+// (only if a current price has been manually entered — no live data feed),
+// dividend income, and return % — single source of truth so the UI never
+// has to separately track derived numbers that could drift out of sync.
+function computeSwingDerived(pos){
+  const totalQtyEntered = pos.entries.reduce((s,e)=>s+(parseFloat(e.qty)||0),0);
+  const totalQtyExited = pos.exits.reduce((s,e)=>s+(parseFloat(e.qty)||0),0);
+  const avgEntry = totalQtyEntered>0
+    ? pos.entries.reduce((s,e)=>s+(parseFloat(e.qty)||0)*(parseFloat(e.price)||0),0)/totalQtyEntered
+    : 0;
+  const sign = pos.direction==='long'?1:-1;
+  const commission = parseFloat(pos.commission)||0;
+  const realizedPnl = pos.exits.reduce((s,e)=>{
+    const qty=parseFloat(e.qty)||0, price=parseFloat(e.price)||0;
+    return s + sign*(price-avgEntry)*qty;
+  },0) - commission;
+  const status = totalQtyExited>=totalQtyEntered && totalQtyEntered>0 ? 'closed' : 'open';
+  const closedDate = status==='closed' && pos.exits.length
+    ? pos.exits.reduce((latest,e)=>e.date>latest?e.date:latest, pos.exits[0].date)
+    : null;
+  const remainingQty = totalQtyEntered - totalQtyExited;
+  const costBasisRemaining = avgEntry * remainingQty;
+  const currentPrice = parseFloat(pos.current_price);
+  const hasCurrentPrice = status==='open' && !isNaN(currentPrice) && currentPrice>0;
+  const unrealizedPnl = hasCurrentPrice ? sign*(currentPrice-avgEntry)*remainingQty : null;
+  const totalDividends = (pos.dividends||[]).reduce((s,d)=>s+(parseFloat(d.amount)||0),0);
+  const costBasisTotal = avgEntry * totalQtyEntered;
+  const totalPnlIncDiv = (pos.exits.length?realizedPnl:0) + (unrealizedPnl||0) + totalDividends;
+  const totalReturnPct = costBasisTotal>0 ? totalPnlIncDiv/costBasisTotal*100 : null;
+  return {
+    ...pos,
+    avg_entry: avgEntry, total_qty_entered: totalQtyEntered, total_qty_exited: totalQtyExited,
+    realized_pnl: pos.exits.length ? realizedPnl : null,
+    unrealized_pnl: unrealizedPnl,
+    total_dividends: totalDividends,
+    cost_basis_remaining: costBasisRemaining, cost_basis_total: costBasisTotal,
+    total_return_pct: totalReturnPct,
+    status, closed_date: closedDate,
+  };
+}
+
+function SwingPositionCard({position, onChange, onDelete, onSave, isMobile}){
+  const [open, setOpen] = useState(!position.id); // new/unsaved positions start expanded
+  const set = (field) => (val) => onChange({...position, [field]: val});
+  const derived = computeSwingDerived(position);
+  const remaining = derived.total_qty_entered - derived.total_qty_exited;
+
+  const addEntry = () => onChange({...position, entries:[...position.entries, {date:new Date().toISOString().slice(0,10), qty:'', price:''}]});
+  const updateEntry = (i,field,val) => {
+    const entries = position.entries.map((e,j)=>j===i?{...e,[field]:val}:e);
+    onChange({...position, entries});
+  };
+  const removeEntry = (i) => onChange({...position, entries: position.entries.filter((_,j)=>j!==i)});
+
+  const addExit = () => onChange({...position, exits:[...position.exits, {date:new Date().toISOString().slice(0,10), qty:'', price:''}]});
+  const updateExit = (i,field,val) => {
+    const exits = position.exits.map((e,j)=>j===i?{...e,[field]:val}:e);
+    onChange({...position, exits});
+  };
+  const removeExit = (i) => onChange({...position, exits: position.exits.filter((_,j)=>j!==i)});
+
+  const addDividend = () => onChange({...position, dividends:[...(position.dividends||[]), {date:new Date().toISOString().slice(0,10), amount:'', price:'', reinvested:false}]});
+  const updateDividend = (i,field,val) => {
+    const dividends = (position.dividends||[]).map((d,j)=>j===i?{...d,[field]:val}:d);
+    onChange({...position, dividends});
+  };
+  const removeDividend = (i) => onChange({...position, dividends: (position.dividends||[]).filter((_,j)=>j!==i)});
+  // DRIP: one-click, not a toggle — creates the corresponding buy entry once,
+  // then marks the dividend as reinvested so it can't be double-applied.
+  // To undo, delete the created entry manually from Entries below.
+  const reinvestDividend = (i) => {
+    const div = (position.dividends||[])[i];
+    const amount = parseFloat(div.amount), price = parseFloat(div.price);
+    if (!amount || !price) { window.alert('Enter both the dividend amount and the reinvestment price first.'); return; }
+    const qty = +(amount/price).toFixed(6);
+    const dividends = position.dividends.map((d,j)=>j===i?{...d,reinvested:true}:d);
+    const entries = [...position.entries, {date:div.date, qty, price, note:'DRIP'}];
+    onChange({...position, dividends, entries});
+  };
+
+  return (
+    <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,marginBottom:12,overflow:'hidden'}}>
+      <div onClick={()=>setOpen(!open)} style={{padding:'14px 16px',display:'flex',alignItems:'center',justifyContent:'space-between',cursor:'pointer',background:open?C.surface2:C.surface}}>
+        <div style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
+          <span style={{width:8,height:8,borderRadius:'50%',background:derived.status==='open'?C.yellow:(derived.realized_pnl>=0?C.green:C.red),flexShrink:0}}/>
+          <b style={{fontSize:14,color:C.text}}>{position.symbol||'(new position)'}</b>
+          <span style={{fontSize:11,padding:'2px 8px',borderRadius:10,background:position.direction==='long'?C.green+'20':C.red+'20',color:position.direction==='long'?C.green:C.red,fontWeight:700}}>
+            {position.direction==='long'?'LONG':'SHORT'}
+          </span>
+          <span style={{fontSize:11,color:C.textMut}}>{derived.status==='open'?`${remaining} open`:'closed'}</span>
+          <span style={{fontSize:10,padding:'2px 7px',borderRadius:8,background:C.surface2,color:C.textMut}}>{position.account}</span>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:12}}>
+          {derived.realized_pnl!=null && <span style={{fontSize:13,fontWeight:700,color:derived.realized_pnl>=0?C.green:C.red}}>{derived.realized_pnl>=0?'+':''}${derived.realized_pnl.toFixed(2)}</span>}
+          <span style={{color:C.textMut,fontSize:12}}>{open?'▲':'▼'}</span>
+        </div>
+      </div>
+      {open && (
+        <div style={{padding:16}}>
+          <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'1fr 1fr 1fr 1fr',gap:12,marginBottom:14}}>
+            <Input label="Symbol" value={position.symbol} onChange={v=>set('symbol')(v.toUpperCase())}/>
+            <div>
+              <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Direction</div>
+              <Pills options={[{label:'Long',value:'long'},{label:'Short',value:'short'}]} value={position.direction} onChange={set('direction')} colors={{long:C.green,short:C.red}}/>
+            </div>
+            <div>
+              <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Account</div>
+              <Pills options={[{label:'Questrade',value:'Questrade'},{label:'Wealthsimple',value:'Wealthsimple'},{label:'Manual',value:'Manual'}]} value={position.account} onChange={set('account')} colors={{Questrade:C.blue,Wealthsimple:C.purple,Manual:C.textMut}}/>
+            </div>
+            <div>
+              <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Currency</div>
+              <Pills options={[{label:'CAD',value:'CAD'},{label:'USD',value:'USD'}]} value={position.currency||'CAD'} onChange={set('currency')} colors={{CAD:C.red,USD:C.green}}/>
+            </div>
+          </div>
+
+          <div style={{marginBottom:14}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+              <div style={{fontSize:11,color:C.textSub,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Entries (buys)</div>
+              <button onClick={addEntry} style={{fontSize:11,color:C.teal,background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',fontWeight:600}}>+ Add Entry</button>
+            </div>
+            {position.entries.length===0 && <div style={{fontSize:12,color:C.textDim}}>No entries yet</div>}
+            {position.entries.map((e,i)=>(
+              <div key={i} style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr auto',gap:8,marginBottom:6,alignItems:'center'}}>
+                <input type="date" value={e.date} onChange={ev=>updateEntry(i,'date',ev.target.value)} style={{padding:'7px 9px',borderRadius:8,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontFamily:'inherit'}}/>
+                <input type="number" placeholder="Qty" value={e.qty} onChange={ev=>updateEntry(i,'qty',ev.target.value)} style={{padding:'7px 9px',borderRadius:8,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontFamily:'inherit'}}/>
+                <input type="number" placeholder="Price" value={e.price} onChange={ev=>updateEntry(i,'price',ev.target.value)} style={{padding:'7px 9px',borderRadius:8,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontFamily:'inherit'}}/>
+                <button onClick={()=>removeEntry(i)} style={{background:'none',border:'none',color:C.textMut,cursor:'pointer',fontSize:14}}>×</button>
+              </div>
+            ))}
+            {derived.total_qty_entered>0 && <div style={{fontSize:11,color:C.textMut,marginTop:4}}>Avg entry: ${derived.avg_entry.toFixed(2)} · {derived.total_qty_entered} shares total</div>}
+          </div>
+
+          <div style={{marginBottom:14}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+              <div style={{fontSize:11,color:C.textSub,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Exits (sells)</div>
+              <button onClick={addExit} style={{fontSize:11,color:C.teal,background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',fontWeight:600}}>+ Add Exit</button>
+            </div>
+            {position.exits.length===0 && <div style={{fontSize:12,color:C.textDim}}>Still fully open — no exits yet</div>}
+            {position.exits.map((e,i)=>(
+              <div key={i} style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr auto',gap:8,marginBottom:6,alignItems:'center'}}>
+                <input type="date" value={e.date} onChange={ev=>updateExit(i,'date',ev.target.value)} style={{padding:'7px 9px',borderRadius:8,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontFamily:'inherit'}}/>
+                <input type="number" placeholder="Qty" value={e.qty} onChange={ev=>updateExit(i,'qty',ev.target.value)} style={{padding:'7px 9px',borderRadius:8,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontFamily:'inherit'}}/>
+                <input type="number" placeholder="Price" value={e.price} onChange={ev=>updateExit(i,'price',ev.target.value)} style={{padding:'7px 9px',borderRadius:8,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontFamily:'inherit'}}/>
+                <button onClick={()=>removeExit(i)} style={{background:'none',border:'none',color:C.textMut,cursor:'pointer',fontSize:14}}>×</button>
+              </div>
+            ))}
+          </div>
+
+          <div style={{marginBottom:14}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+              <div style={{fontSize:11,color:C.textSub,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Dividends Received</div>
+              <button onClick={addDividend} style={{fontSize:11,color:C.teal,background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',fontWeight:600}}>+ Add Dividend</button>
+            </div>
+            {(!position.dividends||position.dividends.length===0) && <div style={{fontSize:12,color:C.textDim}}>None logged</div>}
+            {(position.dividends||[]).map((d,i)=>(
+              <div key={i} style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr auto auto',gap:8,marginBottom:6,alignItems:'center'}}>
+                <input type="date" value={d.date} onChange={ev=>updateDividend(i,'date',ev.target.value)} style={{padding:'7px 9px',borderRadius:8,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontFamily:'inherit'}}/>
+                <input type="number" placeholder="Amount ($)" value={d.amount} onChange={ev=>updateDividend(i,'amount',ev.target.value)} style={{padding:'7px 9px',borderRadius:8,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontFamily:'inherit'}}/>
+                <input type="number" placeholder="DRIP price" value={d.price||''} onChange={ev=>updateDividend(i,'price',ev.target.value)} style={{padding:'7px 9px',borderRadius:8,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontFamily:'inherit'}}/>
+                {d.reinvested ? (
+                  <span style={{fontSize:11,color:C.teal,fontWeight:700,whiteSpace:'nowrap'}}>✓ Reinvested</span>
+                ) : (
+                  <button onClick={()=>reinvestDividend(i)} title="Create the corresponding buy entry from this dividend" style={{fontSize:11,color:C.teal,background:C.teal+'15',border:`1px solid ${C.teal}`,borderRadius:6,padding:'5px 8px',cursor:'pointer',fontFamily:'inherit',whiteSpace:'nowrap'}}>↻ Reinvest</button>
+                )}
+                <button onClick={()=>removeDividend(i)} style={{background:'none',border:'none',color:C.textMut,cursor:'pointer',fontSize:14}}>×</button>
+              </div>
+            ))}
+          </div>
+
+          {derived.status==='open' && (
+            <div style={{marginBottom:14}}>
+              <Input label="Current Price (or connect Questrade for auto-updates)" type="number" value={position.current_price} onChange={set('current_price')}/>
+              {position.current_price_updated && (
+                <div style={{fontSize:11,color:C.textMut,marginTop:4}}>Last updated {new Date(position.current_price_updated).toLocaleString()}</div>
+              )}
+            </div>
+          )}
+
+          <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr',gap:12,marginBottom:14}}>
+            <Input label="Setup / Strategy" value={position.setup} onChange={set('setup')}/>
+            <Input label="Sector" value={position.sector} onChange={set('sector')}/>
+            <Input label="Commission ($, total)" type="number" value={position.commission} onChange={set('commission')}/>
+          </div>
+          <div style={{marginBottom:14}}>
+            <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Notes</div>
+            <textarea value={position.notes} onChange={e=>set('notes')(e.target.value)} rows={2} style={{width:'100%',padding:'9px 12px',borderRadius:10,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:13,fontFamily:'inherit',resize:'vertical'}}/>
+          </div>
+
+          {(derived.realized_pnl!=null || derived.unrealized_pnl!=null || derived.total_dividends>0) && (
+            <div style={{padding:'10px 14px',borderRadius:10,background:C.surface2,marginBottom:14,display:'flex',flexWrap:'wrap',gap:14}}>
+              {derived.realized_pnl!=null && (
+                <span style={{fontSize:12,color:C.textSub}}>Realized: <b style={{color:derived.realized_pnl>=0?C.green:C.red}}>{derived.realized_pnl>=0?'+':''}${derived.realized_pnl.toFixed(2)}</b></span>
+              )}
+              {derived.unrealized_pnl!=null && (
+                <span style={{fontSize:12,color:C.textSub}}>Unrealized: <b style={{color:derived.unrealized_pnl>=0?C.green:C.red}}>{derived.unrealized_pnl>=0?'+':''}${derived.unrealized_pnl.toFixed(2)}</b></span>
+              )}
+              {derived.total_dividends>0 && (
+                <span style={{fontSize:12,color:C.textSub}}>Dividends: <b style={{color:C.teal}}>+${derived.total_dividends.toFixed(2)}</b></span>
+              )}
+              {derived.total_return_pct!=null && (
+                <span style={{fontSize:12,color:C.textSub}}>Total Return: <b style={{color:derived.total_return_pct>=0?C.green:C.red}}>{derived.total_return_pct>=0?'+':''}{derived.total_return_pct.toFixed(1)}%</b></span>
+              )}
+              {derived.status==='closed' && <span style={{fontSize:11,color:C.textMut}}>closed {derived.closed_date}</span>}
+            </div>
+          )}
+
+          <div style={{display:'flex',gap:8}}>
+            <button onClick={()=>onSave(position)} style={{flex:1,padding:'10px',borderRadius:10,border:`1.5px solid ${C.teal}`,background:C.teal+'15',color:C.teal,fontFamily:'inherit',fontSize:13,fontWeight:700,cursor:'pointer'}}>
+              {position.id?'💾 Save Changes':'✓ Create Position'}
+            </button>
+            {position.id && (
+              <button onClick={()=>{if(window.confirm('Delete this position? This can\'t be undone.'))onDelete(position.id);}} style={{padding:'10px 16px',borderRadius:10,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textMut,fontFamily:'inherit',fontSize:13,cursor:'pointer'}}>
+                Delete
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SwingTab({userId, isMobile}){
+  const [positions, setPositions] = useState(null);
+  const [newPosition, setNewPosition] = useState(null);
+  const [filter, setFilter] = useState('open'); // 'open' | 'closed' | 'all'
+  const [currencyFilter, setCurrencyFilter] = useState('all'); // 'all' | 'CAD' | 'USD'
+  const ceilingsKey = 'swing_sector_ceilings_'+(userId||'anon');
+  const [sectorCeilings, setSectorCeilings] = useState(()=>{
+    try{return JSON.parse(localStorage.getItem(ceilingsKey))||{};}catch(_){return{};}
+  });
+  const setCeiling = (sector, val) => {
+    const next = {...sectorCeilings, [sector]: val};
+    setSectorCeilings(next);
+    try{localStorage.setItem(ceilingsKey, JSON.stringify(next));}catch(_){}
+  };
+  const [view, setView] = useState('positions'); // 'positions' | 'allocation' | 'insights'
+  const [showConnect, setShowConnect] = useState(false);
+  const [connectToken, setConnectToken] = useState('');
+  const [connecting, setConnecting] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [questradeConnected, setQuestradeConnected] = useState(null); // null=unknown, true/false once checked
+
+  useEffect(()=>{
+    let live = true;
+    loadSwingPositions(userId).then(rows=>{ if(live) setPositions(rows); });
+    (async () => {
+      try {
+        const { data } = await supabase.from('questrade_tokens').select('user_id').eq('user_id', userId).single();
+        if (live) setQuestradeConnected(!!data);
+      } catch (_) { if (live) setQuestradeConnected(false); }
+    })();
+    return ()=>{live=false;};
+  },[userId]);
+
+  const handleConnectQuestrade = async () => {
+    if (!connectToken.trim()) { window.alert('Paste your Questrade refresh token first.'); return; }
+    setConnecting(true);
+    try {
+      const res = await fetch('/api/questrade-connect', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ userId, refreshToken: connectToken.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.connected) { window.alert(data.error || 'Connection failed.'); setConnecting(false); return; }
+      setQuestradeConnected(true);
+      setShowConnect(false);
+      setConnectToken('');
+      window.alert('Connected! Use "🔄 Refresh Prices" to pull current prices anytime, or wait for tomorrow\'s automatic after-close update.');
+    } catch (e) {
+      window.alert('Could not reach the server: ' + e.message);
+    }
+    setConnecting(false);
+  };
+
+  const handleRefreshPrices = async () => {
+    setRefreshing(true);
+    try {
+      const res = await fetch('/api/questrade-refresh-prices', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ userId }),
+      });
+      const data = await res.json();
+      const r = data.results?.[0];
+      if (r?.error) { window.alert('Refresh failed: ' + r.error); setRefreshing(false); return; }
+      const fresh = await loadSwingPositions(userId);
+      setPositions(fresh);
+      window.alert(`Refreshed ${r?.updated||0} of ${r?.total||0} open positions.`);
+    } catch (e) {
+      window.alert('Could not reach the server: ' + e.message);
+    }
+    setRefreshing(false);
+  };
+
+  const handleSave = async (position) => {
+    const derived = computeSwingDerived(position);
+    const saved = await saveSwingPosition(derived, userId);
+    if (!saved) { window.alert('Could not save — check your connection and try again.'); return; }
+    setPositions(prev => {
+      const exists = prev.some(p=>p.id===saved.id);
+      return exists ? prev.map(p=>p.id===saved.id?saved:p) : [saved, ...prev];
+    });
+    setNewPosition(null);
+  };
+
+  const handleDelete = async (id) => {
+    await deleteSwingPosition(id, userId);
+    setPositions(prev => prev.filter(p=>p.id!==id));
+  };
+
+  if (positions === null) return <div style={{textAlign:'center',color:C.textMut,padding:'60px 0',fontSize:13}}>Loading positions...</div>;
+
+  const currenciesPresent = [...new Set(positions.map(p=>p.currency||'CAD'))];
+  const mixedCurrencies = currenciesPresent.length > 1;
+  const statsPositions = currencyFilter==='all' ? positions : positions.filter(p=>(p.currency||'CAD')===currencyFilter);
+
+  const filtered = statsPositions.filter(p => filter==='all' ? true : p.status===filter);
+  const openCount = statsPositions.filter(p=>p.status==='open').length;
+  const closedCount = statsPositions.filter(p=>p.status==='closed').length;
+  const totalRealized = statsPositions.filter(p=>p.realized_pnl!=null).reduce((s,p)=>s+parseFloat(p.realized_pnl||0),0);
+  const totalUnrealized = statsPositions.filter(p=>p.unrealized_pnl!=null).reduce((s,p)=>s+parseFloat(p.unrealized_pnl||0),0);
+  const totalDividends = statsPositions.reduce((s,p)=>s+parseFloat(p.total_dividends||0),0);
+  const winClosed = statsPositions.filter(p=>p.status==='closed'&&p.realized_pnl>0).length;
+  const winRate = closedCount>0 ? (winClosed/closedCount*100) : 0;
+  const openPositions = statsPositions.filter(p=>p.status==='open');
+  const totalInvested = openPositions.reduce((s,p)=>s+parseFloat(p.cost_basis_remaining||0),0);
+  // Cost basis across ALL positions ever (open + closed) — the correct
+  // denominator for portfolio-wide return %, not just currently-open capital
+  const totalCostBasisEver = statsPositions.reduce((s,p)=>s+(parseFloat(p.cost_basis_total)||0),0);
+  const totalPnlAllIn = totalRealized + totalUnrealized + totalDividends;
+  const totalReturnPct = totalCostBasisEver>0 ? totalPnlAllIn/totalCostBasisEver*100 : null;
+
+  // Sector/symbol allocation — based on cost basis of currently OPEN positions
+  const bySector = {}, bySymbol = {};
+  openPositions.forEach(p=>{
+    const basis = parseFloat(p.cost_basis_remaining)||0;
+    const sec = p.sector || 'Unspecified';
+    bySector[sec] = (bySector[sec]||0) + basis;
+    bySymbol[p.symbol] = (bySymbol[p.symbol]||0) + basis;
+  });
+  const sectorRows = Object.entries(bySector).sort((a,b)=>b[1]-a[1]);
+
+  // Cumulative realized P&L over time — the swing-trading "equity curve"
+  const closedByDate = {};
+  positions.filter(p=>p.status==='closed'&&p.closed_date).forEach(p=>{
+    closedByDate[p.closed_date] = (closedByDate[p.closed_date]||0) + parseFloat(p.realized_pnl||0);
+  });
+  const closedDates = Object.keys(closedByDate).sort();
+  let cumRealized = 0;
+  const realizedCurve = closedDates.map(d=>{ cumRealized += closedByDate[d]; return {date:d, val:+cumRealized.toFixed(2)}; });
+
+  // Dividend income by month
+  const divByMonth = {};
+  positions.forEach(p=>(p.dividends||[]).forEach(d=>{
+    if(!d.date||!d.amount) return;
+    const month = d.date.slice(0,7);
+    divByMonth[month] = (divByMonth[month]||0) + (parseFloat(d.amount)||0);
+  }));
+  const divMonths = Object.keys(divByMonth).sort();
+  const dividendSeries = divMonths.map(m=>({date:m, val:+divByMonth[m].toFixed(2)}));
+
+  // Holding period distribution — days held, closed positions only
+  const holdBuckets = {'<30d':0,'30-90d':0,'90-180d':0,'180-365d':0,'365d+':0};
+  positions.filter(p=>p.status==='closed'&&p.closed_date&&p.opened_date).forEach(p=>{
+    const days = (new Date(p.closed_date) - new Date(p.opened_date)) / 86400000;
+    if(days<30) holdBuckets['<30d']++;
+    else if(days<90) holdBuckets['30-90d']++;
+    else if(days<180) holdBuckets['90-180d']++;
+    else if(days<365) holdBuckets['180-365d']++;
+    else holdBuckets['365d+']++;
+  });
+  const DONUT_COLORS=[C.teal,C.blue,C.purple,C.orange,C.yellow,C.green,C.red,C.textMut];
+
+  const symbolRows = Object.entries(bySymbol).sort((a,b)=>b[1]-a[1]);
+
+  // Contribution analysis — which positions actually drove the return
+  const contributionRows = statsPositions
+    .filter(p=>p.realized_pnl!=null||p.unrealized_pnl!=null||parseFloat(p.total_dividends)>0)
+    .map(p=>({
+      symbol:p.symbol, status:p.status,
+      contribution:(parseFloat(p.realized_pnl)||0)+(parseFloat(p.unrealized_pnl)||0)+(parseFloat(p.total_dividends)||0),
+    }))
+    .sort((a,b)=>b.contribution-a.contribution);
+
+  // ACB (Adjusted Cost Base) — Canadian capital-gains tracking convention.
+  // Pools ALL entries/exits for a symbol across every position ever (not
+  // just within one position record), since CRA tracks ACB per security,
+  // not per trade. Tracking aid only — not tax advice, doesn't handle
+  // superficial loss rules or foreign-currency ACB adjustments.
+  const txBySymbol = {};
+  statsPositions.forEach(p=>{
+    (txBySymbol[p.symbol]=txBySymbol[p.symbol]||[]);
+    (p.entries||[]).forEach(e=>txBySymbol[p.symbol].push({type:'buy',date:e.date,qty:parseFloat(e.qty)||0,price:parseFloat(e.price)||0}));
+    (p.exits||[]).forEach(e=>txBySymbol[p.symbol].push({type:'sell',date:e.date,qty:parseFloat(e.qty)||0,price:parseFloat(e.price)||0}));
+  });
+  const acbReport = Object.entries(txBySymbol).map(([symbol,txs])=>{
+    const sorted=[...txs].sort((a,b)=>a.date.localeCompare(b.date));
+    let shares=0, totalCost=0, realizedCapGain=0;
+    sorted.forEach(tx=>{
+      if(tx.type==='buy'){ shares+=tx.qty; totalCost+=tx.qty*tx.price; }
+      else {
+        const acbPerShare = shares>0 ? totalCost/shares : 0;
+        realizedCapGain += (tx.price-acbPerShare)*tx.qty;
+        totalCost -= acbPerShare*tx.qty;
+        shares -= tx.qty;
+      }
+    });
+    return { symbol, sharesHeld:shares, acbPerShare: shares>0?totalCost/shares:0, totalACB:totalCost, realizedCapGain };
+  }).filter(r=>r.sharesHeld>0.0001||Math.abs(r.realizedCapGain)>0.01).sort((a,b)=>b.totalACB-a.totalACB);
+
+  // Simple future income projection — extrapolated from YOUR OWN logged
+  // dividend cadence per symbol. Not a real forecast; a real dividend can be
+  // cut, raised, or skipped entirely. Needs 2+ logged payments to project.
+  const divsBySymbol = {};
+  statsPositions.forEach(p=>(p.dividends||[]).forEach(d=>{
+    if(!d.date||!d.amount) return;
+    (divsBySymbol[p.symbol]=divsBySymbol[p.symbol]||[]).push({date:d.date, amount:parseFloat(d.amount)||0});
+  }));
+  const futureIncomeRows = Object.entries(divsBySymbol).filter(([,divs])=>divs.length>=2).map(([symbol,divs])=>{
+    const sorted=[...divs].sort((a,b)=>a.date.localeCompare(b.date));
+    const gaps=[];
+    for(let i=1;i<sorted.length;i++) gaps.push((new Date(sorted[i].date)-new Date(sorted[i-1].date))/86400000);
+    const avgGap = gaps.reduce((s,g)=>s+g,0)/gaps.length;
+    const avgAmount = sorted.reduce((s,d)=>s+d.amount,0)/sorted.length;
+    const lastDate = new Date(sorted[sorted.length-1].date);
+    const nextDate = new Date(lastDate.getTime()+avgGap*86400000);
+    return { symbol, avgAmount, avgGapDays:avgGap, nextDate: nextDate.toISOString().slice(0,10), estimatedAnnual: avgGap>0?avgAmount*(365/avgGap):0 };
+  }).sort((a,b)=>new Date(a.nextDate)-new Date(b.nextDate));
+  const totalEstimatedAnnualIncome = futureIncomeRows.reduce((s,r)=>s+r.estimatedAnnual,0);
+
+
+  return (
+    <div>
+      {showConnect && (
+        <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:100,padding:20}} onClick={()=>setShowConnect(false)}>
+          <div onClick={e=>e.stopPropagation()} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,padding:20,maxWidth:440,width:'100%'}}>
+            <div style={{fontSize:15,fontWeight:800,color:C.text,marginBottom:6}}>Connect Questrade</div>
+            <div style={{fontSize:12,color:C.textMut,marginBottom:14,lineHeight:1.6}}>
+              In Questrade: Security → API Centre → activate API access → register a personal app → generate a refresh token. Paste it below — it's used once to establish the connection, then this app manages renewal automatically.
+            </div>
+            <textarea value={connectToken} onChange={e=>setConnectToken(e.target.value)} placeholder="Paste refresh token here" rows={2} style={{width:'100%',padding:'9px 12px',borderRadius:10,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:13,fontFamily:'inherit',resize:'vertical',marginBottom:12}}/>
+            <div style={{display:'flex',gap:8}}>
+              <button onClick={handleConnectQuestrade} disabled={connecting} style={{flex:1,padding:'10px',borderRadius:10,border:`1.5px solid ${C.teal}`,background:C.teal+'15',color:C.teal,fontFamily:'inherit',fontSize:13,fontWeight:700,cursor:connecting?'not-allowed':'pointer'}}>
+                {connecting?'Connecting...':'Connect'}
+              </button>
+              <button onClick={()=>setShowConnect(false)} style={{padding:'10px 16px',borderRadius:10,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textMut,fontFamily:'inherit',fontSize:13,cursor:'pointer'}}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14,flexWrap:'wrap',gap:8}}>
+        <div style={{fontSize:12,color:questradeConnected?C.green:C.textMut,display:'flex',alignItems:'center',gap:6}}>
+          <span style={{width:7,height:7,borderRadius:'50%',background:questradeConnected?C.green:C.textDim}}/>
+          {questradeConnected===null?'Checking Questrade connection...':questradeConnected?'Questrade connected — prices refresh automatically after close on weekdays':'Questrade not connected — prices are manual only'}
+        </div>
+        <div style={{display:'flex',gap:8}}>
+          {questradeConnected===false && (
+            <button onClick={()=>setShowConnect(true)} style={{padding:'6px 12px',borderRadius:16,fontSize:11,fontFamily:'inherit',cursor:'pointer',border:`1.5px solid ${C.blue}`,background:C.blue+'15',color:C.blue,fontWeight:700}}>Connect Questrade</button>
+          )}
+          {questradeConnected && (
+            <button onClick={handleRefreshPrices} disabled={refreshing} style={{padding:'6px 12px',borderRadius:16,fontSize:11,fontFamily:'inherit',cursor:refreshing?'not-allowed':'pointer',border:`1.5px solid ${C.teal}`,background:C.teal+'15',color:C.teal,fontWeight:700}}>
+              {refreshing?'⏳ Refreshing...':'🔄 Refresh Prices'}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {sectorRows.filter(([sec,val])=>{
+        const pct = totalInvested>0 ? val/totalInvested*100 : 0;
+        const ceiling = sectorCeilings[sec];
+        return ceiling && pct > parseFloat(ceiling);
+      }).map(([sec,val])=>{
+        const pct = val/totalInvested*100;
+        return (
+          <div key={sec} style={{padding:'8px 14px',borderRadius:10,background:C.orange+'15',border:`1px solid ${C.orange}40`,marginBottom:8,fontSize:12,color:C.orange,fontWeight:600}}>
+            ⚠ {sec} is {pct.toFixed(0)}% of your portfolio — above your {sectorCeilings[sec]}% ceiling
+          </div>
+        );
+      })}
+      {mixedCurrencies && (
+        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12,flexWrap:'wrap'}}>
+          <span style={{fontSize:11,color:C.yellow}}>⚠ {currencyFilter==='all' ? 'Mixed CAD/USD — totals below are added together with no FX conversion.' : `Showing ${currencyFilter} only.`}</span>
+          <div style={{display:'flex',gap:4}}>
+            {['all',...currenciesPresent].map(c=>(
+              <button key={c} onClick={()=>setCurrencyFilter(c)} style={{
+                padding:'4px 10px',borderRadius:12,fontSize:11,fontFamily:'inherit',cursor:'pointer',
+                border:`1px solid ${currencyFilter===c?C.teal:C.border}`,background:currencyFilter===c?C.teal+'15':'transparent',
+                color:currencyFilter===c?C.teal:C.textMut,fontWeight:currencyFilter===c?700:400,textTransform:'capitalize',
+              }}>{c}</button>
+            ))}
+          </div>
+        </div>
+      )}
+      <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(4,1fr)',gap:10,marginBottom:10}}>
+        <BigStat label="Open Positions" val={openCount} col={C.yellow}/>
+        <BigStat label="Closed" val={closedCount} col={C.textSub}/>
+        <BigStat label="Realized P&L" val={`${totalRealized>=0?'+':''}$${totalRealized.toFixed(2)}`} col={totalRealized>=0?C.green:C.red}/>
+        <BigStat label="Win Rate (closed)" val={closedCount>0?`${winRate.toFixed(0)}%`:'—'} col={winRate>=50?C.green:C.yellow}/>
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(4,1fr)',gap:10,marginBottom:16}}>
+        <BigStat label="Unrealized P&L" val={totalUnrealized||openPositions.some(p=>p.unrealized_pnl!=null)?`${totalUnrealized>=0?'+':''}$${totalUnrealized.toFixed(2)}`:'—'} col={totalUnrealized>=0?C.green:C.red} sub="needs current price set"/>
+        <BigStat label="Dividends" val={`+$${totalDividends.toFixed(2)}`} col={C.teal}/>
+        <BigStat label="Total Invested" val={`$${totalInvested.toFixed(0)}`} col={C.textSub} sub="open positions, cost basis"/>
+        <BigStat label="Total Return" val={totalReturnPct!=null?`${totalReturnPct>=0?'+':''}${totalReturnPct.toFixed(1)}%`:'—'} col={totalPnlAllIn>=0?C.green:C.red} sub="all-in, incl. dividends"/>
+      </div>
+
+      <div style={{display:'flex',gap:6,marginBottom:16}}>
+        <button onClick={()=>setView('positions')} style={{padding:'7px 14px',borderRadius:16,fontSize:12,fontFamily:'inherit',cursor:'pointer',border:`1.5px solid ${view==='positions'?C.teal:C.border}`,background:view==='positions'?C.teal+'15':'transparent',color:view==='positions'?C.teal:C.textMut,fontWeight:view==='positions'?700:400}}>Positions</button>
+        <button onClick={()=>setView('allocation')} style={{padding:'7px 14px',borderRadius:16,fontSize:12,fontFamily:'inherit',cursor:'pointer',border:`1.5px solid ${view==='allocation'?C.teal:C.border}`,background:view==='allocation'?C.teal+'15':'transparent',color:view==='allocation'?C.teal:C.textMut,fontWeight:view==='allocation'?700:400}}>Allocation</button>
+        <button onClick={()=>setView('insights')} style={{padding:'7px 14px',borderRadius:16,fontSize:12,fontFamily:'inherit',cursor:'pointer',border:`1.5px solid ${view==='insights'?C.teal:C.border}`,background:view==='insights'?C.teal+'15':'transparent',color:view==='insights'?C.teal:C.textMut,fontWeight:view==='insights'?700:400}}>Insights</button>
+      </div>
+
+      {view==='allocation' ? (
+        <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+          <ChartCard title="By Sector" sub="Cost basis of currently open positions">
+            <SvgDonutChart data={sectorRows.map(([sec,val],i)=>({label:sec, value:val, color:DONUT_COLORS[i%DONUT_COLORS.length]}))}/>
+            {sectorRows.length>0 && (
+              <div style={{marginTop:16,paddingTop:14,borderTop:`1px solid ${C.border}`}}>
+                <div style={{fontSize:10,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700,marginBottom:8}}>Comfort ceilings — set once, get warned if crossed</div>
+                {sectorRows.map(([sec,val])=>{
+                  const pct = totalInvested>0 ? val/totalInvested*100 : 0;
+                  const ceiling = sectorCeilings[sec];
+                  const exceeded = ceiling && pct > parseFloat(ceiling);
+                  return (
+                    <div key={sec} style={{display:'flex',alignItems:'center',gap:8,marginBottom:6,fontSize:12}}>
+                      <span style={{flex:1,color:exceeded?C.orange:C.textSub,fontWeight:exceeded?700:400}}>
+                        {exceeded?'⚠ ':''}{sec}: {pct.toFixed(0)}%
+                      </span>
+                      <span style={{color:C.textMut,fontSize:11}}>ceiling</span>
+                      <input type="number" placeholder="—" value={ceiling||''} onChange={e=>setCeiling(sec,e.target.value)} style={{width:50,padding:'4px 6px',borderRadius:6,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:11,fontFamily:'inherit'}}/>
+                      <span style={{color:C.textMut,fontSize:11}}>%</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </ChartCard>
+          <ChartCard title="By Symbol (Concentration)" sub="Watch for over-concentration in one name">
+            {symbolRows.length===0 ? <div style={{color:C.textDim,fontSize:12,textAlign:'center',padding:'20px 0'}}>No open positions</div> :
+              symbolRows.map(([sym,val])=>{
+                const pct = val/totalInvested*100;
+                return(
+                  <div key={sym} style={{marginBottom:10}}>
+                    <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:4}}>
+                      <span style={{color:C.textSub}}>{sym}</span>
+                      <span style={{color:pct>25?C.orange:C.text,fontWeight:700}}>${val.toFixed(0)} ({pct.toFixed(0)}%){pct>25?' ⚠':''}</span>
+                    </div>
+                    <div style={{height:6,background:C.surface2,borderRadius:3,overflow:'hidden'}}>
+                      <div style={{height:'100%',width:`${pct}%`,background:pct>25?C.orange:C.blue}}/>
+                    </div>
+                  </div>
+                );
+              })
+            }
+          </ChartCard>
+        </div>
+      ) : null}
+      {view==='allocation' && (
+        <>
+        <ChartCard title="Cumulative Realized P&L" sub="Closed positions only — the swing-trading equity curve">
+          <SvgLineChart series={realizedCurve} color={cumRealized>=0?C.green:C.red}/>
+        </ChartCard>
+        <ChartCard title="Dividend Income by Month">
+          <SvgBarChart series={dividendSeries} posColor={C.teal} negColor={C.red}/>
+        </ChartCard>
+        <ChartCard title="Holding Period Distribution" sub="Closed positions — are you actually holding long-term?">
+          <div style={{display:'flex',gap:16,alignItems:'flex-end',height:140,paddingTop:10}}>
+            {Object.entries(holdBuckets).map(([label,count])=>{
+              const max=Math.max(...Object.values(holdBuckets),1);
+              return(
+                <div key={label} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:6,height:'100%',justifyContent:'flex-end'}}>
+                  <span style={{fontSize:12,fontWeight:700,color:C.textSub}}>{count||''}</span>
+                  <div style={{width:'100%',maxWidth:48,height:`${count/max*80}%`,minHeight:count?4:0,background:C.purple,borderRadius:'4px 4px 0 0',opacity:0.85}}/>
+                  <span style={{fontSize:10,color:C.textMut}}>{label}</span>
+                </div>
+              );
+            })}
+          </div>
+        </ChartCard>
+        </>
+      )}
+      {view==='insights' && (
+        <>
+        <ChartCard title="Contribution Analysis" sub="Which positions actually drove your return (realized + unrealized + dividends)">
+          {contributionRows.length===0 ? <div style={{color:C.textDim,fontSize:12,textAlign:'center',padding:'20px 0'}}>No positions with P&L yet</div> :
+            contributionRows.map((r,i)=>(
+              <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 0',borderBottom:i<contributionRows.length-1?`1px solid ${C.border}`:'none'}}>
+                <span style={{fontSize:13,color:C.textSub}}>{r.symbol} <span style={{fontSize:10,color:C.textMut}}>({r.status})</span></span>
+                <span style={{fontSize:13,fontWeight:700,color:r.contribution>=0?C.green:C.red}}>{r.contribution>=0?'+':''}${r.contribution.toFixed(2)}</span>
+              </div>
+            ))
+          }
+        </ChartCard>
+
+        <ChartCard title="Adjusted Cost Base (ACB)" sub="Canadian capital-gains tracking aid — not tax advice, doesn't handle superficial loss rules or FX adjustments">
+          {acbReport.length===0 ? <div style={{color:C.textDim,fontSize:12,textAlign:'center',padding:'20px 0'}}>No positions yet</div> :
+            <div style={{overflowX:'auto'}}>
+              <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                <thead><tr style={{borderBottom:`1px solid ${C.border}`}}>
+                  <th style={{textAlign:'left',padding:'6px 8px',color:C.textMut,fontWeight:600}}>Symbol</th>
+                  <th style={{textAlign:'right',padding:'6px 8px',color:C.textMut,fontWeight:600}}>Shares Held</th>
+                  <th style={{textAlign:'right',padding:'6px 8px',color:C.textMut,fontWeight:600}}>ACB/Share</th>
+                  <th style={{textAlign:'right',padding:'6px 8px',color:C.textMut,fontWeight:600}}>Total ACB</th>
+                  <th style={{textAlign:'right',padding:'6px 8px',color:C.textMut,fontWeight:600}}>Realized Cap. Gain</th>
+                </tr></thead>
+                <tbody>
+                  {acbReport.map((r,i)=>(
+                    <tr key={i} style={{borderBottom:i<acbReport.length-1?`1px solid ${C.border}`:'none'}}>
+                      <td style={{padding:'6px 8px',color:C.text,fontWeight:700}}>{r.symbol}</td>
+                      <td style={{padding:'6px 8px',textAlign:'right',color:C.textSub}}>{r.sharesHeld.toFixed(2)}</td>
+                      <td style={{padding:'6px 8px',textAlign:'right',color:C.textSub}}>${r.acbPerShare.toFixed(2)}</td>
+                      <td style={{padding:'6px 8px',textAlign:'right',color:C.textSub}}>${r.totalACB.toFixed(2)}</td>
+                      <td style={{padding:'6px 8px',textAlign:'right',color:r.realizedCapGain>=0?C.green:C.red,fontWeight:700}}>{r.realizedCapGain>=0?'+':''}${r.realizedCapGain.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          }
+        </ChartCard>
+
+        <ChartCard title="Future Income Projection" sub="Extrapolated from your own logged dividend history only — not a real forecast, dividends can be cut or raised">
+          {futureIncomeRows.length===0 ? <div style={{color:C.textDim,fontSize:12,textAlign:'center',padding:'20px 0'}}>Log 2+ dividends on the same symbol to see a projection</div> : (
+            <>
+              <div style={{marginBottom:12,fontSize:13,color:C.textSub}}>Estimated annual income (current holdings' pace): <b style={{color:C.teal}}>${totalEstimatedAnnualIncome.toFixed(2)}</b></div>
+              {futureIncomeRows.map((r,i)=>(
+                <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 0',borderBottom:i<futureIncomeRows.length-1?`1px solid ${C.border}`:'none'}}>
+                  <span style={{fontSize:13,color:C.textSub}}>{r.symbol}</span>
+                  <span style={{fontSize:12,color:C.textMut}}>next ~{r.nextDate} · ~${r.avgAmount.toFixed(2)} · ~{Math.round(r.avgGapDays)}d cadence</span>
+                </div>
+              ))}
+            </>
+          )}
+        </ChartCard>
+        </>
+      )}
+
+      {view==='positions' && (
+      <>
+      <div style={{display:'flex',gap:8,marginBottom:16,alignItems:'center',justifyContent:'space-between',flexWrap:'wrap'}}>
+        <div style={{display:'flex',gap:6}}>
+          {['open','closed','all'].map(f=>(
+            <button key={f} onClick={()=>setFilter(f)} style={{
+              padding:'7px 14px',borderRadius:16,fontSize:12,fontFamily:'inherit',cursor:'pointer',textTransform:'capitalize',
+              border:`1.5px solid ${filter===f?C.teal:C.border}`,background:filter===f?C.teal+'15':'transparent',
+              color:filter===f?C.teal:C.textMut,fontWeight:filter===f?700:400,
+            }}>{f}</button>
+          ))}
+        </div>
+        {!newPosition && (
+          <button onClick={()=>setNewPosition(emptySwingPosition())} style={{
+            padding:'9px 16px',borderRadius:10,border:`1.5px solid ${C.teal}`,background:C.teal+'15',
+            color:C.teal,fontFamily:'inherit',fontSize:12,fontWeight:700,cursor:'pointer',
+          }}>+ New Position</button>
+        )}
+      </div>
+
+      {newPosition && (
+        <SwingPositionCard
+          position={newPosition}
+          onChange={setNewPosition}
+          onSave={handleSave}
+          onDelete={()=>setNewPosition(null)}
+          isMobile={isMobile}
+        />
+      )}
+
+      {filtered.length===0 && !newPosition && (
+        <div style={{textAlign:'center',color:C.textDim,fontSize:13,padding:'40px 0'}}>
+          No {filter!=='all'?filter:''} positions yet. Click "+ New Position" to add one manually.
+        </div>
+      )}
+
+      {filtered.map(p=>(
+        <SwingPositionCard
+          key={p.id}
+          position={p}
+          onChange={updated=>setPositions(prev=>prev.map(x=>x.id===p.id?updated:x))}
+          onSave={handleSave}
+          onDelete={handleDelete}
+          isMobile={isMobile}
+        />
+      ))}
+      </>
+      )}
+    </div>
+  );
+}
 
 function ClaudeTab({userId,isMobile}){
   const chatKey='journal_chat_'+(userId||'anon');
@@ -2962,6 +3776,7 @@ function ClaudeTab({userId,isMobile}){
   const estCost=(usage.tokensIn/1e6*3)+(usage.tokensOut/1e6*10)+((usage.cacheWrite||0)/1e6*3.75)+((usage.cacheRead||0)/1e6*0.30);
   const cacheSavings=(usage.cacheRead||0)/1e6*(3-0.30); // rough $ saved vs paying full input rate for those tokens
   const[days,setDays]=useState(null);
+  const[swingPositions,setSwingPositions]=useState(null);
   const[messages,setMessages]=useState(()=>{
     try{const saved=JSON.parse(localStorage.getItem(chatKey));return Array.isArray(saved)?saved:[];}catch(_){return[];}
   });
@@ -2972,6 +3787,7 @@ function ClaudeTab({userId,isMobile}){
   useEffect(()=>{
     let live=true;
     loadAllDays(userId).then(d=>{if(live)setDays(d);});
+    loadSwingPositions(userId).then(d=>{if(live)setSwingPositions(d);});
     return()=>{live=false;};
   },[userId]);
 
@@ -3076,7 +3892,23 @@ RAW TRADES (for custom filters/aggregations you compute yourself):
 ${tradeLines}${trimmedNote}
 
 EOD REVIEWS:
-${reviews}`;
+${reviews}
+
+═══════════════════════════════════════════════════════════════
+SWING/LONG-TERM POSITIONS — COMPLETELY SEPARATE FROM DAY TRADING ABOVE
+═══════════════════════════════════════════════════════════════
+CRITICAL: everything above this line is intraday futures day-trading (R-multiples, win rate, PF, session windows). Everything below is stock/ETF swing and long-term investing — a different account, different timeframe, different metrics entirely. NEVER combine them: don't compute a blended "win rate" across both, don't apply R-multiples to swing positions (they don't have them), don't apply swing % returns to day trades. If asked about "overall" performance without specifying which, ask which one they mean rather than silently blending.
+
+${swingPositions === null ? 'Swing data still loading.' : swingPositions.length === 0 ? 'No swing positions logged yet.' : (() => {
+  const open = swingPositions.filter(p=>p.status==='open');
+  const closed = swingPositions.filter(p=>p.status==='closed');
+  const totalRealized = closed.reduce((s,p)=>s+(parseFloat(p.realized_pnl)||0),0);
+  const totalDiv = swingPositions.reduce((s,p)=>s+(parseFloat(p.total_dividends)||0),0);
+  const lines = swingPositions.slice(0,100).map(p=>
+    `${p.symbol}|${p.currency||'CAD'}|${p.direction}|${p.status}|${p.account}|opened:${p.opened_date}${p.closed_date?`|closed:${p.closed_date}`:''}|avgEntry:${(parseFloat(p.avg_entry)||0).toFixed(2)}|qty:${p.total_qty_entered}|realized:${p.realized_pnl!=null?'$'+parseFloat(p.realized_pnl).toFixed(2):'—'}|unrealized:${p.unrealized_pnl!=null?'$'+parseFloat(p.unrealized_pnl).toFixed(2):'—'}|dividends:$${(parseFloat(p.total_dividends)||0).toFixed(2)}|sector:${p.sector||'—'}|setup:${p.setup||'—'}`
+  ).join('\n');
+  return `SUMMARY: ${open.length} open, ${closed.length} closed. Total realized P&L: $${totalRealized.toFixed(2)}. Total dividends: $${totalDiv.toFixed(2)}.\n\nPOSITIONS:\n${lines}`;
+})()}`;
   };
 
   const callClaude=async(newMessages)=>{
@@ -3107,9 +3939,13 @@ EFFICIENCY (apply everywhere else):
 
 CHARTS: when a visual genuinely helps, emit exactly one fenced block: \u0060\u0060\u0060chart\n{"type":"bar","title":"...","unit":"$","series":[{"label":"...","value":123}]}\n\u0060\u0060\u0060 (or {"type":"line","title":"...","points":[{"label":"...","value":123}]}). Valid JSON only, max 8 bars / 30 points.
 
+LOG_POSITION: if the person describes a swing/long-term trade they made (e.g. "I bought 50 shares of Shopify at $85 today"), reply with a short confirmation sentence, then emit exactly one fenced block: \u0060\u0060\u0060log_position\n{"symbol":"SHOP","direction":"long","qty":50,"price":85,"date":"2026-09-10","account":"Manual","currency":"CAD"}\n\u0060\u0060\u0060 — infer date as today if not stated, account/currency only if stated (otherwise omit those two keys and let the person set them in the card). This renders an editable confirmation card — nothing is saved until the person reviews and clicks Confirm, so don't ask permission first, just emit the block. Only for NEW positions, never for editing/closing an existing one (say so and point them to the Swing tab instead).
+
 REVIEWS: weekly/monthly review → NUMBERS ONLY: "## The Numbers" (table: Trades, W-L-BE, WR, Net PnL, PF, Expectancy, Best day, Worst day, Max DD), "## Strongest Tags" (top 3 by expectancy, with N), "## Weakest Tags" (bottom 3, with N). No psychology, no advice paragraphs.
 
 HAND-OFF: if the question is genuinely open-ended strategic/conceptual discussion, or needs deep multi-angle reasoning that can't honestly compress into a table or a few lines (not just "has multiple parts" — most multi-part data questions still fit the efficient format above) — don't force it into a short answer. Instead reply with ONLY: "This needs more depth than fits here — ask Claude directly in your claude.ai chat for the full breakdown." One line, nothing else. Reserve this for real cases, not as a way to dodge normal analysis.
+
+DAY TRADING vs SWING: two completely separate datasets below (see the SWING/LONG-TERM section header). Never blend their metrics — no combined win rate, no applying R-multiples to swing positions, no applying % returns to day trades. Ask which one is meant if ambiguous.
 
 All trades are legitimate — analyze performance, not behavior.
 
@@ -3248,7 +4084,7 @@ ${buildContext()}`,
               background:m.role==='user'?C.teal+'20':C.surface,
               border:`1px solid ${m.role==='user'?C.teal+'40':C.border}`,
             }}>
-              {m.role==='user'?<div style={{fontSize:13,color:C.text,lineHeight:1.7,whiteSpace:'pre-wrap'}}>{m.content}</div>:<MDMessage content={m.content}/>}
+              {m.role==='user'?<div style={{fontSize:13,color:C.text,lineHeight:1.7,whiteSpace:'pre-wrap'}}>{m.content}</div>:<MDMessage content={m.content} userId={userId}/>}
               {isHandoff && originalQuestion && (
                 <button onClick={()=>{
                   try{navigator.clipboard.writeText(originalQuestion);}catch(_){}
@@ -3543,7 +4379,7 @@ export default function App(){
               <div style={{display:'flex',flexDirection:'column',gap:4}}>
                 {TABS.map((t,i)=>(
                   <button key={t} onClick={()=>setTab(i)} style={{padding:'10px 14px',borderRadius:9,textAlign:'left',background:tab===i?C.surface2:'transparent',border:tab===i?`1px solid ${C.border}`:'1px solid transparent',color:tab===i?C.text:C.textMut,fontSize:13,fontFamily:'inherit',cursor:'pointer',fontWeight:tab===i?700:400,transition:'all 0.15s'}}>
-                    {i===0?'📊 ':i===1?'📈 ':'🤖 '}{i===2?aiName:t}
+                    {i===0?'📊 ':i===1?'📈 ':i===2?'🤖 ':'📅 '}{i===2?aiName:t}
                   </button>
                 ))}
               </div>
@@ -3580,7 +4416,7 @@ export default function App(){
                 <button onClick={()=>goDay(1)} disabled={selectedDate>=today} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,color:selectedDate>=today?C.textDim:C.textSub,width:36,height:36,cursor:selectedDate>=today?'default':'pointer',fontSize:16,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>›</button>
                 {!isToday&&<button onClick={()=>{setSelectedDate(today);setTab(0);}} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,color:C.textSub,padding:'0 10px',height:36,cursor:'pointer',fontSize:12,fontFamily:'inherit',flexShrink:0}}>Today</button>}
               </div>
-              <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:4,background:C.surface,borderRadius:12,padding:4,border:`1px solid ${C.border}`}}>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:4,background:C.surface,borderRadius:12,padding:4,border:`1px solid ${C.border}`}}>
                 {TABS.map((t,i)=>(
                   <button key={t} onClick={()=>setTab(i)} style={{padding:'10px 4px',borderRadius:9,background:tab===i?C.surface2:'transparent',border:'none',color:tab===i?C.text:C.textMut,fontSize:11,fontFamily:'inherit',cursor:'pointer',fontWeight:tab===i?700:400,letterSpacing:'0.03em',transition:'all 0.15s'}}>{t}</button>
                 ))}
@@ -3591,7 +4427,7 @@ export default function App(){
           {!isMobile&&(
             <div style={{marginBottom:28}}>
               <div style={{fontSize:22,fontWeight:800,color:C.text,marginBottom:4}}>
-                {tab===0?'📊 Trades':tab===1?'📈 Analytics':'🤖 Ask Claude'}
+                {tab===0?'📊 Trades':tab===1?'📈 Analytics':tab===2?'🤖 Ask Claude':'📅 Swing Positions'}
               </div>
               <div style={{fontSize:14,color:C.textMut}}>{fmtDate(selectedDate)}{isToday?' · Today':''}</div>
             </div>
@@ -3604,6 +4440,7 @@ export default function App(){
               {tab===0&&<TradesTab trades={dayData.trades} onChange={updateTrades} eod={dayData.eod} onEodChange={updateEod} date={selectedDate} isMobile={isMobile} userId={user?.id} onJumpToDate={d=>setSelectedDate(d)}/>}
               {tab===1&&<AnalyticsTab userId={user?.id} isMobile={isMobile} onJumpToDate={d=>{setSelectedDate(d);setTab(0);}}/>}
               {tab===2&&<ClaudeTab userId={user?.id} isMobile={isMobile}/>}
+              {tab===3&&<SwingTab userId={user?.id} isMobile={isMobile}/>}
             </>
           )}
         </div>

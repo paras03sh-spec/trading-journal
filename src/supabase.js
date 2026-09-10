@@ -97,3 +97,39 @@ export async function saveIndex(date, summary, userId) {
       .upsert({ date, ...summary, user_id: userId }, { onConflict: 'date,user_id' });
   } catch (_) {}
 }
+
+// ─── Swing positions (separate table — positions span days/weeks, don't
+// belong to a single journal_days row the way intraday trades do) ────────────
+export async function loadSwingPositions(userId) {
+  try {
+    const { data, error } = await supabase
+      .from('swing_positions')
+      .select('*')
+      .eq('user_id', userId)
+      .order('opened_date', { ascending: false });
+    if (error || !data) return [];
+    return data;
+  } catch (_) { return []; }
+}
+
+export async function saveSwingPosition(position, userId) {
+  try {
+    const { data, error } = await supabase
+      .from('swing_positions')
+      .upsert({ ...position, user_id: userId, updated_at: new Date().toISOString() })
+      .select()
+      .single();
+    if (error) return null;
+    return data;
+  } catch (_) { return null; }
+}
+
+export async function deleteSwingPosition(id, userId) {
+  try {
+    await supabase
+      .from('swing_positions')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', userId);
+  } catch (_) {}
+}
