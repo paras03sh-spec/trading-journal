@@ -3402,10 +3402,11 @@ function SwingTab({userId, isMobile}){
       });
       const data = await res.json();
       const r = data.results?.[0];
-      if (r?.error) { window.alert('Refresh failed: ' + r.error); setRefreshing(false); return; }
+      const versionLine = `\n\n[server version: ${data._version||'unknown — old deployment'}]`;
+      if (r?.error) { window.alert('Refresh failed: ' + r.error + (r?.debug ? `\n\nDetails:\n${r.debug.join('\n')}` : '') + versionLine); setRefreshing(false); return; }
       const fresh = await loadSwingPositions(userId);
       setPositions(fresh.map(computeSwingDerived));
-      window.alert(`Refreshed ${r?.updated||0} of ${r?.total||0} open positions.` + (r?.debug ? `\n\nDetails:\n${r.debug.join('\n')}` : ''));
+      window.alert(`Refreshed ${r?.updated||0} of ${r?.total||0} open positions.` + (r?.debug ? `\n\nDetails:\n${r.debug.join('\n')}` : '') + versionLine);
     } catch (e) {
       window.alert('Could not reach the server: ' + e.message);
     }
