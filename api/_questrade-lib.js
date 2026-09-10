@@ -46,31 +46,61 @@ export async function getValidAccessToken(supabase, userId) {
 // cached value on the position if present (avoids re-resolving on every
 // single refresh — symbol IDs don't change).
 export async function resolveSymbolId(supabase, apiServer, accessToken, position) {
-  if (position.questrade_symbol_id) return position.questrade_symbol_id;
+  if (position.questrade_symbol_id) return { symbolId: position.questrade_symbol_id, debug: 'cached' };
   try {
-    const sRes = await fetch(`${apiServer}v1/symbols/search?prefix=${encodeURIComponent(position.symbol)}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
+    const url = `${apiServer}v1/symbols/search?prefix=${encodeURIComponent(position.symbol)}`;
+    const sRes = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
     const sData = await sRes.json();
-    const match = (sData.symbols || []).find(s => s.symbol === position.symbol) || (sData.symbols || [])[0];
-    if (!match) return null;
+    if (!sRes.ok) {
+      return { symbolId: null, debug: `search HTTP ${sRes.status}: ${JSON.stringify(sData)}` };
+    }
+    const candidates = sData.symbols || [];
+    const exactMatches = candidates.filter(s => s.symbol === position.symbol);
+    // Some tickers are dual-listed under the identical symbol string — e.g.
+    // Canadian Depositary Receipts (CDRs) trade under the SAME ticker as the
+    // US original (both just "NFLX"), just on a different exchange/currency.
+    // Currency is the only field that disambiguates which one is meant, so
+    // prefer a match on the position's own stated currency over just taking
+    // the first result.
+    const match = exactMatches.find(s => s.currency === position.currency) || exactMatches[0] || candidates[0];
+    if (!match) {
+      return { symbolId: null, debug: `no match for "${position.symbol}" — search returned ${candidates.length} candidates: ${JSON.stringify(candidates.map(c=>({symbol:c.symbol,currency:c.currency})))}` };
+    }
     await supabase.from('swing_positions').update({ questrade_symbol_id: String(match.symbolId) }).eq('id', position.id);
-    return String(match.symbolId);
-  } catch (_) {
-    return null;
+    return { symbolId: String(match.symbolId), debug: `resolved to ${match.symbol} (${match.currency}, id ${match.symbolId})` };
+  } catch (e) {
+    return { symbolId: null, debug: `exception: ${e.message}` };
   }
 }
 
 // Batch quote fetch — Questrade accepts comma-separated IDs in one call.
 export async function fetchQuotes(apiServer, accessToken, symbolIds) {
-  if (symbolIds.length === 0) return {};
+  if (symbolIds.length === 0) return { prices: {}, debug: 'no symbol ids to fetch' };
   try {
     const qRes = await fetch(`${apiServer}v1/markets/quotes/${symbolIds.join(',')}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     const qData = await qRes.json();
+    if (!qRes.ok) return { prices: {}, debug: `quotes HTTP ${qRes.status}: ${JSON.stringify(qData)}` };
     const byId = {};
     (qData.quotes || []).forEach(q => { byId[String(q.symbolId)] = q.lastTradePrice; });
+    return { prices: byId, debug: `got ${(qData.quotes||[]).length} quotes` };
+  } catch (e) {
+    return { prices: {}, debug: `exception: ${e.message}` };
+  }
+}
+
+// Fetches real industry sector classification for a batch of symbol IDs —
+// separate endpoint from quotes (symbols/:id vs markets/quotes/:id).
+export async function fetchSectors(apiServer, accessToken, symbolIds) {
+  if (symbolIds.length === 0) return {};
+  try {
+    const sRes = await fetch(`${apiServer}v1/symbols?ids=${symbolIds.join(',')}`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const sData = await sRes.json();
+    const byId = {};
+    (sData.symbols || []).forEach(s => { if (s.industrySector) byId[String(s.symbolId)] = s.industrySector; });
     return byId;
   } catch (_) {
     return {};

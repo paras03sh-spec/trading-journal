@@ -6,7 +6,7 @@
 // finds the URL (Vercel signs cron requests with CRON_SECRET automatically
 // when that env var is set).
 import { createClient } from '@supabase/supabase-js';
-import { getValidAccessToken, resolveSymbolId, fetchQuotes } from './_questrade-lib.js';
+import { getValidAccessToken, resolveSymbolId, fetchQuotes, fetchSectors } from './_questrade-lib.js';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -47,30 +47,37 @@ export default async function handler(req, res) {
 
     const { data: positions } = await supabase
       .from('swing_positions')
-      .select('id, symbol, questrade_symbol_id')
+      .select('id, symbol, questrade_symbol_id, sector, currency')
       .eq('user_id', userId)
       .eq('status', 'open');
     if (!positions || positions.length === 0) { results.push({ userId, updated: 0 }); continue; }
 
     const idBySymbol = {};
+    const resolveDebug = [];
     for (const p of positions) {
-      const sid = await resolveSymbolId(supabase, api_server, access_token, p);
-      if (sid) idBySymbol[sid] = p.id;
+      const { symbolId, debug } = await resolveSymbolId(supabase, api_server, access_token, p);
+      resolveDebug.push(`${p.symbol}: ${debug}`);
+      if (symbolId) idBySymbol[symbolId] = p.id;
     }
     const symbolIds = Object.keys(idBySymbol);
-    const prices = await fetchQuotes(api_server, access_token, symbolIds);
+    const { prices, debug: quotesDebug } = await fetchQuotes(api_server, access_token, symbolIds);
+    const sectors = await fetchSectors(api_server, access_token, symbolIds);
+    const positionById = Object.fromEntries(positions.map(p => [p.id, p]));
 
     let updated = 0;
-    for (const [sid, price] of Object.entries(prices)) {
-      if (price == null) continue;
+    for (const sid of symbolIds) {
       const positionId = idBySymbol[sid];
-      await supabase.from('swing_positions').update({
-        current_price: price,
-        current_price_updated: new Date().toISOString(),
-      }).eq('id', positionId);
+      const price = prices[sid];
+      const sector = sectors[sid];
+      const pos = positionById[positionId];
+      const patch = {};
+      if (price != null) { patch.current_price = price; patch.current_price_updated = new Date().toISOString(); }
+      if (sector && !pos.sector) patch.sector = sector; // only fill blanks, never override a manual value
+      if (Object.keys(patch).length === 0) continue;
+      await supabase.from('swing_positions').update(patch).eq('id', positionId);
       updated++;
     }
-    results.push({ userId, updated, total: positions.length });
+    results.push({ userId, updated, total: positions.length, debug: [...resolveDebug, quotesDebug] });
   }
 
   return res.status(200).json({ results });

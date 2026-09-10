@@ -3344,7 +3344,7 @@ function SwingTab({userId, isMobile}){
       if (r?.error) { window.alert('Refresh failed: ' + r.error); setRefreshing(false); return; }
       const fresh = await loadSwingPositions(userId);
       setPositions(fresh.map(computeSwingDerived));
-      window.alert(`Refreshed ${r?.updated||0} of ${r?.total||0} open positions.`);
+      window.alert(`Refreshed ${r?.updated||0} of ${r?.total||0} open positions.` + (r?.debug ? `\n\nDetails:\n${r.debug.join('\n')}` : ''));
     } catch (e) {
       window.alert('Could not reach the server: ' + e.message);
     }
