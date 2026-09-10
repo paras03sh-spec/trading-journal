@@ -41,9 +41,8 @@ export default async function handler(req, res) {
 
   const results = [];
   for (const userId of userIds) {
-    const tokenResult = await getValidAccessToken(supabase, userId);
+    let tokenResult = await getValidAccessToken(supabase, userId);
     if (tokenResult.error) { results.push({ userId, error: tokenResult.error }); continue; }
-    const { access_token, api_server } = tokenResult;
 
     const { data: positions } = await supabase
       .from('swing_positions')
@@ -52,32 +51,50 @@ export default async function handler(req, res) {
       .eq('status', 'open');
     if (!positions || positions.length === 0) { results.push({ userId, updated: 0 }); continue; }
 
-    const idBySymbol = {};
-    const resolveDebug = [];
-    for (const p of positions) {
-      const { symbolId, debug } = await resolveSymbolId(supabase, api_server, access_token, p);
-      resolveDebug.push(`${p.symbol}: ${debug}`);
-      if (symbolId) idBySymbol[symbolId] = p.id;
-    }
-    const symbolIds = Object.keys(idBySymbol);
-    const { prices, debug: quotesDebug } = await fetchQuotes(api_server, access_token, symbolIds);
-    const sectors = await fetchSectors(api_server, access_token, symbolIds);
-    const positionById = Object.fromEntries(positions.map(p => [p.id, p]));
+    // Runs the actual refresh; returns whether any call hit a 401, so the
+    // caller can force a fresh token and retry once — our stored expiry
+    // said the token should still be good, but Questrade disagreed, so
+    // trust Questrade's own answer over our local clock.
+    const runOnce = async (access_token, api_server) => {
+      const idBySymbol = {};
+      const resolveDebug = [];
+      let sawInvalidToken = false;
+      for (const p of positions) {
+        const { symbolId, debug, invalidToken } = await resolveSymbolId(supabase, api_server, access_token, p);
+        resolveDebug.push(`${p.symbol}: ${debug}`);
+        if (invalidToken) sawInvalidToken = true;
+        if (symbolId) idBySymbol[symbolId] = p.id;
+      }
+      const symbolIds = Object.keys(idBySymbol);
+      const { prices, debug: quotesDebug, invalidToken: quotesInvalid } = await fetchQuotes(api_server, access_token, symbolIds);
+      if (quotesInvalid) sawInvalidToken = true;
+      const sectors = await fetchSectors(api_server, access_token, symbolIds);
+      const positionById = Object.fromEntries(positions.map(p => [p.id, p]));
 
-    let updated = 0;
-    for (const sid of symbolIds) {
-      const positionId = idBySymbol[sid];
-      const price = prices[sid];
-      const sector = sectors[sid];
-      const pos = positionById[positionId];
-      const patch = {};
-      if (price != null) { patch.current_price = price; patch.current_price_updated = new Date().toISOString(); }
-      if (sector && !pos.sector) patch.sector = sector; // only fill blanks, never override a manual value
-      if (Object.keys(patch).length === 0) continue;
-      await supabase.from('swing_positions').update(patch).eq('id', positionId);
-      updated++;
+      let updated = 0;
+      for (const sid of symbolIds) {
+        const positionId = idBySymbol[sid];
+        const price = prices[sid];
+        const sector = sectors[sid];
+        const pos = positionById[positionId];
+        const patch = {};
+        if (price != null) { patch.current_price = price; patch.current_price_updated = new Date().toISOString(); }
+        if (sector && !pos.sector) patch.sector = sector; // only fill blanks, never override a manual value
+        if (Object.keys(patch).length === 0) continue;
+        await supabase.from('swing_positions').update(patch).eq('id', positionId);
+        updated++;
+      }
+      return { updated, debug: [...resolveDebug, quotesDebug], sawInvalidToken };
+    };
+
+    let outcome = await runOnce(tokenResult.access_token, tokenResult.api_server);
+    if (outcome.sawInvalidToken) {
+      tokenResult = await getValidAccessToken(supabase, userId, true); // force a fresh token, ignore cached expiry
+      if (tokenResult.error) { results.push({ userId, error: tokenResult.error, debug: outcome.debug }); continue; }
+      outcome = await runOnce(tokenResult.access_token, tokenResult.api_server);
+      outcome.debug.push('(retried once with a forced fresh token after a 401)');
     }
-    results.push({ userId, updated, total: positions.length, debug: [...resolveDebug, quotesDebug] });
+    results.push({ userId, updated: outcome.updated, total: positions.length, debug: outcome.debug });
   }
 
   return res.status(200).json({ results });

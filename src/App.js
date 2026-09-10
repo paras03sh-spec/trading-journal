@@ -3082,9 +3082,39 @@ function computeSwingDerived(pos){
   };
 }
 
-function SwingPositionCard({position, onChange, onDelete, onSave, isMobile}){
+function SwingPositionCard({position, onChange, onDelete, onSave, isMobile, userId}){
   const [open, setOpen] = useState(!position.id); // new/unsaved positions start expanded
   const [showDividends, setShowDividends] = useState((position.dividends||[]).length > 0);
+  const [symbolResults, setSymbolResults] = useState([]);
+  const [showSymbolDropdown, setShowSymbolDropdown] = useState(false);
+  const [symbolSearching, setSymbolSearching] = useState(false);
+  const searchDebounceRef = useRef();
+
+  const searchSymbols = (prefix) => {
+    clearTimeout(searchDebounceRef.current);
+    if (!prefix || prefix.length < 1 || !userId) { setSymbolResults([]); setShowSymbolDropdown(false); return; }
+    searchDebounceRef.current = setTimeout(async () => {
+      setSymbolSearching(true);
+      try {
+        const res = await fetch('/api/questrade-symbol-search', {
+          method: 'POST', headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ userId, prefix }),
+        });
+        const data = await res.json();
+        setSymbolResults(data.results || []);
+        setShowSymbolDropdown((data.results || []).length > 0);
+      } catch (_) { setSymbolResults([]); }
+      setSymbolSearching(false);
+    }, 300); // debounce — don't hit the API on every single keystroke
+  };
+
+  const pickSymbol = (result) => {
+    // We already know the exact listing from the search result — cache its
+    // symbolId immediately so refresh never has to re-resolve or guess.
+    onChange({...position, symbol: result.symbol, currency: result.currency, questrade_symbol_id: String(result.symbolId)});
+    setShowSymbolDropdown(false);
+  };
+
   const set = (field) => (val) => onChange({...position, [field]: val});
   const derived = computeSwingDerived(position);
   const remaining = derived.total_qty_entered - derived.total_qty_exited;
@@ -3142,15 +3172,46 @@ function SwingPositionCard({position, onChange, onDelete, onSave, isMobile}){
       {open && (
         <div style={{padding:16}}>
           <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'1fr 1fr 1fr',gap:12,marginBottom:10}}>
-            <Input label="Symbol" value={position.symbol} onChange={v=>set('symbol')(v.toUpperCase())}/>
+            <div style={{position:'relative'}}>
+              <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Symbol</div>
+              <input
+                value={position.symbol}
+                onChange={e=>{
+                  const v = e.target.value.toUpperCase();
+                  onChange({...position, symbol:v, questrade_symbol_id:null});
+                  searchSymbols(v);
+                }}
+                onFocus={()=>{ if(symbolResults.length>0) setShowSymbolDropdown(true); }}
+                onBlur={()=>setTimeout(()=>setShowSymbolDropdown(false), 150)} // delay so a click on a result registers first
+                placeholder={userId?'start typing...':'e.g. AAPL'}
+                style={{width:'100%',padding:'9px 12px',borderRadius:10,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:13,fontFamily:'inherit'}}
+              />
+              {symbolSearching && <div style={{position:'absolute',right:10,top:34,fontSize:11,color:C.textDim}}>...</div>}
+              {showSymbolDropdown && symbolResults.length>0 && (
+                <div style={{position:'absolute',top:'100%',left:0,right:0,zIndex:30,background:C.surface,border:`1px solid ${C.border}`,borderRadius:10,marginTop:4,maxHeight:220,overflowY:'auto',boxShadow:'0 8px 20px rgba(0,0,0,0.3)'}}>
+                  {symbolResults.map((r,i)=>(
+                    <div key={i} onMouseDown={()=>pickSymbol(r)} style={{padding:'8px 12px',cursor:'pointer',borderBottom:i<symbolResults.length-1?`1px solid ${C.border}`:'none'}}
+                      onMouseEnter={e=>e.currentTarget.style.background=C.surface2}
+                      onMouseLeave={e=>e.currentTarget.style.background='transparent'}
+                    >
+                      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                        <b style={{fontSize:13,color:C.text}}>{r.symbol}</b>
+                        <span style={{fontSize:10,padding:'2px 6px',borderRadius:8,background:r.currency==='CAD'?C.red+'20':C.green+'20',color:r.currency==='CAD'?C.red:C.green,fontWeight:700}}>{r.currency}</span>
+                      </div>
+                      <div style={{fontSize:11,color:C.textMut}}>{r.description} · {r.listingExchange}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
             <div>
               <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Direction</div>
               <Pills options={[{label:'Long',value:'long'},{label:'Short',value:'short'}]} value={position.direction} onChange={set('direction')} colors={{long:C.green,short:C.red}}/>
             </div>
             <div>
               <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Currency</div>
-              <Pills options={[{label:'CAD',value:'CAD'},{label:'USD',value:'USD'}]} value={position.currency||'CAD'} onChange={set('currency')} colors={{CAD:C.red,USD:C.green}}/>
-              <div style={{fontSize:10,color:C.textDim,marginTop:4}}>Picks the right listing (e.g. NFLX CDR vs NASDAQ NFLX share the same ticker)</div>
+              <Pills options={[{label:'CAD',value:'CAD'},{label:'USD',value:'USD'}]} value={position.currency||'CAD'} onChange={c=>onChange({...position, currency:c, questrade_symbol_id:null})} colors={{CAD:C.red,USD:C.green}}/>
+              <div style={{fontSize:10,color:C.textDim,marginTop:4}}>{userId?'Auto-set when you pick from the dropdown above':'Picks the right listing (e.g. NFLX CDR vs NASDAQ NFLX)'}</div>
             </div>
           </div>
           <div style={{marginBottom:14}}>
@@ -3728,6 +3789,7 @@ function SwingTab({userId, isMobile}){
           onSave={handleSave}
           onDelete={()=>setNewPosition(null)}
           isMobile={isMobile}
+          userId={userId}
         />
       )}
 
@@ -3745,6 +3807,7 @@ function SwingTab({userId, isMobile}){
           onSave={handleSave}
           onDelete={handleDelete}
           isMobile={isMobile}
+          userId={userId}
         />
       ))}
       </>

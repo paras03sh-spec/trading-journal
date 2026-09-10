@@ -7,7 +7,7 @@
 // connection breaks and needs reconnecting from scratch. So every exchange
 // here writes the new refresh_token back to Supabase before returning.
 
-export async function getValidAccessToken(supabase, userId) {
+export async function getValidAccessToken(supabase, userId, forceRefresh = false) {
   const { data, error } = await supabase
     .from('questrade_tokens')
     .select('refresh_token, access_token, api_server, access_token_expires')
@@ -16,7 +16,10 @@ export async function getValidAccessToken(supabase, userId) {
   if (error || !data) return { error: 'No Questrade connection for this user. Connect first.' };
 
   // Still valid? Reuse it — don't burn a refresh-token rotation unnecessarily.
-  if (data.access_token && data.api_server && data.access_token_expires && new Date(data.access_token_expires) > new Date()) {
+  // Unless forceRefresh is set: Questrade itself already told us this token
+  // is invalid (a 401 came back despite our stored expiry saying it should
+  // still be good) — trust Questrade's own answer over our local clock.
+  if (!forceRefresh && data.access_token && data.api_server && data.access_token_expires && new Date(data.access_token_expires) > new Date()) {
     return { access_token: data.access_token, api_server: data.api_server };
   }
 
@@ -52,7 +55,7 @@ export async function resolveSymbolId(supabase, apiServer, accessToken, position
     const sRes = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
     const sData = await sRes.json();
     if (!sRes.ok) {
-      return { symbolId: null, debug: `search HTTP ${sRes.status}: ${JSON.stringify(sData)}` };
+      return { symbolId: null, debug: `search HTTP ${sRes.status}: ${JSON.stringify(sData)}`, invalidToken: sRes.status === 401 };
     }
     const candidates = sData.symbols || [];
     const exactMatches = candidates.filter(s => s.symbol === position.symbol);
@@ -81,7 +84,7 @@ export async function fetchQuotes(apiServer, accessToken, symbolIds) {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     const qData = await qRes.json();
-    if (!qRes.ok) return { prices: {}, debug: `quotes HTTP ${qRes.status}: ${JSON.stringify(qData)}` };
+    if (!qRes.ok) return { prices: {}, debug: `quotes HTTP ${qRes.status}: ${JSON.stringify(qData)}`, invalidToken: qRes.status === 401 };
     const byId = {};
     (qData.quotes || []).forEach(q => { byId[String(q.symbolId)] = q.lastTradePrice; });
     return { prices: byId, debug: `got ${(qData.quotes||[]).length} quotes` };
