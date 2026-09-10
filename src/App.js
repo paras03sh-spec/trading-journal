@@ -3084,6 +3084,7 @@ function computeSwingDerived(pos){
 
 function SwingPositionCard({position, onChange, onDelete, onSave, isMobile}){
   const [open, setOpen] = useState(!position.id); // new/unsaved positions start expanded
+  const [showDividends, setShowDividends] = useState((position.dividends||[]).length > 0);
   const set = (field) => (val) => onChange({...position, [field]: val});
   const derived = computeSwingDerived(position);
   const remaining = derived.total_qty_entered - derived.total_qty_exited;
@@ -3190,24 +3191,30 @@ function SwingPositionCard({position, onChange, onDelete, onSave, isMobile}){
           </div>
 
           <div style={{marginBottom:14}}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
-              <div style={{fontSize:11,color:C.textSub,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Dividends Received</div>
-              <button onClick={addDividend} style={{fontSize:11,color:C.teal,background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',fontWeight:600}}>+ Add Dividend</button>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:showDividends?8:0}}>
+              <button onClick={()=>setShowDividends(!showDividends)} style={{fontSize:11,color:C.textSub,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600,background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',padding:0,display:'flex',alignItems:'center',gap:6}}>
+                {showDividends?'▾':'▸'} Dividends {position.dividends?.length>0?`(${position.dividends.length})`:''} <span style={{fontSize:10,color:C.textDim,fontWeight:400,textTransform:'none'}}>— optional, log when one arrives</span>
+              </button>
+              {showDividends && <button onClick={addDividend} style={{fontSize:11,color:C.teal,background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',fontWeight:600}}>+ Add Dividend</button>}
             </div>
-            {(!position.dividends||position.dividends.length===0) && <div style={{fontSize:12,color:C.textDim}}>None logged</div>}
-            {(position.dividends||[]).map((d,i)=>(
-              <div key={i} style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr auto auto',gap:8,marginBottom:6,alignItems:'center'}}>
-                <input type="date" value={d.date} onChange={ev=>updateDividend(i,'date',ev.target.value)} style={{padding:'7px 9px',borderRadius:8,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontFamily:'inherit'}}/>
-                <input type="number" placeholder="Amount ($)" value={d.amount} onChange={ev=>updateDividend(i,'amount',ev.target.value)} style={{padding:'7px 9px',borderRadius:8,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontFamily:'inherit'}}/>
-                <input type="number" placeholder="DRIP price" value={d.price||''} onChange={ev=>updateDividend(i,'price',ev.target.value)} style={{padding:'7px 9px',borderRadius:8,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontFamily:'inherit'}}/>
-                {d.reinvested ? (
-                  <span style={{fontSize:11,color:C.teal,fontWeight:700,whiteSpace:'nowrap'}}>✓ Reinvested</span>
-                ) : (
-                  <button onClick={()=>reinvestDividend(i)} title="Create the corresponding buy entry from this dividend" style={{fontSize:11,color:C.teal,background:C.teal+'15',border:`1px solid ${C.teal}`,borderRadius:6,padding:'5px 8px',cursor:'pointer',fontFamily:'inherit',whiteSpace:'nowrap'}}>↻ Reinvest</button>
-                )}
-                <button onClick={()=>removeDividend(i)} style={{background:'none',border:'none',color:C.textMut,cursor:'pointer',fontSize:14}}>×</button>
-              </div>
-            ))}
+            {showDividends && (
+              <>
+                {(!position.dividends||position.dividends.length===0) && <div style={{fontSize:12,color:C.textDim}}>None logged</div>}
+                {(position.dividends||[]).map((d,i)=>(
+                  <div key={i} style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr auto auto',gap:8,marginBottom:6,alignItems:'center'}}>
+                    <input type="date" value={d.date} onChange={ev=>updateDividend(i,'date',ev.target.value)} style={{padding:'7px 9px',borderRadius:8,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontFamily:'inherit'}}/>
+                    <input type="number" placeholder="Amount ($)" value={d.amount} onChange={ev=>updateDividend(i,'amount',ev.target.value)} style={{padding:'7px 9px',borderRadius:8,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontFamily:'inherit'}}/>
+                    <input type="number" placeholder="DRIP price" value={d.price||''} onChange={ev=>updateDividend(i,'price',ev.target.value)} style={{padding:'7px 9px',borderRadius:8,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontFamily:'inherit'}}/>
+                    {d.reinvested ? (
+                      <span style={{fontSize:11,color:C.teal,fontWeight:700,whiteSpace:'nowrap'}}>✓ Reinvested</span>
+                    ) : (
+                      <button onClick={()=>reinvestDividend(i)} title="Create the corresponding buy entry from this dividend" style={{fontSize:11,color:C.teal,background:C.teal+'15',border:`1px solid ${C.teal}`,borderRadius:6,padding:'5px 8px',cursor:'pointer',fontFamily:'inherit',whiteSpace:'nowrap'}}>↻ Reinvest</button>
+                    )}
+                    <button onClick={()=>removeDividend(i)} style={{background:'none',border:'none',color:C.textMut,cursor:'pointer',fontSize:14}}>×</button>
+                  </div>
+                ))}
+              </>
+            )}
           </div>
 
           {derived.status==='open' && (
@@ -3219,10 +3226,11 @@ function SwingPositionCard({position, onChange, onDelete, onSave, isMobile}){
             </div>
           )}
 
-          <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'1fr 1fr 1fr',gap:12,marginBottom:14}}>
-            <Input label="Setup / Strategy" value={position.setup} onChange={set('setup')}/>
-            <Input label="Sector" value={position.sector} onChange={set('sector')}/>
-            <Input label="Commission ($, total)" type="number" value={position.commission} onChange={set('commission')}/>
+          <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr':'1fr 2fr',gap:12,marginBottom:14}}>
+            <div>
+              <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Sector</div>
+              <input value={position.sector} onChange={e=>set('sector')(e.target.value)} placeholder="auto-fills from Questrade once connected, or type your own" style={{width:'100%',padding:'9px 12px',borderRadius:10,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:13,fontFamily:'inherit'}}/>
+            </div>
           </div>
           <div style={{marginBottom:14}}>
             <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Notes</div>
