@@ -3286,7 +3286,7 @@ function SwingTab({userId, isMobile}){
 
   useEffect(()=>{
     let live = true;
-    loadSwingPositions(userId).then(rows=>{ if(live) setPositions(rows); });
+    loadSwingPositions(userId).then(rows=>{ if(live) setPositions(rows.map(computeSwingDerived)); });
     (async () => {
       try {
         const { data } = await supabase.from('questrade_tokens').select('user_id').eq('user_id', userId).single();
@@ -3327,7 +3327,7 @@ function SwingTab({userId, isMobile}){
       const r = data.results?.[0];
       if (r?.error) { window.alert('Refresh failed: ' + r.error); setRefreshing(false); return; }
       const fresh = await loadSwingPositions(userId);
-      setPositions(fresh);
+      setPositions(fresh.map(computeSwingDerived));
       window.alert(`Refreshed ${r?.updated||0} of ${r?.total||0} open positions.`);
     } catch (e) {
       window.alert('Could not reach the server: ' + e.message);
@@ -3339,9 +3339,10 @@ function SwingTab({userId, isMobile}){
     const derived = computeSwingDerived(position);
     const saved = await saveSwingPosition(derived, userId);
     if (!saved) { window.alert('Could not save — check your connection and try again.'); return; }
+    const savedDerived = computeSwingDerived(saved);
     setPositions(prev => {
-      const exists = prev.some(p=>p.id===saved.id);
-      return exists ? prev.map(p=>p.id===saved.id?saved:p) : [saved, ...prev];
+      const exists = prev.some(p=>p.id===savedDerived.id);
+      return exists ? prev.map(p=>p.id===savedDerived.id?savedDerived:p) : [savedDerived, ...prev];
     });
     setNewPosition(null);
   };

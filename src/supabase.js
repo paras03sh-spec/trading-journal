@@ -114,14 +114,18 @@ export async function loadSwingPositions(userId) {
 
 export async function saveSwingPosition(position, userId) {
   try {
+    // These are computed purely for display/analytics (allocation %, return %)
+    // and recomputed fresh every time from entries/exits — they were never
+    // added as real columns, so PostgREST rejects them outright if sent.
+    const { cost_basis_remaining, cost_basis_total, total_return_pct, unrealized_pnl, total_dividends, ...toSave } = position;
     const { data, error } = await supabase
       .from('swing_positions')
-      .upsert({ ...position, user_id: userId, updated_at: new Date().toISOString() })
+      .upsert({ ...toSave, user_id: userId, updated_at: new Date().toISOString() })
       .select()
       .single();
-    if (error) return null;
+    if (error) { console.error('saveSwingPosition failed:', error); return null; }
     return data;
-  } catch (_) { return null; }
+  } catch (e) { console.error('saveSwingPosition threw:', e); return null; }
 }
 
 export async function deleteSwingPosition(id, userId) {
