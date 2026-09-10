@@ -26,7 +26,7 @@ export default async function handler(req, res) {
 
   try {
     const sRes = await fetch(`${tokenResult.api_server}v1/symbols/search?prefix=${encodeURIComponent(prefix)}`, {
-      headers: { Authorization: `Bearer ${tokenResult.access_token}` },
+      headers: { Authorization: `Bearer ${tokenResult.access_token}`, Accept: 'application/json' },
     });
     const sData = await sRes.json();
     if (!sRes.ok) return res.status(200).json({ results: [], error: `HTTP ${sRes.status}` });

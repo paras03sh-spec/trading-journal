@@ -52,7 +52,7 @@ export async function resolveSymbolId(supabase, apiServer, accessToken, position
   if (position.questrade_symbol_id) return { symbolId: position.questrade_symbol_id, debug: 'cached' };
   try {
     const url = `${apiServer}v1/symbols/search?prefix=${encodeURIComponent(position.symbol)}`;
-    const sRes = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    const sRes = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' } });
     const sData = await sRes.json();
     if (!sRes.ok) {
       return { symbolId: null, debug: `search HTTP ${sRes.status}: ${JSON.stringify(sData)}`, invalidToken: sRes.status === 401 };
@@ -81,7 +81,7 @@ export async function fetchQuotes(apiServer, accessToken, symbolIds) {
   if (symbolIds.length === 0) return { prices: {}, debug: 'no symbol ids to fetch' };
   try {
     const qRes = await fetch(`${apiServer}v1/markets/quotes/${symbolIds.join(',')}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
     });
     const qData = await qRes.json();
     if (!qRes.ok) return { prices: {}, debug: `quotes HTTP ${qRes.status}: ${JSON.stringify(qData)}`, invalidToken: qRes.status === 401 };
@@ -99,7 +99,7 @@ export async function fetchSectors(apiServer, accessToken, symbolIds) {
   if (symbolIds.length === 0) return {};
   try {
     const sRes = await fetch(`${apiServer}v1/symbols?ids=${symbolIds.join(',')}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
     });
     const sData = await sRes.json();
     const byId = {};

@@ -97,5 +97,5 @@ export default async function handler(req, res) {
     results.push({ userId, updated: outcome.updated, total: positions.length, debug: outcome.debug });
   }
 
-  return res.status(200).json({ results, _version: 'v23_58-retry-logic' });
+  return res.status(200).json({ results, _version: 'v23_60-accept-header-fix' });
 }
