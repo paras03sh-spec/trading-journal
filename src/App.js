@@ -3497,9 +3497,14 @@ function SwingTab({userId, isMobile}){
             <button onClick={()=>setShowConnect(true)} style={{padding:'6px 12px',borderRadius:16,fontSize:11,fontFamily:'inherit',cursor:'pointer',border:`1.5px solid ${C.blue}`,background:C.blue+'15',color:C.blue,fontWeight:700}}>Connect Questrade</button>
           )}
           {questradeConnected && (
-            <button onClick={handleRefreshPrices} disabled={refreshing} style={{padding:'6px 12px',borderRadius:16,fontSize:11,fontFamily:'inherit',cursor:refreshing?'not-allowed':'pointer',border:`1.5px solid ${C.teal}`,background:C.teal+'15',color:C.teal,fontWeight:700}}>
-              {refreshing?'⏳ Refreshing...':'🔄 Refresh Prices'}
-            </button>
+            <>
+              <button onClick={handleRefreshPrices} disabled={refreshing} style={{padding:'6px 12px',borderRadius:16,fontSize:11,fontFamily:'inherit',cursor:refreshing?'not-allowed':'pointer',border:`1.5px solid ${C.teal}`,background:C.teal+'15',color:C.teal,fontWeight:700}}>
+                {refreshing?'⏳ Refreshing...':'🔄 Refresh Prices'}
+              </button>
+              <button onClick={()=>setShowConnect(true)} title="Paste a new refresh token — replaces the current connection" style={{padding:'6px 12px',borderRadius:16,fontSize:11,fontFamily:'inherit',cursor:'pointer',border:`1.5px solid ${C.border}`,background:'transparent',color:C.textMut,fontWeight:600}}>
+                Reconnect
+              </button>
+            </>
           )}
         </div>
       </div>
