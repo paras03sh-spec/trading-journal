@@ -3067,6 +3067,11 @@ function computeSwingDerived(pos){
   const totalReturnPct = costBasisTotal>0 ? totalPnlIncDiv/costBasisTotal*100 : null;
   return {
     ...pos,
+    // Postgres rejects '' cast to numeric outright — sanitize both fields
+    // here so a blank current_price (the default on every new position) or
+    // a cleared commission field never breaks the save.
+    current_price: pos.current_price===''||pos.current_price==null ? null : parseFloat(pos.current_price),
+    commission: pos.commission===''||pos.commission==null ? 0 : parseFloat(pos.commission),
     avg_entry: avgEntry, total_qty_entered: totalQtyEntered, total_qty_exited: totalQtyExited,
     realized_pnl: pos.exits.length ? realizedPnl : null,
     unrealized_pnl: unrealizedPnl,
