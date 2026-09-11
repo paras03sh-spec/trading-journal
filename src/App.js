@@ -3352,6 +3352,7 @@ function SwingTab({userId, isMobile}){
   const [positions, setPositions] = useState(null);
   const [newPosition, setNewPosition] = useState(null);
   const [showClosed, setShowClosed] = useState(false);
+  const [sortBy, setSortBy] = useState('return_desc');
   const [currencyFilter, setCurrencyFilter] = useState('all'); // 'all' | 'CAD' | 'USD'
   const ceilingsKey = 'swing_sector_ceilings_'+(userId||'anon');
   const [sectorCeilings, setSectorCeilings] = useState(()=>{
@@ -3367,6 +3368,7 @@ function SwingTab({userId, isMobile}){
   const [connectToken, setConnectToken] = useState('');
   const [connecting, setConnecting] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshMessage, setRefreshMessage] = useState(null);
   const [questradeConnected, setQuestradeConnected] = useState(null); // null=unknown, true/false once checked
 
   useEffect(()=>{
@@ -3414,7 +3416,15 @@ function SwingTab({userId, isMobile}){
       if (r?.error) { window.alert('Refresh failed: ' + r.error + (r?.debug ? `\n\nDetails:\n${r.debug.join('\n')}` : '') + versionLine); setRefreshing(false); return; }
       const fresh = await loadSwingPositions(userId);
       setPositions(fresh.map(computeSwingDerived));
-      window.alert(`Refreshed ${r?.updated||0} of ${r?.total||0} open positions.` + (r?.debug ? `\n\nDetails:\n${r.debug.join('\n')}` : '') + versionLine);
+      const total = r?.total||0, updated = r?.updated||0;
+      if (total>0 && updated===total) {
+        // Full success — no popup, no OK click needed. Quiet, auto-dismissing confirmation instead.
+        setRefreshMessage(`✓ Updated ${updated} of ${total}`);
+        setTimeout(()=>setRefreshMessage(null), 4000);
+      } else {
+        // Partial or zero success — worth actually seeing the details, so still interrupt for this.
+        window.alert(`Refreshed ${updated} of ${total} open positions.` + (r?.debug ? `\n\nDetails:\n${r.debug.join('\n')}` : '') + versionLine);
+      }
     } catch (e) {
       window.alert('Could not reach the server: ' + e.message);
     }
@@ -3450,6 +3460,15 @@ function SwingTab({userId, isMobile}){
   const totalUnrealized = statsPositions.filter(p=>p.unrealized_pnl!=null).reduce((s,p)=>s+parseFloat(p.unrealized_pnl||0),0);
   const totalDividends = statsPositions.reduce((s,p)=>s+parseFloat(p.total_dividends||0),0);
   const openPositions = statsPositions.filter(p=>p.status==='open');
+  const sortFns = {
+    return_desc: (a,b) => (b.total_return_pct??-Infinity) - (a.total_return_pct??-Infinity),
+    return_asc: (a,b) => (a.total_return_pct??Infinity) - (b.total_return_pct??Infinity),
+    pnl_desc: (a,b) => ((b.unrealized_pnl||0)+(b.realized_pnl||0)) - ((a.unrealized_pnl||0)+(a.realized_pnl||0)),
+    symbol: (a,b) => a.symbol.localeCompare(b.symbol),
+    date_desc: (a,b) => b.opened_date.localeCompare(a.opened_date),
+    date_asc: (a,b) => a.opened_date.localeCompare(b.opened_date),
+  };
+  const sortedOpenPositions = [...openPositions].sort(sortFns[sortBy] || sortFns.return_desc);
   const totalInvested = openPositions.reduce((s,p)=>s+parseFloat(p.cost_basis_remaining||0),0);
   // Cost basis across ALL positions ever (open + closed) — the correct
   // denominator for portfolio-wide return %, not just currently-open capital
@@ -3581,7 +3600,8 @@ function SwingTab({userId, isMobile}){
           <span style={{width:7,height:7,borderRadius:'50%',background:questradeConnected?C.green:C.textDim}}/>
           {questradeConnected===null?'Checking Questrade connection...':questradeConnected?'Questrade connected — prices refresh automatically after close on weekdays':'Questrade not connected — prices are manual only'}
         </div>
-        <div style={{display:'flex',gap:8}}>
+        <div style={{display:'flex',gap:8,alignItems:'center'}}>
+          {refreshMessage && <span style={{fontSize:11,color:C.green,fontWeight:600}}>{refreshMessage}</span>}
           {questradeConnected===false && (
             <button onClick={()=>setShowConnect(true)} style={{padding:'6px 12px',borderRadius:16,fontSize:11,fontFamily:'inherit',cursor:'pointer',border:`1.5px solid ${C.blue}`,background:C.blue+'15',color:C.blue,fontWeight:700}}>Connect Questrade</button>
           )}
@@ -3784,7 +3804,20 @@ function SwingTab({userId, isMobile}){
 
       {view==='positions' && (
       <>
-      <div style={{display:'flex',gap:8,marginBottom:16,alignItems:'center',justifyContent:'flex-end'}}>
+      <div style={{display:'flex',gap:8,marginBottom:16,alignItems:'center',justifyContent:'space-between',flexWrap:'wrap'}}>
+        <div style={{display:'flex',alignItems:'center',gap:6}}>
+          <span style={{fontSize:11,color:C.textMut}}>Sort:</span>
+          <select value={sortBy} onChange={e=>setSortBy(e.target.value)} style={{
+            padding:'6px 10px',borderRadius:8,border:`1px solid ${C.border}`,background:C.surface,color:C.textSub,fontSize:12,fontFamily:'inherit',cursor:'pointer',
+          }}>
+            <option value="return_desc">Return % (high to low)</option>
+            <option value="return_asc">Return % (low to high)</option>
+            <option value="pnl_desc">$ P&L (high to low)</option>
+            <option value="symbol">Symbol (A-Z)</option>
+            <option value="date_desc">Date opened (newest)</option>
+            <option value="date_asc">Date opened (oldest)</option>
+          </select>
+        </div>
         {!newPosition && (
           <button onClick={()=>setNewPosition(emptySwingPosition())} style={{
             padding:'9px 16px',borderRadius:10,border:`1.5px solid ${C.teal}`,background:C.teal+'15',
@@ -3810,7 +3843,7 @@ function SwingTab({userId, isMobile}){
         </div>
       )}
 
-      {openPositions.map(p=>(
+      {sortedOpenPositions.map(p=>(
         <SwingPositionCard
           key={p.id}
           position={p}
