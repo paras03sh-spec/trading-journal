@@ -3153,6 +3153,36 @@ function SwingPositionCard({position, onChange, onDelete, onSave, isMobile, user
   const [showSymbolDropdown, setShowSymbolDropdown] = useState(false);
   const [symbolSearching, setSymbolSearching] = useState(false);
   const searchDebounceRef = useRef();
+  const [autoSaveStatus, setAutoSaveStatus] = useState(null); // null | 'saving' | 'saved'
+  // Strip fields the SERVER sets on every save (updated_at changes every
+  // time regardless of real content) — comparing these would make the
+  // effect think something changed again right after every auto-save,
+  // creating an infinite save loop.
+  const comparableSnapshot = (pos) => { const {updated_at, ...rest} = pos; return JSON.stringify(rest); };
+  const lastSavedRef = useRef(position.id ? comparableSnapshot(position) : null);
+  const autoSaveDebounceRef = useRef();
+
+  // Auto-save existing positions a couple seconds after any edit — a manual
+  // "click Save or it silently doesn't happen" flow is exactly what caused
+  // both the symbol-typo bug and this sector-disappearing bug earlier: the
+  // screen shows your edit immediately regardless of whether it was ever
+  // actually written to the database. New (not-yet-created) positions still
+  // require the explicit "Create Position" click, so nothing incomplete
+  // gets saved while you're still filling one out.
+  useEffect(() => {
+    if (!position.id) return;
+    const snapshot = comparableSnapshot(position);
+    if (snapshot === lastSavedRef.current) return; // nothing actually changed
+    clearTimeout(autoSaveDebounceRef.current);
+    setAutoSaveStatus('saving');
+    autoSaveDebounceRef.current = setTimeout(async () => {
+      await onSave(position);
+      lastSavedRef.current = snapshot;
+      setAutoSaveStatus('saved');
+      setTimeout(()=>setAutoSaveStatus(null), 2000);
+    }, 1500);
+    return () => clearTimeout(autoSaveDebounceRef.current);
+  }, [comparableSnapshot(position)]);
 
   const searchSymbols = (prefix) => {
     clearTimeout(searchDebounceRef.current);
@@ -3396,10 +3426,15 @@ function SwingPositionCard({position, onChange, onDelete, onSave, isMobile, user
             </div>
           )}
 
-          <div style={{display:'flex',gap:8}}>
+          <div style={{display:'flex',gap:8,alignItems:'center'}}>
             <button onClick={()=>onSave(position)} style={{flex:1,padding:'10px',borderRadius:10,border:`1.5px solid ${C.teal}`,background:C.teal+'15',color:C.teal,fontFamily:'inherit',fontSize:13,fontWeight:700,cursor:'pointer'}}>
-              {position.id?'💾 Save Changes':'✓ Create Position'}
+              {position.id?'💾 Save Now':'✓ Create Position'}
             </button>
+            {position.id && autoSaveStatus && (
+              <span style={{fontSize:11,color:autoSaveStatus==='saved'?C.green:C.textMut,whiteSpace:'nowrap'}}>
+                {autoSaveStatus==='saving'?'⏳ Saving...':'✓ Saved'}
+              </span>
+            )}
             {position.id && (
               <button onClick={()=>{if(window.confirm('Delete this position? This can\'t be undone.'))onDelete(position.id);}} style={{padding:'10px 16px',borderRadius:10,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textMut,fontFamily:'inherit',fontSize:13,cursor:'pointer'}}>
                 Delete
