@@ -110,3 +110,33 @@ export async function fetchSectors(apiServer, accessToken, symbolIds) {
     return {};
   }
 }
+
+// USD/CAD rate via DLR.TO (CAD) / DLR.U.TO (USD) — a real ETF pair designed
+// to track the same underlying basket in two currencies, so the ratio of
+// their live prices is a genuine market-based FX rate, fetched through the
+// exact same quote mechanism already verified working for regular positions.
+export async function updateFxRate(supabase, apiServer, accessToken) {
+  try {
+    const searchOne = async (symbol) => {
+      const sRes = await fetch(`${apiServer}v1/symbols/search?prefix=${encodeURIComponent(symbol)}`, {
+        headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json', 'User-Agent': 'Mozilla/5.0 (compatible; TradingJournalApp/1.0)' },
+      });
+      const data = await sRes.json();
+      return (data.symbols || []).find(s => s.symbol === symbol);
+    };
+    const [cadSym, usdSym] = await Promise.all([searchOne('DLR.TO'), searchOne('DLR.U.TO')]);
+    if (!cadSym || !usdSym) return { error: 'Could not resolve DLR.TO / DLR.U.TO' };
+
+    const { prices } = await fetchQuotes(apiServer, accessToken, [String(cadSym.symbolId), String(usdSym.symbolId)]);
+    const cadPrice = prices[String(cadSym.symbolId)];
+    const usdPrice = prices[String(usdSym.symbolId)];
+    if (!cadPrice || !usdPrice) return { error: 'Could not get DLR quotes' };
+
+    const rate = cadPrice / usdPrice; // CAD per 1 USD
+    await supabase.from('fx_rates').upsert({ pair: 'USDCAD', rate, updated_at: new Date().toISOString() });
+    return { rate };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+

@@ -6,7 +6,7 @@
 // finds the URL (Vercel signs cron requests with CRON_SECRET automatically
 // when that env var is set).
 import { createClient } from '@supabase/supabase-js';
-import { getValidAccessToken, resolveSymbolId, fetchQuotes, fetchSectors } from './_questrade-lib.js';
+import { getValidAccessToken, resolveSymbolId, fetchQuotes, fetchSectors, updateFxRate } from './_questrade-lib.js';
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -94,8 +94,10 @@ export default async function handler(req, res) {
       outcome = await runOnce(tokenResult.access_token, tokenResult.api_server);
       outcome.debug.push('(retried once with a forced fresh token after a 401)');
     }
+    const fxResult = await updateFxRate(supabase, tokenResult.api_server, tokenResult.access_token);
+    if (fxResult.rate) outcome.debug.push(`USD/CAD rate: ${fxResult.rate.toFixed(4)}`);
     results.push({ userId, updated: outcome.updated, total: positions.length, debug: outcome.debug });
   }
 
-  return res.status(200).json({ results, _version: 'v23_62-quotes-query-param-fix' });
+  return res.status(200).json({ results, _version: 'v23_66-fx-rate' });
 }

@@ -137,3 +137,17 @@ export async function deleteSwingPosition(id, userId) {
       .eq('user_id', userId);
   } catch (_) {}
 }
+
+// Real market-based USD/CAD rate, refreshed alongside prices via the
+// DLR.TO/DLR.U.TO ratio — see api/_questrade-lib.js updateFxRate.
+export async function loadFxRate() {
+  try {
+    const { data, error } = await supabase
+      .from('fx_rates')
+      .select('rate, updated_at')
+      .eq('pair', 'USDCAD')
+      .single();
+    if (error || !data) return null;
+    return data;
+  } catch (_) { return null; }
+}

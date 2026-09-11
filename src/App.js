@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { supabase, loadDay, saveDay, loadIndex, saveIndex, loadAllDays, getCurrentUser, signIn, signUp, signOut, loadSwingPositions, saveSwingPosition, deleteSwingPosition } from './supabase';
+import { supabase, loadDay, saveDay, loadIndex, saveIndex, loadAllDays, getCurrentUser, signIn, signUp, signOut, loadSwingPositions, saveSwingPosition, deleteSwingPosition, loadFxRate } from './supabase';
 
 const POINT_VALUES = { ES: 50, NQ: 20, MES: 5, MNQ: 2 };
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -3353,6 +3353,7 @@ function SwingTab({userId, isMobile}){
   const [newPosition, setNewPosition] = useState(null);
   const [showClosed, setShowClosed] = useState(false);
   const [sortBy, setSortBy] = useState('return_desc');
+  const [fxRate, setFxRate] = useState(null);
   const [currencyFilter, setCurrencyFilter] = useState('all'); // 'all' | 'CAD' | 'USD'
   const ceilingsKey = 'swing_sector_ceilings_'+(userId||'anon');
   const [sectorCeilings, setSectorCeilings] = useState(()=>{
@@ -3374,6 +3375,7 @@ function SwingTab({userId, isMobile}){
   useEffect(()=>{
     let live = true;
     loadSwingPositions(userId).then(rows=>{ if(live) setPositions(rows.map(computeSwingDerived)); });
+    loadFxRate().then(r=>{ if(live) setFxRate(r); });
     (async () => {
       try {
         const { data } = await supabase.from('questrade_tokens').select('user_id').eq('user_id', userId).single();
@@ -3415,6 +3417,7 @@ function SwingTab({userId, isMobile}){
       const versionLine = `\n\n[server version: ${data._version||'unknown — old deployment'}]`;
       if (r?.error) { window.alert('Refresh failed: ' + r.error + (r?.debug ? `\n\nDetails:\n${r.debug.join('\n')}` : '') + versionLine); setRefreshing(false); return; }
       const fresh = await loadSwingPositions(userId);
+      loadFxRate().then(setFxRate);
       setPositions(fresh.map(computeSwingDerived));
       const total = r?.total||0, updated = r?.updated||0;
       if (total>0 && updated===total) {
@@ -3453,12 +3456,17 @@ function SwingTab({userId, isMobile}){
   const currenciesPresent = [...new Set(positions.map(p=>p.currency||'CAD'))];
   const mixedCurrencies = currenciesPresent.length > 1;
   const statsPositions = currencyFilter==='all' ? positions : positions.filter(p=>(p.currency||'CAD')===currencyFilter);
+  // Only actually convert when viewing the combined 'all' total AND we have a
+  // real live rate — otherwise leave native-currency numbers alone (viewing
+  // one currency specifically shouldn't silently convert it to something else).
+  const canConvert = currencyFilter==='all' && fxRate?.rate;
+  const toCAD = (amount, currency) => (canConvert && currency==='USD') ? amount*fxRate.rate : amount;
 
   const openCount = statsPositions.filter(p=>p.status==='open').length;
   const closedCount = statsPositions.filter(p=>p.status==='closed').length;
-  const totalRealized = statsPositions.filter(p=>p.realized_pnl!=null).reduce((s,p)=>s+parseFloat(p.realized_pnl||0),0);
-  const totalUnrealized = statsPositions.filter(p=>p.unrealized_pnl!=null).reduce((s,p)=>s+parseFloat(p.unrealized_pnl||0),0);
-  const totalDividends = statsPositions.reduce((s,p)=>s+parseFloat(p.total_dividends||0),0);
+  const totalRealized = statsPositions.filter(p=>p.realized_pnl!=null).reduce((s,p)=>s+toCAD(parseFloat(p.realized_pnl||0),p.currency),0);
+  const totalUnrealized = statsPositions.filter(p=>p.unrealized_pnl!=null).reduce((s,p)=>s+toCAD(parseFloat(p.unrealized_pnl||0),p.currency),0);
+  const totalDividends = statsPositions.reduce((s,p)=>s+toCAD(parseFloat(p.total_dividends||0),p.currency),0);
   const openPositions = statsPositions.filter(p=>p.status==='open');
   const sortFns = {
     return_desc: (a,b) => (b.total_return_pct??-Infinity) - (a.total_return_pct??-Infinity),
@@ -3469,10 +3477,10 @@ function SwingTab({userId, isMobile}){
     date_asc: (a,b) => a.opened_date.localeCompare(b.opened_date),
   };
   const sortedOpenPositions = [...openPositions].sort(sortFns[sortBy] || sortFns.return_desc);
-  const totalInvested = openPositions.reduce((s,p)=>s+parseFloat(p.cost_basis_remaining||0),0);
+  const totalInvested = openPositions.reduce((s,p)=>s+toCAD(parseFloat(p.cost_basis_remaining||0),p.currency),0);
   // Cost basis across ALL positions ever (open + closed) — the correct
   // denominator for portfolio-wide return %, not just currently-open capital
-  const totalCostBasisEver = statsPositions.reduce((s,p)=>s+(parseFloat(p.cost_basis_total)||0),0);
+  const totalCostBasisEver = statsPositions.reduce((s,p)=>s+toCAD(parseFloat(p.cost_basis_total)||0,p.currency),0);
   const totalPnlAllIn = totalRealized + totalUnrealized + totalDividends;
   const totalReturnPct = totalCostBasisEver>0 ? totalPnlAllIn/totalCostBasisEver*100 : null;
 
@@ -3632,7 +3640,11 @@ function SwingTab({userId, isMobile}){
       })}
       {mixedCurrencies && (
         <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12,flexWrap:'wrap'}}>
-          <span style={{fontSize:11,color:C.yellow}}>⚠ {currencyFilter==='all' ? 'Mixed CAD/USD — totals below are added together with no FX conversion.' : `Showing ${currencyFilter} only.`}</span>
+          <span style={{fontSize:11,color:canConvert?C.green:C.yellow}}>
+            {currencyFilter!=='all' ? `Showing ${currencyFilter} only.`
+              : canConvert ? `✓ Combined using live rate: 1 USD = ${fxRate.rate.toFixed(4)} CAD (${new Date(fxRate.updated_at).toLocaleString()})`
+              : '⚠ Mixed CAD/USD — connect Questrade and refresh once to combine these with a real FX rate.'}
+          </span>
           <div style={{display:'flex',gap:4}}>
             {['all',...currenciesPresent].map(c=>(
               <button key={c} onClick={()=>setCurrencyFilter(c)} style={{
