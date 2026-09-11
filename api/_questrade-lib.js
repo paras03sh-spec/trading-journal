@@ -52,7 +52,7 @@ export async function resolveSymbolId(supabase, apiServer, accessToken, position
   if (position.questrade_symbol_id) return { symbolId: position.questrade_symbol_id, debug: 'cached' };
   try {
     const url = `${apiServer}v1/symbols/search?prefix=${encodeURIComponent(position.symbol)}`;
-    const sRes = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' } });
+    const sRes = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json', 'User-Agent': 'Mozilla/5.0 (compatible; TradingJournalApp/1.0)' } });
     const sData = await sRes.json();
     if (!sRes.ok) {
       return { symbolId: null, debug: `search HTTP ${sRes.status}: ${JSON.stringify(sData)}`, invalidToken: sRes.status === 401 };
@@ -79,17 +79,18 @@ export async function resolveSymbolId(supabase, apiServer, accessToken, position
 // Batch quote fetch — Questrade accepts comma-separated IDs in one call.
 export async function fetchQuotes(apiServer, accessToken, symbolIds) {
   if (symbolIds.length === 0) return { prices: {}, debug: 'no symbol ids to fetch' };
+  const url = `${apiServer}v1/markets/quotes/${symbolIds.join(',')}`;
   try {
-    const qRes = await fetch(`${apiServer}v1/markets/quotes/${symbolIds.join(',')}`, {
-      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+    const qRes = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json', 'User-Agent': 'Mozilla/5.0 (compatible; TradingJournalApp/1.0)' },
     });
     const qData = await qRes.json();
-    if (!qRes.ok) return { prices: {}, debug: `quotes HTTP ${qRes.status}: ${JSON.stringify(qData)}`, invalidToken: qRes.status === 401 };
+    if (!qRes.ok) return { prices: {}, debug: `quotes HTTP ${qRes.status} [${url}]: ${JSON.stringify(qData)}`, invalidToken: qRes.status === 401 };
     const byId = {};
     (qData.quotes || []).forEach(q => { byId[String(q.symbolId)] = q.lastTradePrice; });
     return { prices: byId, debug: `got ${(qData.quotes||[]).length} quotes` };
   } catch (e) {
-    return { prices: {}, debug: `exception: ${e.message}` };
+    return { prices: {}, debug: `exception: ${e.message} [${url}]` };
   }
 }
 
@@ -99,7 +100,7 @@ export async function fetchSectors(apiServer, accessToken, symbolIds) {
   if (symbolIds.length === 0) return {};
   try {
     const sRes = await fetch(`${apiServer}v1/symbols?ids=${symbolIds.join(',')}`, {
-      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json', 'User-Agent': 'Mozilla/5.0 (compatible; TradingJournalApp/1.0)' },
     });
     const sData = await sRes.json();
     const byId = {};
