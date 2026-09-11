@@ -2101,7 +2101,7 @@ function ChartCard({title,sub,children}){
 
 function BigStat({label,val,col,sub}){
   return(
-    <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:'14px 16px'}}>
+    <div style={{background:C.surface,border:`1px solid ${C.border}`,borderLeft:`3px solid ${col||C.border}`,borderRadius:12,padding:'14px 16px'}}>
       <div style={{fontSize:10,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.08em',marginBottom:6}}>{label}</div>
       <div style={{fontSize:22,fontWeight:800,color:col||C.text,fontVariantNumeric:'tabular-nums',lineHeight:1.1}}>{val}</div>
       {sub&&<div style={{fontSize:10,color:C.textMut,marginTop:4}}>{sub}</div>}
@@ -3153,18 +3153,26 @@ function SwingPositionCard({position, onChange, onDelete, onSave, isMobile, user
   };
 
   return (
-    <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,marginBottom:12,overflow:'hidden'}}>
-      <div onClick={()=>setOpen(!open)} style={{padding:'14px 16px',display:'flex',alignItems:'center',justifyContent:'space-between',cursor:'pointer',background:open?C.surface2:C.surface}}>
-        <div style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
+    <div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:14,marginBottom:12,overflow:'hidden',transition:'border-color 0.15s'}}>
+      <div onClick={()=>setOpen(!open)} style={{padding:'14px 16px',display:'flex',alignItems:'center',justifyContent:'space-between',cursor:'pointer',background:open?C.surface2:C.surface,gap:10}}>
+        <div style={{display:'flex',alignItems:'center',gap:10,minWidth:0,flexWrap:'wrap'}}>
           <span style={{width:8,height:8,borderRadius:'50%',background:derived.status==='open'?C.yellow:(derived.realized_pnl>=0?C.green:C.red),flexShrink:0}}/>
           <b style={{fontSize:14,color:C.text}}>{position.symbol||'(new position)'}</b>
           <span style={{fontSize:11,padding:'2px 8px',borderRadius:10,background:position.direction==='long'?C.green+'20':C.red+'20',color:position.direction==='long'?C.green:C.red,fontWeight:700}}>
             {position.direction==='long'?'LONG':'SHORT'}
           </span>
           <span style={{fontSize:11,color:C.textMut}}>{derived.status==='open'?`${remaining} open`:'closed'}</span>
-          <span style={{fontSize:10,padding:'2px 7px',borderRadius:8,background:C.surface2,color:C.textMut}}>{position.account}</span>
         </div>
-        <div style={{display:'flex',alignItems:'center',gap:12}}>
+        <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
+          {derived.total_return_pct!=null && (
+            <span style={{
+              fontSize:13,fontWeight:800,padding:'4px 10px',borderRadius:20,
+              background:derived.total_return_pct>=0?C.green+'20':C.red+'20',
+              color:derived.total_return_pct>=0?C.green:C.red,
+            }}>
+              {derived.total_return_pct>=0?'▲':'▼'} {Math.abs(derived.total_return_pct).toFixed(1)}%
+            </span>
+          )}
           {derived.realized_pnl!=null && <span style={{fontSize:13,fontWeight:700,color:derived.realized_pnl>=0?C.green:C.red}}>{derived.realized_pnl>=0?'+':''}${derived.realized_pnl.toFixed(2)}</span>}
           <span style={{color:C.textMut,fontSize:12}}>{open?'▲':'▼'}</span>
         </div>
@@ -3343,7 +3351,7 @@ function SwingPositionCard({position, onChange, onDelete, onSave, isMobile, user
 function SwingTab({userId, isMobile}){
   const [positions, setPositions] = useState(null);
   const [newPosition, setNewPosition] = useState(null);
-  const [filter, setFilter] = useState('open'); // 'open' | 'closed' | 'all'
+  const [showClosed, setShowClosed] = useState(false);
   const [currencyFilter, setCurrencyFilter] = useState('all'); // 'all' | 'CAD' | 'USD'
   const ceilingsKey = 'swing_sector_ceilings_'+(userId||'anon');
   const [sectorCeilings, setSectorCeilings] = useState(()=>{
@@ -3436,14 +3444,11 @@ function SwingTab({userId, isMobile}){
   const mixedCurrencies = currenciesPresent.length > 1;
   const statsPositions = currencyFilter==='all' ? positions : positions.filter(p=>(p.currency||'CAD')===currencyFilter);
 
-  const filtered = statsPositions.filter(p => filter==='all' ? true : p.status===filter);
   const openCount = statsPositions.filter(p=>p.status==='open').length;
   const closedCount = statsPositions.filter(p=>p.status==='closed').length;
   const totalRealized = statsPositions.filter(p=>p.realized_pnl!=null).reduce((s,p)=>s+parseFloat(p.realized_pnl||0),0);
   const totalUnrealized = statsPositions.filter(p=>p.unrealized_pnl!=null).reduce((s,p)=>s+parseFloat(p.unrealized_pnl||0),0);
   const totalDividends = statsPositions.reduce((s,p)=>s+parseFloat(p.total_dividends||0),0);
-  const winClosed = statsPositions.filter(p=>p.status==='closed'&&p.realized_pnl>0).length;
-  const winRate = closedCount>0 ? (winClosed/closedCount*100) : 0;
   const openPositions = statsPositions.filter(p=>p.status==='open');
   const totalInvested = openPositions.reduce((s,p)=>s+parseFloat(p.cost_basis_remaining||0),0);
   // Cost basis across ALL positions ever (open + closed) — the correct
@@ -3619,17 +3624,31 @@ function SwingTab({userId, isMobile}){
           </div>
         </div>
       )}
-      <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(4,1fr)',gap:10,marginBottom:10}}>
-        <BigStat label="Open Positions" val={openCount} col={C.yellow}/>
-        <BigStat label="Closed" val={closedCount} col={C.textSub}/>
-        <BigStat label="Realized P&L" val={`${totalRealized>=0?'+':''}$${totalRealized.toFixed(2)}`} col={totalRealized>=0?C.green:C.red}/>
-        <BigStat label="Win Rate (closed)" val={closedCount>0?`${winRate.toFixed(0)}%`:'—'} col={winRate>=50?C.green:C.yellow}/>
+      {/* Hero: the one number that actually matters, given real visual weight */}
+      <div style={{
+        borderRadius:20,padding:isMobile?'24px 20px':'32px 36px',marginBottom:16,position:'relative',overflow:'hidden',
+        background: totalPnlAllIn>=0
+          ? `linear-gradient(135deg, ${C.green}18 0%, ${C.surface} 60%)`
+          : `linear-gradient(135deg, ${C.red}18 0%, ${C.surface} 60%)`,
+        border:`1px solid ${totalPnlAllIn>=0?C.green+'30':C.red+'30'}`,
+      }}>
+        <div style={{fontSize:12,color:C.textMut,marginBottom:6,fontWeight:600}}>Total Return</div>
+        <div style={{display:'flex',alignItems:'baseline',gap:14,flexWrap:'wrap'}}>
+          <span style={{fontSize:isMobile?38:52,fontWeight:800,lineHeight:1,color:totalPnlAllIn>=0?C.green:C.red,letterSpacing:'-0.02em'}}>
+            {totalReturnPct!=null?`${totalReturnPct>=0?'+':''}${totalReturnPct.toFixed(1)}%`:'—'}
+          </span>
+          <span style={{fontSize:18,fontWeight:600,color:C.textSub}}>
+            {totalPnlAllIn>=0?'+':''}${totalPnlAllIn.toFixed(2)}
+          </span>
+        </div>
+        <div style={{fontSize:11,color:C.textDim,marginTop:6}}>realized + unrealized + dividends, across every position ever</div>
       </div>
+
       <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(4,1fr)',gap:10,marginBottom:16}}>
+        <BigStat label="Open Positions" val={openCount} col={C.yellow}/>
         <BigStat label="Unrealized P&L" val={totalUnrealized||openPositions.some(p=>p.unrealized_pnl!=null)?`${totalUnrealized>=0?'+':''}$${totalUnrealized.toFixed(2)}`:'—'} col={totalUnrealized>=0?C.green:C.red} sub="needs current price set"/>
         <BigStat label="Dividends" val={`+$${totalDividends.toFixed(2)}`} col={C.teal}/>
         <BigStat label="Total Invested" val={`$${totalInvested.toFixed(0)}`} col={C.textSub} sub="open positions, cost basis"/>
-        <BigStat label="Total Return" val={totalReturnPct!=null?`${totalReturnPct>=0?'+':''}${totalReturnPct.toFixed(1)}%`:'—'} col={totalPnlAllIn>=0?C.green:C.red} sub="all-in, incl. dividends"/>
       </div>
 
       <div style={{display:'flex',gap:6,marginBottom:16}}>
@@ -3765,16 +3784,7 @@ function SwingTab({userId, isMobile}){
 
       {view==='positions' && (
       <>
-      <div style={{display:'flex',gap:8,marginBottom:16,alignItems:'center',justifyContent:'space-between',flexWrap:'wrap'}}>
-        <div style={{display:'flex',gap:6}}>
-          {['open','closed','all'].map(f=>(
-            <button key={f} onClick={()=>setFilter(f)} style={{
-              padding:'7px 14px',borderRadius:16,fontSize:12,fontFamily:'inherit',cursor:'pointer',textTransform:'capitalize',
-              border:`1.5px solid ${filter===f?C.teal:C.border}`,background:filter===f?C.teal+'15':'transparent',
-              color:filter===f?C.teal:C.textMut,fontWeight:filter===f?700:400,
-            }}>{f}</button>
-          ))}
-        </div>
+      <div style={{display:'flex',gap:8,marginBottom:16,alignItems:'center',justifyContent:'flex-end'}}>
         {!newPosition && (
           <button onClick={()=>setNewPosition(emptySwingPosition())} style={{
             padding:'9px 16px',borderRadius:10,border:`1.5px solid ${C.teal}`,background:C.teal+'15',
@@ -3794,13 +3804,13 @@ function SwingTab({userId, isMobile}){
         />
       )}
 
-      {filtered.length===0 && !newPosition && (
+      {openPositions.length===0 && !newPosition && (
         <div style={{textAlign:'center',color:C.textDim,fontSize:13,padding:'40px 0'}}>
-          No {filter!=='all'?filter:''} positions yet. Click "+ New Position" to add one manually.
+          No open positions yet. Click "+ New Position" to add one.
         </div>
       )}
 
-      {filtered.map(p=>(
+      {openPositions.map(p=>(
         <SwingPositionCard
           key={p.id}
           position={p}
@@ -3811,6 +3821,28 @@ function SwingTab({userId, isMobile}){
           userId={userId}
         />
       ))}
+
+      {closedCount>0 && (
+        <div style={{marginTop:24}}>
+          <button onClick={()=>setShowClosed(!showClosed)} style={{
+            display:'flex',alignItems:'center',gap:8,background:'none',border:'none',cursor:'pointer',
+            fontFamily:'inherit',fontSize:13,fontWeight:700,color:C.textSub,padding:'8px 0',width:'100%',
+          }}>
+            <span style={{fontSize:11}}>{showClosed?'▾':'▸'}</span> Closed Positions ({closedCount})
+          </button>
+          {showClosed && statsPositions.filter(p=>p.status==='closed').map(p=>(
+            <SwingPositionCard
+              key={p.id}
+              position={p}
+              onChange={updated=>setPositions(prev=>prev.map(x=>x.id===p.id?updated:x))}
+              onSave={handleSave}
+              onDelete={handleDelete}
+              isMobile={isMobile}
+              userId={userId}
+            />
+          ))}
+        </div>
+      )}
       </>
       )}
     </div>
