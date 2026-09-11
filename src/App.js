@@ -1857,6 +1857,7 @@ function computeStats(trades){
 
 // ─── SVG Chart Components ─────────────────────────────────────────────────────
 function SvgLineChart({series,color,height=180,fill=true,fmtY=v=>'$'+v.toFixed(0)}){
+  const [hoverIdx, setHoverIdx] = useState(null);
   const W=600,H=height,P={t:12,r:8,b:22,l:52};
   if(!series||series.length<2)return <div style={{height,display:'flex',alignItems:'center',justifyContent:'center',color:C.textDim,fontSize:12}}>Not enough data yet</div>;
   const vals=series.map(p=>p.val);
@@ -1868,8 +1869,24 @@ function SvgLineChart({series,color,height=180,fill=true,fmtY=v=>'$'+v.toFixed(0
   const areaPath=path+` L${x(series.length-1).toFixed(1)},${y(Math.max(min,0)).toFixed(1)} L${x(0).toFixed(1)},${y(Math.max(min,0)).toFixed(1)} Z`;
   const gid='g'+Math.random().toString(36).slice(2,8);
   const ticks=[min,min+range/2,max];
+
+  const handleMove = (e) => {
+    const svg = e.currentTarget;
+    const rect = svg.getBoundingClientRect();
+    const mouseX = ((e.clientX - rect.left) / rect.width) * W;
+    const step = (W-P.l-P.r) / (series.length-1);
+    let idx = Math.round((mouseX - P.l) / step);
+    idx = Math.max(0, Math.min(series.length-1, idx));
+    setHoverIdx(idx);
+  };
+
+  const hp = hoverIdx!=null ? series[hoverIdx] : null;
+  // Flip the tooltip to the left half when hovering the right side, so it never runs off-canvas
+  const tipLeft = hoverIdx!=null && x(hoverIdx) > W*0.6;
+
   return(
-    <svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%',height:'auto',display:'block'}}>
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%',height:'auto',display:'block',cursor:'crosshair'}}
+      onMouseMove={handleMove} onMouseLeave={()=>setHoverIdx(null)}>
       <defs><linearGradient id={gid} x1="0" y1="0" x2="0" y2="1">
         <stop offset="0%" stopColor={color} stopOpacity="0.25"/>
         <stop offset="100%" stopColor={color} stopOpacity="0.02"/>
@@ -1886,6 +1903,18 @@ function SvgLineChart({series,color,height=180,fill=true,fmtY=v=>'$'+v.toFixed(0
       <circle cx={x(series.length-1)} cy={y(series[series.length-1].val)} r="3.5" fill={color}/>
       <text x={P.l} y={H-6} fill={C.textMut} fontSize="9">{series[0].date?.slice(5)}</text>
       <text x={W-P.r} y={H-6} fill={C.textMut} fontSize="9" textAnchor="end">{series[series.length-1].date?.slice(5)}</text>
+
+      {hp && (
+        <g style={{pointerEvents:'none'}}>
+          <line x1={x(hoverIdx)} x2={x(hoverIdx)} y1={P.t} y2={H-P.b} stroke={color} strokeWidth="1" strokeDasharray="3,3" opacity="0.6"/>
+          <circle cx={x(hoverIdx)} cy={y(hp.val)} r="5" fill={color} stroke={C.surface} strokeWidth="2"/>
+          <g transform={`translate(${tipLeft ? x(hoverIdx)-108 : x(hoverIdx)+8}, ${Math.max(P.t, Math.min(y(hp.val)-24, H-P.b-40))})`}>
+            <rect width="100" height="36" rx="6" fill={C.surface2} stroke={C.border} strokeWidth="1"/>
+            <text x="8" y="15" fill={C.textMut} fontSize="9">{hp.date}</text>
+            <text x="8" y="28" fill={color} fontSize="12" fontWeight="700">{fmtY(hp.val)}</text>
+          </g>
+        </g>
+      )}
     </svg>
   );
 }
@@ -1930,6 +1959,7 @@ function SvgDonutChart({data, height=220}){
 }
 
 function SvgBarChart({series,height=160,posColor,negColor,fmtY=v=>'$'+v.toFixed(0)}){
+  const [hoverIdx, setHoverIdx] = useState(null);
   const W=600,H=height,P={t:12,r:8,b:22,l:52};
   if(!series||series.length===0)return <div style={{height,display:'flex',alignItems:'center',justifyContent:'center',color:C.textDim,fontSize:12}}>No data yet</div>;
   const vals=series.map(p=>p.val);
@@ -1938,18 +1968,35 @@ function SvgBarChart({series,height=160,posColor,negColor,fmtY=v=>'$'+v.toFixed(
   const bw=Math.min(28,(W-P.l-P.r)/series.length*0.7);
   const x=i=>P.l+(i+0.5)/series.length*(W-P.l-P.r);
   const y=v=>P.t+(1-(v-min)/range)*(H-P.t-P.b);
+  const hp = hoverIdx!=null ? series[hoverIdx] : null;
+  const tipLeft = hoverIdx!=null && x(hoverIdx) > W*0.6;
   return(
     <svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%',height:'auto',display:'block'}}>
       <line x1={P.l} x2={W-P.r} y1={y(0)} y2={y(0)} stroke={C.textMut} strokeWidth="0.7"/>
       <text x={P.l-6} y={y(max)+4} fill={C.textMut} fontSize="10" textAnchor="end">{fmtY(max)}</text>
       {min<0&&<text x={P.l-6} y={y(min)+4} fill={C.textMut} fontSize="10" textAnchor="end">{fmtY(min)}</text>}
       {series.map((p,i)=>(
-        <rect key={i} x={x(i)-bw/2} y={p.val>=0?y(p.val):y(0)}
-          width={bw} height={Math.abs(y(p.val)-y(0))||1}
-          fill={p.val>=0?(posColor||C.green):(negColor||C.red)} rx="2" opacity="0.85"/>
+        <g key={i}>
+          {/* invisible full-height hit target — easier to hover than the thin bar itself */}
+          <rect x={x(i)-(W-P.l-P.r)/series.length/2} y={P.t} width={(W-P.l-P.r)/series.length} height={H-P.t-P.b}
+            fill="transparent" onMouseEnter={()=>setHoverIdx(i)} onMouseLeave={()=>setHoverIdx(null)} style={{cursor:'crosshair'}}/>
+          <rect x={x(i)-bw/2} y={p.val>=0?y(p.val):y(0)}
+            width={bw} height={Math.abs(y(p.val)-y(0))||1}
+            fill={p.val>=0?(posColor||C.green):(negColor||C.red)} rx="2" opacity={hoverIdx===i?1:0.85} style={{pointerEvents:'none'}}/>
+        </g>
       ))}
       <text x={P.l} y={H-6} fill={C.textMut} fontSize="9">{series[0].date?.slice(5)}</text>
       <text x={W-P.r} y={H-6} fill={C.textMut} fontSize="9" textAnchor="end">{series[series.length-1].date?.slice(5)}</text>
+
+      {hp && (
+        <g style={{pointerEvents:'none'}}>
+          <g transform={`translate(${tipLeft ? x(hoverIdx)-108 : x(hoverIdx)+8}, ${P.t+4})`}>
+            <rect width="100" height="36" rx="6" fill={C.surface2} stroke={C.border} strokeWidth="1"/>
+            <text x="8" y="15" fill={C.textMut} fontSize="9">{hp.date}</text>
+            <text x="8" y="28" fill={hp.val>=0?(posColor||C.green):(negColor||C.red)} fontSize="12" fontWeight="700">{fmtY(hp.val)}</text>
+          </g>
+        </g>
+      )}
     </svg>
   );
 }
@@ -2487,8 +2534,25 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
       {/* ══ EQUITY & DRAWDOWN ══ */}
       {section==='equity'&&(<>
         <InsightsCard insights={insightsFor(trades)}/>
+        <div style={{
+          borderRadius:20,padding:isMobile?'24px 20px':'32px 36px',marginBottom:16,position:'relative',overflow:'hidden',
+          background: s.totalPnl>=0
+            ? `linear-gradient(135deg, ${C.green}18 0%, ${C.surface} 60%)`
+            : `linear-gradient(135deg, ${C.red}18 0%, ${C.surface} 60%)`,
+          border:`1px solid ${s.totalPnl>=0?C.green+'30':C.red+'30'}`,
+        }}>
+          <div style={{fontSize:12,color:C.textMut,marginBottom:6,fontWeight:600}}>Net P&L</div>
+          <div style={{display:'flex',alignItems:'baseline',gap:14,flexWrap:'wrap'}}>
+            <span style={{fontSize:isMobile?38:52,fontWeight:800,lineHeight:1,color:s.totalPnl>=0?C.green:C.red,letterSpacing:'-0.02em'}}>
+              {s.totalPnl>=0?'+':''}${s.totalPnl.toFixed(0)}
+            </span>
+            <span style={{fontSize:18,fontWeight:600,color:C.textSub}}>
+              {s.winRate.toFixed(0)}% win rate · PF {s.profitFactor>=99?'∞':s.profitFactor.toFixed(2)}
+            </span>
+          </div>
+          <div style={{fontSize:11,color:C.textDim,marginTop:6}}>{s.wins}W · {s.losses}L · {s.be}BE across every logged trade</div>
+        </div>
         <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(5,1fr)',gap:10,marginBottom:10}}>
-          <BigStat label="Net P&L" val={`${s.totalPnl>=0?'+':''}$${s.totalPnl.toFixed(0)}`} col={s.totalPnl>=0?C.green:C.red}/>
           <BigStat label="Win Rate" val={`${s.winRate.toFixed(1)}%`} col={s.winRate>=50?C.green:s.winRate>=40?C.yellow:C.red} sub={`${s.wins}W · ${s.losses}L · ${s.be}BE`}/>
           <BigStat label="Profit Factor" val={s.profitFactor>=99?'∞':s.profitFactor.toFixed(2)} col={s.profitFactor>=1.5?C.green:s.profitFactor>=1?C.yellow:C.red}/>
           <BigStat label="Expectancy" val={`${s.expectancy>=0?'+':''}$${s.expectancy.toFixed(0)}`} col={s.expectancy>=0?C.green:C.red} sub="per trade"/>
@@ -3364,6 +3428,14 @@ function SwingTab({userId, isMobile}){
     setSectorCeilings(next);
     try{localStorage.setItem(ceilingsKey, JSON.stringify(next));}catch(_){}
   };
+  const cashKey = 'swing_cash_balance_'+(userId||'anon');
+  const [cashBalance, setCashBalanceState] = useState(()=>{
+    try{return localStorage.getItem(cashKey)||'';}catch(_){return '';}
+  });
+  const setCashBalance = (val) => {
+    setCashBalanceState(val);
+    try{localStorage.setItem(cashKey, val);}catch(_){}
+  };
   const [view, setView] = useState('positions'); // 'positions' | 'allocation' | 'insights'
   const [showConnect, setShowConnect] = useState(false);
   const [connectToken, setConnectToken] = useState('');
@@ -3478,13 +3550,17 @@ function SwingTab({userId, isMobile}){
   };
   const sortedOpenPositions = [...openPositions].sort(sortFns[sortBy] || sortFns.return_desc);
   const totalInvested = openPositions.reduce((s,p)=>s+toCAD(parseFloat(p.cost_basis_remaining||0),p.currency),0);
+  const cashNum = parseFloat(cashBalance)||0;
+  const totalAccountValue = totalInvested + cashNum; // for TRUE exposure % — invested capital alone understates how diversified you actually are
   // Cost basis across ALL positions ever (open + closed) — the correct
   // denominator for portfolio-wide return %, not just currently-open capital
   const totalCostBasisEver = statsPositions.reduce((s,p)=>s+toCAD(parseFloat(p.cost_basis_total)||0,p.currency),0);
   const totalPnlAllIn = totalRealized + totalUnrealized + totalDividends;
   const totalReturnPct = totalCostBasisEver>0 ? totalPnlAllIn/totalCostBasisEver*100 : null;
 
-  // Sector/symbol allocation — based on cost basis of currently OPEN positions
+  // Sector/symbol allocation — based on cost basis of currently OPEN positions,
+  // percentages computed against total account value (invested + cash) so
+  // exposure reflects your REAL diversification, not just the invested slice
   const bySector = {}, bySymbol = {};
   openPositions.forEach(p=>{
     const basis = parseFloat(p.cost_basis_remaining)||0;
@@ -3492,6 +3568,7 @@ function SwingTab({userId, isMobile}){
     bySector[sec] = (bySector[sec]||0) + basis;
     bySymbol[p.symbol] = (bySymbol[p.symbol]||0) + basis;
   });
+  if (cashNum > 0) bySector['Cash'] = cashNum;
   const sectorRows = Object.entries(bySector).sort((a,b)=>b[1]-a[1]);
 
   // Cumulative realized P&L over time — the swing-trading "equity curve"
@@ -3627,11 +3704,11 @@ function SwingTab({userId, isMobile}){
       </div>
 
       {sectorRows.filter(([sec,val])=>{
-        const pct = totalInvested>0 ? val/totalInvested*100 : 0;
+        const pct = totalAccountValue>0 ? val/totalAccountValue*100 : 0;
         const ceiling = sectorCeilings[sec];
         return ceiling && pct > parseFloat(ceiling);
       }).map(([sec,val])=>{
-        const pct = val/totalInvested*100;
+        const pct = val/totalAccountValue*100;
         return (
           <div key={sec} style={{padding:'8px 14px',borderRadius:10,background:C.orange+'15',border:`1px solid ${C.orange}40`,marginBottom:8,fontSize:12,color:C.orange,fontWeight:600}}>
             ⚠ {sec} is {pct.toFixed(0)}% of your portfolio — above your {sectorCeilings[sec]}% ceiling
@@ -3691,13 +3768,18 @@ function SwingTab({userId, isMobile}){
 
       {view==='allocation' ? (
         <div style={{display:isMobile?'block':'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
-          <ChartCard title="By Sector" sub="Cost basis of currently open positions">
-            <SvgDonutChart data={sectorRows.map(([sec,val],i)=>({label:sec, value:val, color:DONUT_COLORS[i%DONUT_COLORS.length]}))}/>
+          <ChartCard title="By Sector" sub="Cost basis of open positions + cash — real exposure, not just invested capital">
+            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:14}}>
+              <span style={{fontSize:11,color:C.textMut}}>Cash on hand:</span>
+              <input type="number" placeholder="0" value={cashBalance} onChange={e=>setCashBalance(e.target.value)} style={{width:100,padding:'5px 8px',borderRadius:8,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontFamily:'inherit'}}/>
+              <span style={{fontSize:10,color:C.textDim}}>manual — used only for exposure %, not return calculations</span>
+            </div>
+            <SvgDonutChart data={sectorRows.map(([sec,val],i)=>({label:sec, value:val, color:sec==='Cash'?C.textMut:DONUT_COLORS[i%DONUT_COLORS.length]}))}/>
             {sectorRows.length>0 && (
               <div style={{marginTop:16,paddingTop:14,borderTop:`1px solid ${C.border}`}}>
                 <div style={{fontSize:10,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700,marginBottom:8}}>Comfort ceilings — set once, get warned if crossed</div>
                 {sectorRows.map(([sec,val])=>{
-                  const pct = totalInvested>0 ? val/totalInvested*100 : 0;
+                  const pct = totalAccountValue>0 ? val/totalAccountValue*100 : 0;
                   const ceiling = sectorCeilings[sec];
                   const exceeded = ceiling && pct > parseFloat(ceiling);
                   return (
@@ -3717,7 +3799,7 @@ function SwingTab({userId, isMobile}){
           <ChartCard title="By Symbol (Concentration)" sub="Watch for over-concentration in one name">
             {symbolRows.length===0 ? <div style={{color:C.textDim,fontSize:12,textAlign:'center',padding:'20px 0'}}>No open positions</div> :
               symbolRows.map(([sym,val])=>{
-                const pct = val/totalInvested*100;
+                const pct = totalAccountValue>0 ? val/totalAccountValue*100 : 0;
                 return(
                   <div key={sym} style={{marginBottom:10}}>
                     <div style={{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:4}}>
