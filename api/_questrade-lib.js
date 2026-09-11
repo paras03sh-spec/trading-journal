@@ -79,7 +79,7 @@ export async function resolveSymbolId(supabase, apiServer, accessToken, position
 // Batch quote fetch — Questrade accepts comma-separated IDs in one call.
 export async function fetchQuotes(apiServer, accessToken, symbolIds) {
   if (symbolIds.length === 0) return { prices: {}, debug: 'no symbol ids to fetch' };
-  const url = `${apiServer}v1/markets/quotes/${symbolIds.join(',')}`;
+  const url = `${apiServer}v1/markets/quotes?ids=${symbolIds.join(',')}`;
   try {
     const qRes = await fetch(url, {
       headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json', 'User-Agent': 'Mozilla/5.0 (compatible; TradingJournalApp/1.0)' },

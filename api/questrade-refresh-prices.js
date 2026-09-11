@@ -97,5 +97,5 @@ export default async function handler(req, res) {
     results.push({ userId, updated: outcome.updated, total: positions.length, debug: outcome.debug });
   }
 
-  return res.status(200).json({ results, _version: 'v23_61-user-agent-and-url-debug' });
+  return res.status(200).json({ results, _version: 'v23_62-quotes-query-param-fix' });
 }
