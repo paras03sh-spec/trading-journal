@@ -443,6 +443,10 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
   const pnl=calcPnL(trade.ticker,trade.contracts,trade.points);
   const risk=calcRisk(trade.ticker,trade.contracts,trade.sl);
   const rr=risk>0?(Math.abs(pnl)/risk).toFixed(2):'—';
+  // Signed R for the header badge — same real formula as Analytics/SummaryBar
+  // (points-per-contract ÷ SL), so a loss reads as -1.2R not just "1.2R".
+  const contractsNum=parseFloat(trade.contracts), slNum=parseFloat(trade.sl), pointsNum=parseFloat(trade.points);
+  const signedR = (slNum>0 && contractsNum>0 && trade.points!=='') ? (pointsNum/contractsNum)/slNum : null;
   const set=(k)=>(v)=>onChange({...trade,[k]:v});
   const dot=trade.result==='W'?C.green:trade.result==='L'?C.red:trade.result==='BE'?C.yellow:C.border;
 
@@ -458,6 +462,11 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
         </div>
         <div style={{display:'flex',alignItems:'center',gap:12}}>
           {!trade.sl && trade.ticker && <span title="No SL entered — R-multiples and MFE capture can't compute without it" style={{fontSize:10,color:C.red,background:C.red+'15',padding:'2px 7px',borderRadius:10,fontWeight:700}}>⚠ NO SL</span>}
+          {signedR!=null && (
+            <span style={{fontSize:12,fontWeight:800,padding:'3px 9px',borderRadius:14,background:signedR>=0?C.green+'20':C.red+'20',color:signedR>=0?C.green:C.red}}>
+              {signedR>=0?'+':''}{signedR.toFixed(1)}R
+            </span>
+          )}
           {trade.points!==''&&<span style={{fontSize:13,fontWeight:700,color:parseFloat(trade.points)>=0?C.green:C.red,fontVariantNumeric:'tabular-nums'}}>{parseFloat(trade.points)>=0?'+':''}{trade.points}pts</span>}
           <span style={{color:C.textMut,fontSize:13}}>{trade.open?'▲':'▼'}</span>
           <button onClick={(e)=>{e.stopPropagation();onRemove();}} style={{background:'none',border:'none',color:C.textMut,fontSize:16,cursor:'pointer',padding:0,lineHeight:1}}>✕</button>
@@ -702,8 +711,16 @@ function SummaryBar({trades}){
   const totalComm=trades.reduce((s,t)=>s+(parseFloat(t.commission)||0),0);
   const wins=trades.filter(t=>t.result==='W').length;
   const losses=trades.filter(t=>t.result==='L').length;
-  const counted=trades.filter(t=>t.result).length;
-  const wr=counted>0?Math.round((wins/counted)*100):0;
+  // Real signed R-multiple: points-per-contract ÷ SL — same formula as
+  // Analytics, so this number always matches what you'd see there.
+  const rTrades=trades.filter(t=>{
+    const sl=parseFloat(t.sl); const contracts=parseFloat(t.contracts);
+    return sl>0 && contracts>0;
+  }).map(t=>{
+    const contracts=parseFloat(t.contracts), points=parseFloat(t.points)||0, sl=parseFloat(t.sl);
+    return (points/contracts)/sl;
+  });
+  const avgR = rTrades.length ? rTrades.reduce((s,r)=>s+r,0)/rTrades.length : null;
   // Points broken down by instrument — mixing ES and NQ pts is meaningless
   const esPts=trades.filter(t=>['ES','MES'].includes(t.ticker)).reduce((s,t)=>s+(parseFloat(t.points)||0),0);
   const nqPts=trades.filter(t=>['NQ','MNQ'].includes(t.ticker)).reduce((s,t)=>s+(parseFloat(t.points)||0),0);
@@ -715,7 +732,7 @@ function SummaryBar({trades}){
     <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:8,marginBottom:16}}>
       <StatBox label="Net P&L" val={`${total>=0?'+':''}$${total.toFixed(0)}`} color={total>=0?C.green:C.red}/>
       <StatBox label="Points" val={ptsLabel} color={ptsColor}/>
-      <StatBox label="W Rate" val={`${wr}%`} color={C.yellow}/>
+      <StatBox label="Avg R" val={avgR!=null?`${avgR>=0?'+':''}${avgR.toFixed(2)}R`:'—'} color={avgR==null?C.textMut:avgR>=0?C.green:C.red}/>
       <StatBox label="Trades" val={`${wins}W ${losses}L`} color={C.textSub}/>
       <StatBox label="Commission" val={totalComm?`-$${totalComm.toFixed(2)}`:'—'} color={C.textMut}/>
     </div>
