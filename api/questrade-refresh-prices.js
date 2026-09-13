@@ -68,18 +68,24 @@ export default async function handler(req, res) {
       const symbolIds = Object.keys(idBySymbol);
       const { prices, debug: quotesDebug, invalidToken: quotesInvalid } = await fetchQuotes(api_server, access_token, symbolIds);
       if (quotesInvalid) sawInvalidToken = true;
-      const sectors = await fetchSectors(api_server, access_token, symbolIds);
+      const symbolInfo = await fetchSectors(api_server, access_token, symbolIds);
       const positionById = Object.fromEntries(positions.map(p => [p.id, p]));
 
       let updated = 0;
       for (const sid of symbolIds) {
         const positionId = idBySymbol[sid];
         const price = prices[sid];
-        const sector = sectors[sid];
+        const info = symbolInfo[sid];
         const pos = positionById[positionId];
         const patch = {};
         if (price != null) { patch.current_price = price; patch.current_price_updated = new Date().toISOString(); }
-        if (sector && !pos.sector) patch.sector = sector; // only fill blanks, never override a manual value
+        if (info?.sector && !pos.sector) patch.sector = info.sector; // only fill blanks, never override a manual value
+        // Dividend forecast: always refreshed (not "only if blank"), since
+        // the real next ex-date/amount genuinely changes over time and a
+        // stale one would be actively misleading, unlike sector which is
+        // effectively permanent.
+        if (info?.dividend != null) patch.next_dividend_amount = info.dividend;
+        if (info?.exDate) patch.next_dividend_ex_date = info.exDate.slice(0,10);
         if (Object.keys(patch).length === 0) continue;
         await supabase.from('swing_positions').update(patch).eq('id', positionId);
         updated++;
@@ -99,5 +105,5 @@ export default async function handler(req, res) {
     results.push({ userId, updated: outcome.updated, total: positions.length, debug: outcome.debug });
   }
 
-  return res.status(200).json({ results, _version: 'v23_66-fx-rate' });
+  return res.status(200).json({ results, _version: 'v23_71-real-dividends' });
 }

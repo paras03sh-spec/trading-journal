@@ -8,8 +8,8 @@ const TABS = ["Trades", "Analytics", "Ask Claude", "Swing"];
 
 const THEMES = {
   dark:{
-    bg:'#0e0e0e', surface:'#161616', surface2:'#1c1c1c',
-    border:'#2a2a2a', border2:'#3a3a3a',
+    bg:'#0a0a0f', surface:'#131318', surface2:'#1a1a21',
+    border:'#26262e', border2:'#38383f',
     text:'#e8e8e8', textSub:'#999', textMut:'#555', textDim:'#333',
     green:'#4ade80', red:'#f87171', yellow:'#fbbf24',
     blue:'#60a5fa', purple:'#a78bfa', teal:'#34d399', orange:'#fb923c',
@@ -2121,11 +2121,15 @@ function HeatCalendar({dayMap, dayRMap}){
                 const intensity=has?Math.min(Math.abs(c.pnl)/maxAbs,1):0;
                 const col=has?(c.pnl>=0?C.green:C.red):null;
                 const r=c.r;
+                const isBigDay = has && intensity>0.7; // purely visual threshold — highlights your standout days
                 return(
-                  <div key={i} title={has?`$${c.pnl.toFixed(0)}${r?.hasR?` · ${r.r>=0?'+':''}${r.r.toFixed(2)}R`:''}`:''} style={{
+                  <div key={i} title={has?`$${c.pnl.toFixed(0)}${r?.hasR?` · ${r.r>=0?'+':''}${r.r.toFixed(2)}R`:''}`:''}
+                    className={`tj-card-hover${isBigDay?(c.pnl>=0?' tj-glow-win':' tj-glow-loss'):''}`}
+                    style={{
                     minHeight:56,borderRadius:4,display:'flex',flexDirection:'column',padding:'3px 4px',
                     background:has?col+Math.round(14+intensity*40).toString(16).padStart(2,'0'):C.surface,
                     border:`1px solid ${has?col+'44':C.border}`,
+                    cursor:has?'default':'default',
                   }}>
                     <span style={{fontSize:9,color:has?C.textMut:C.textDim,fontWeight:400}}>{c.day}</span>
                     {has&&(
@@ -2161,6 +2165,34 @@ function ChartCard({title,sub,children}){
       {children}
     </div>
   );
+}
+
+// Visual-only: counts up from 0 to the target value on mount/change, purely
+// cosmetic — takes the already-computed number and a formatter, never
+// touches how that number was calculated. Used only on the two hero cards
+// where the exact numeric value is known, not retrofitted into BigStat
+// (which renders too many non-numeric formats — "12W 3L", "—", compound
+// strings — to animate safely).
+function AnimatedNumber({value, format, duration=700}){
+  const [display, setDisplay] = useState(0);
+  const fromRef = useRef(0);
+  useEffect(() => {
+    if (value==null || isNaN(value)) { setDisplay(value); return; }
+    const from = fromRef.current || 0;
+    const to = value;
+    const start = performance.now();
+    let raf;
+    const tick = (now) => {
+      const t = Math.min(1, (now-start)/duration);
+      const eased = 1-Math.pow(1-t, 3); // ease-out cubic
+      setDisplay(from + (to-from)*eased);
+      if (t<1) raf = requestAnimationFrame(tick);
+      else fromRef.current = to;
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [value, duration]);
+  return <>{format ? format(display) : display.toFixed(0)}</>;
 }
 
 function BigStat({label,val,col,sub}){
@@ -2485,8 +2517,7 @@ function DimSection({dimKey,trades,minN,tagMetric,setTagMetric,isMobile,rollingB
   );
 }
 
-function AnalyticsTab({userId,isMobile,onJumpToDate}){
-  const[days,setDays]=useState(null);
+function AnalyticsTab({userId,isMobile,onJumpToDate,days,onRefreshDays}){
   const[section,setSection]=useState('equity');
   const[filters,setFilters]=useState({});
   const[minN,setMinN]=useState(1);
@@ -2497,12 +2528,6 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
   const[timeMetric,setTimeMetric]=useState('pnl');
   const[exFilters,setExFilters]=useState({});
   const[mfeDim,setMfeDim]=useState('setup');
-
-  useEffect(()=>{
-    let live=true;
-    loadAllDays(userId).then(d=>{if(live)setDays(d);});
-    return()=>{live=false;};
-  },[userId]);
 
   if(days===null)return <div style={{textAlign:'center',color:C.textMut,padding:'60px 0',fontSize:13}}>Loading your data...</div>;
 
@@ -2534,7 +2559,10 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
 
       <FilterBar allTrades={allTrades} filters={filters} setFilters={setFilters} isMobile={isMobile}/>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:16,flexWrap:'wrap',gap:8}}>
-        <div style={{fontSize:11,color:C.textMut}}>{trades.length} of {allTrades.length} trades match · Min sample: {dimSectionKeys.includes(section)?minN:section==='pivot'?pivotMinN:'—'}</div>
+        <div style={{fontSize:11,color:C.textMut,display:'flex',alignItems:'center',gap:8}}>
+          {trades.length} of {allTrades.length} trades match · Min sample: {dimSectionKeys.includes(section)?minN:section==='pivot'?pivotMinN:'—'}
+          <button onClick={onRefreshDays} title="Reload from the database — data isn't auto-refetched every time you visit this tab anymore, so use this after editing trades elsewhere" style={{fontSize:10,color:C.teal,background:'none',border:'none',cursor:'pointer',fontFamily:'inherit',textDecoration:'underline'}}>🔄 refresh</button>
+        </div>
         {dimSectionKeys.includes(section)&&(
           <div style={{display:'flex',alignItems:'center',gap:6}}>
             <span style={{fontSize:11,color:C.textMut}}>Min sample:</span>
@@ -2551,7 +2579,7 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
       {/* ══ EQUITY & DRAWDOWN ══ */}
       {section==='equity'&&(<>
         <InsightsCard insights={insightsFor(trades)}/>
-        <div style={{
+        <div className={`tj-fade-in ${s.totalPnl>=0?'tj-glow-win':'tj-glow-loss'}`} style={{
           borderRadius:20,padding:isMobile?'24px 20px':'32px 36px',marginBottom:16,position:'relative',overflow:'hidden',
           background: s.totalPnl>=0
             ? `linear-gradient(135deg, ${C.green}18 0%, ${C.surface} 60%)`
@@ -2561,7 +2589,7 @@ function AnalyticsTab({userId,isMobile,onJumpToDate}){
           <div style={{fontSize:12,color:C.textMut,marginBottom:6,fontWeight:600}}>Net P&L</div>
           <div style={{display:'flex',alignItems:'baseline',gap:14,flexWrap:'wrap'}}>
             <span style={{fontSize:isMobile?38:52,fontWeight:800,lineHeight:1,color:s.totalPnl>=0?C.green:C.red,letterSpacing:'-0.02em'}}>
-              {s.totalPnl>=0?'+':''}${s.totalPnl.toFixed(0)}
+              {s.totalPnl>=0?'+':''}$<AnimatedNumber value={s.totalPnl} format={v=>Math.abs(v).toFixed(0)}/>
             </span>
             <span style={{fontSize:18,fontWeight:600,color:C.textSub}}>
               {s.winRate.toFixed(0)}% win rate · PF {s.profitFactor>=99?'∞':s.profitFactor.toFixed(2)}
@@ -3411,6 +3439,11 @@ function SwingPositionCard({position, onChange, onDelete, onSave, isMobile, user
               {position.current_price_updated && (
                 <div style={{fontSize:11,color:C.textMut,marginTop:4}}>Last updated {new Date(position.current_price_updated).toLocaleString()}</div>
               )}
+              {position.next_dividend_amount > 0 && (
+                <div style={{fontSize:11,color:C.teal,marginTop:4}}>
+                  Next dividend: ${position.next_dividend_amount.toFixed(2)}/share{position.next_dividend_ex_date?` · ex-date ${position.next_dividend_ex_date}`:''} <span style={{color:C.textDim}}>(company-reported, via Questrade)</span>
+                </div>
+              )}
             </div>
           )}
 
@@ -3448,7 +3481,7 @@ function SwingPositionCard({position, onChange, onDelete, onSave, isMobile, user
               {position.id?'💾 Save Now':'✓ Create Position'}
             </button>
             {position.id && autoSaveStatus && (
-              <span style={{fontSize:11,color:autoSaveStatus==='saved'?C.green:C.textMut,whiteSpace:'nowrap'}}>
+              <span className="tj-pop-in" style={{fontSize:11,color:autoSaveStatus==='saved'?C.green:C.textMut,whiteSpace:'nowrap'}}>
                 {autoSaveStatus==='saving'?'⏳ Saving...':'✓ Saved'}
               </span>
             )}
@@ -3508,6 +3541,31 @@ function SwingTab({userId, isMobile}){
     })();
     return ()=>{live=false;};
   },[userId]);
+
+  // Auto-adjust cash: when your total invested capital changes (a buy or
+  // sell), move cash by the opposite delta — a buy deducts what you spent,
+  // a sell adds back what you received. Tracks the PREVIOUS total via a
+  // ref and only applies the delta, so a manual edit to cash balance is
+  // never fought — it simply becomes the new starting point for the next
+  // automatic adjustment, since this effect only re-fires when positions
+  // themselves change, not when cashBalance changes on its own.
+  const prevTotalInvestedRef = useRef(null);
+  useEffect(() => {
+    if (!positions) return; // not loaded yet
+    const currentTotalInvested = positions
+      .filter(p=>p.status==='open')
+      .reduce((s,p)=>s+(parseFloat(p.cost_basis_remaining)||0), 0);
+    if (prevTotalInvestedRef.current === null) {
+      prevTotalInvestedRef.current = currentTotalInvested; // baseline on first load — no false deduction
+      return;
+    }
+    const delta = currentTotalInvested - prevTotalInvestedRef.current;
+    if (Math.abs(delta) > 0.001) {
+      const newCash = (parseFloat(cashBalance)||0) - delta;
+      setCashBalance(newCash.toFixed(2));
+    }
+    prevTotalInvestedRef.current = currentTotalInvested;
+  }, [positions]);
 
   const handleConnectQuestrade = async () => {
     if (!connectToken.trim()) { window.alert('Paste your Questrade refresh token first.'); return; }
@@ -3691,15 +3749,32 @@ function SwingTab({userId, isMobile}){
     return { symbol, sharesHeld:shares, acbPerShare: shares>0?totalCost/shares:0, totalACB:totalCost, realizedCapGain };
   }).filter(r=>r.sharesHeld>0.0001||Math.abs(r.realizedCapGain)>0.01).sort((a,b)=>b.totalACB-a.totalACB);
 
+  // Real dividend forecast, straight from Questrade (company-declared amount
+  // + actual next ex-date) — used first when available. Only extrapolated
+  // from your own logged history as a fallback for positions Questrade
+  // hasn't priced (e.g. Wealthsimple-only holdings).
+  const realDividendRows = openPositions
+    .filter(p=>p.next_dividend_amount>0)
+    .map(p=>({
+      symbol: p.symbol,
+      nextPaymentDollar: p.next_dividend_amount * (parseFloat(p.total_qty_entered)||0),
+      nextDate: p.next_dividend_ex_date,
+      source: 'real',
+    }));
+  const realSymbols = new Set(realDividendRows.map(r=>r.symbol));
+
   // Simple future income projection — extrapolated from YOUR OWN logged
   // dividend cadence per symbol. Not a real forecast; a real dividend can be
   // cut, raised, or skipped entirely. Needs 2+ logged payments to project.
   const divsBySymbol = {};
-  statsPositions.forEach(p=>(p.dividends||[]).forEach(d=>{
-    if(!d.date||!d.amount) return;
-    (divsBySymbol[p.symbol]=divsBySymbol[p.symbol]||[]).push({date:d.date, amount:parseFloat(d.amount)||0});
-  }));
-  const futureIncomeRows = Object.entries(divsBySymbol).filter(([,divs])=>divs.length>=2).map(([symbol,divs])=>{
+  statsPositions.forEach(p=>{
+    if (realSymbols.has(p.symbol)) return; // real data already covers this one
+    (p.dividends||[]).forEach(d=>{
+      if(!d.date||!d.amount) return;
+      (divsBySymbol[p.symbol]=divsBySymbol[p.symbol]||[]).push({date:d.date, amount:parseFloat(d.amount)||0});
+    });
+  });
+  const extrapolatedRows = Object.entries(divsBySymbol).filter(([,divs])=>divs.length>=2).map(([symbol,divs])=>{
     const sorted=[...divs].sort((a,b)=>a.date.localeCompare(b.date));
     const gaps=[];
     for(let i=1;i<sorted.length;i++) gaps.push((new Date(sorted[i].date)-new Date(sorted[i-1].date))/86400000);
@@ -3707,9 +3782,10 @@ function SwingTab({userId, isMobile}){
     const avgAmount = sorted.reduce((s,d)=>s+d.amount,0)/sorted.length;
     const lastDate = new Date(sorted[sorted.length-1].date);
     const nextDate = new Date(lastDate.getTime()+avgGap*86400000);
-    return { symbol, avgAmount, avgGapDays:avgGap, nextDate: nextDate.toISOString().slice(0,10), estimatedAnnual: avgGap>0?avgAmount*(365/avgGap):0 };
-  }).sort((a,b)=>new Date(a.nextDate)-new Date(b.nextDate));
-  const totalEstimatedAnnualIncome = futureIncomeRows.reduce((s,r)=>s+r.estimatedAnnual,0);
+    return { symbol, avgAmount, avgGapDays:avgGap, nextDate: nextDate.toISOString().slice(0,10), estimatedAnnual: avgGap>0?avgAmount*(365/avgGap):0, source:'extrapolated' };
+  });
+  const futureIncomeRows = [...realDividendRows, ...extrapolatedRows].sort((a,b)=>new Date(a.nextDate)-new Date(b.nextDate));
+  const totalEstimatedAnnualIncome = extrapolatedRows.reduce((s,r)=>s+r.estimatedAnnual,0); // real rows are one-off next-payment facts, not annualized guesses
 
 
   return (
@@ -3738,7 +3814,7 @@ function SwingTab({userId, isMobile}){
           {questradeConnected===null?'Checking Questrade connection...':questradeConnected?'Questrade connected — prices refresh automatically after close on weekdays':'Questrade not connected — prices are manual only'}
         </div>
         <div style={{display:'flex',gap:8,alignItems:'center'}}>
-          {refreshMessage && <span style={{fontSize:11,color:C.green,fontWeight:600}}>{refreshMessage}</span>}
+          {refreshMessage && <span className="tj-pop-in" style={{fontSize:11,color:C.green,fontWeight:600}}>{refreshMessage}</span>}
           {questradeConnected===false && (
             <button onClick={()=>setShowConnect(true)} style={{padding:'6px 12px',borderRadius:16,fontSize:11,fontFamily:'inherit',cursor:'pointer',border:`1.5px solid ${C.blue}`,background:C.blue+'15',color:C.blue,fontWeight:700}}>Connect Questrade</button>
           )}
@@ -3786,7 +3862,7 @@ function SwingTab({userId, isMobile}){
         </div>
       )}
       {/* Hero: the one number that actually matters, given real visual weight */}
-      <div style={{
+      <div className={`tj-fade-in ${totalPnlAllIn>=0?'tj-glow-win':'tj-glow-loss'}`} style={{
         borderRadius:20,padding:isMobile?'24px 20px':'32px 36px',marginBottom:16,position:'relative',overflow:'hidden',
         background: totalPnlAllIn>=0
           ? `linear-gradient(135deg, ${C.green}18 0%, ${C.surface} 60%)`
@@ -3796,7 +3872,7 @@ function SwingTab({userId, isMobile}){
         <div style={{fontSize:12,color:C.textMut,marginBottom:6,fontWeight:600}}>Total Return</div>
         <div style={{display:'flex',alignItems:'baseline',gap:14,flexWrap:'wrap'}}>
           <span style={{fontSize:isMobile?38:52,fontWeight:800,lineHeight:1,color:totalPnlAllIn>=0?C.green:C.red,letterSpacing:'-0.02em'}}>
-            {totalReturnPct!=null?`${totalReturnPct>=0?'+':''}${totalReturnPct.toFixed(1)}%`:'—'}
+            {totalReturnPct!=null?<>{totalReturnPct>=0?'+':''}<AnimatedNumber value={totalReturnPct} format={v=>Math.abs(v).toFixed(1)}/>%</>:'—'}
           </span>
           <span style={{fontSize:18,fontWeight:600,color:C.textSub}}>
             {totalPnlAllIn>=0?'+':''}${totalPnlAllIn.toFixed(2)}
@@ -3824,7 +3900,7 @@ function SwingTab({userId, isMobile}){
             <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:14}}>
               <span style={{fontSize:11,color:C.textMut}}>Cash on hand:</span>
               <input type="number" placeholder="0" value={cashBalance} onChange={e=>setCashBalance(e.target.value)} style={{width:100,padding:'5px 8px',borderRadius:8,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:12,fontFamily:'inherit'}}/>
-              <span style={{fontSize:10,color:C.textDim}}>manual — used only for exposure %, not return calculations</span>
+              <span style={{fontSize:10,color:C.textDim}}>auto-deducted on buys, added back on sells — edit anytime and that becomes the new baseline</span>
             </div>
             <SvgDonutChart data={sectorRows.map(([sec,val],i)=>({label:sec, value:val, color:sec==='Cash'?C.textMut:DONUT_COLORS[i%DONUT_COLORS.length]}))}/>
             {sectorRows.length>0 && (
@@ -3932,14 +4008,19 @@ function SwingTab({userId, isMobile}){
           }
         </ChartCard>
 
-        <ChartCard title="Future Income Projection" sub="Extrapolated from your own logged dividend history only — not a real forecast, dividends can be cut or raised">
-          {futureIncomeRows.length===0 ? <div style={{color:C.textDim,fontSize:12,textAlign:'center',padding:'20px 0'}}>Log 2+ dividends on the same symbol to see a projection</div> : (
+        <ChartCard title="Future Income Projection" sub="Real company-declared data via Questrade where available, extrapolated from your own history otherwise">
+          {futureIncomeRows.length===0 ? <div style={{color:C.textDim,fontSize:12,textAlign:'center',padding:'20px 0'}}>Connect Questrade, or log 2+ dividends on the same symbol, to see a projection</div> : (
             <>
-              <div style={{marginBottom:12,fontSize:13,color:C.textSub}}>Estimated annual income (current holdings' pace): <b style={{color:C.teal}}>${totalEstimatedAnnualIncome.toFixed(2)}</b></div>
+              {totalEstimatedAnnualIncome>0 && (
+                <div style={{marginBottom:12,fontSize:13,color:C.textSub}}>Estimated annual income (extrapolated holdings only): <b style={{color:C.teal}}>${totalEstimatedAnnualIncome.toFixed(2)}</b></div>
+              )}
               {futureIncomeRows.map((r,i)=>(
                 <div key={i} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 0',borderBottom:i<futureIncomeRows.length-1?`1px solid ${C.border}`:'none'}}>
-                  <span style={{fontSize:13,color:C.textSub}}>{r.symbol}</span>
-                  <span style={{fontSize:12,color:C.textMut}}>next ~{r.nextDate} · ~${r.avgAmount.toFixed(2)} · ~{Math.round(r.avgGapDays)}d cadence</span>
+                  <span style={{fontSize:13,color:C.textSub}}>{r.symbol} {r.source==='real' && <span style={{fontSize:9,color:C.teal,background:C.teal+'15',padding:'1px 6px',borderRadius:8,marginLeft:4}}>real</span>}</span>
+                  {r.source==='real'
+                    ? <span style={{fontSize:12,color:C.textMut}}>next ~{r.nextDate} · ${r.nextPaymentDollar.toFixed(2)} total (company-declared)</span>
+                    : <span style={{fontSize:12,color:C.textMut}}>next ~{r.nextDate} · ~${r.avgAmount.toFixed(2)}/share · ~{Math.round(r.avgGapDays)}d cadence (extrapolated)</span>
+                  }
                 </div>
               ))}
             </>
@@ -4028,7 +4109,7 @@ function SwingTab({userId, isMobile}){
   );
 }
 
-function ClaudeTab({userId,isMobile}){
+function ClaudeTab({userId,isMobile,days,onRefreshDays}){
   const chatKey='journal_chat_'+(userId||'anon');
   const nameKey='journal_ai_name_'+(userId||'anon');
   const[assistantName,setAssistantName]=useState(()=>{
@@ -4077,7 +4158,6 @@ function ClaudeTab({userId,isMobile}){
   // input price — this is where the real savings from caching show up.
   const estCost=(usage.tokensIn/1e6*3)+(usage.tokensOut/1e6*10)+((usage.cacheWrite||0)/1e6*3.75)+((usage.cacheRead||0)/1e6*0.30);
   const cacheSavings=(usage.cacheRead||0)/1e6*(3-0.30); // rough $ saved vs paying full input rate for those tokens
-  const[days,setDays]=useState(null);
   const[swingPositions,setSwingPositions]=useState(null);
   const[messages,setMessages]=useState(()=>{
     try{const saved=JSON.parse(localStorage.getItem(chatKey));return Array.isArray(saved)?saved:[];}catch(_){return[];}
@@ -4087,10 +4167,9 @@ function ClaudeTab({userId,isMobile}){
   const scrollRef=useRef();
 
   useEffect(()=>{
-    let live=true;
-    loadAllDays(userId).then(d=>{if(live)setDays(d);});
-    loadSwingPositions(userId).then(d=>{if(live)setSwingPositions(d);});
-    return()=>{live=false;};
+    let live = true;
+    loadSwingPositions(userId).then(d=>{ if(live) setSwingPositions(d); });
+    return ()=>{live=false;};
   },[userId]);
 
   useEffect(()=>{
@@ -4318,6 +4397,7 @@ ${buildContext()}`,
         <button onClick={()=>genReview('week')} disabled={thinking} style={{flex:1,padding:'9px',borderRadius:10,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textSub,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600}}>📅 Weekly Review</button>
         <button onClick={()=>genReview('month')} disabled={thinking} style={{flex:1,padding:'9px',borderRadius:10,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textSub,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600}}>🗓 Monthly Review</button>
         <button onClick={()=>setShowHistory(!showHistory)} title="Browse past conversations" style={{padding:'9px 14px',borderRadius:10,border:`1.5px solid ${showHistory?C.teal:C.border}`,background:showHistory?C.teal+'15':'transparent',color:showHistory?C.teal:C.textMut,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600}}>🕐 History{history.length>0?` (${history.length})`:''}</button>
+        <button onClick={onRefreshDays} title="Reload your trade data — it's cached across tabs now for speed, so use this if you just edited trades elsewhere and want Big Daddy to see the latest" style={{padding:'9px 10px',borderRadius:10,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textMut,fontSize:12,fontFamily:'inherit',cursor:'pointer'}}>🔄</button>
         {messages.length>0&&<button onClick={clearChat} disabled={thinking} title="Start a new conversation" style={{padding:'9px 14px',borderRadius:10,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textMut,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600}}>🗑 New</button>}
         {showHistory&&(
           <div style={{position:'absolute',top:'110%',right:0,left:isMobile?0:'auto',width:isMobile?'100%':380,maxHeight:400,overflowY:'auto',background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,boxShadow:'0 8px 24px rgba(0,0,0,0.25)',zIndex:20,padding:8}}>
@@ -4585,6 +4665,18 @@ export default function App(){
     loadDay(selectedDate,user.id).then(d=>{setDayData(d||emptyDay());setLoading(false);});
   },[selectedDate,user]);
 
+  // Shared full-history cache — loaded ONCE here instead of separately inside
+  // both AnalyticsTab and ClaudeTab, which previously each re-fetched every
+  // single day's data from scratch on every tab switch (since React
+  // unmounts/remounts a tab's component when you navigate away and back).
+  // refreshAllDaysCache lets a save flow (e.g. after adding a trade) pull a
+  // fresh copy without every tab needing its own fetch.
+  const [allDaysCache, setAllDaysCache] = useState(null);
+  const refreshAllDaysCache = useCallback(() => {
+    if (user) loadAllDays(user.id).then(setAllDaysCache);
+  }, [user]);
+  useEffect(()=>{ refreshAllDaysCache(); }, [user, refreshAllDaysCache]);
+
   useEffect(()=>{
     if(!dayData||loading||!user)return;
     setSaveStatus('saving');
@@ -4602,6 +4694,14 @@ export default function App(){
       };
       await saveIndex(selectedDate,summary,user.id);
       setIndex(prev=>({...prev,[selectedDate]:summary}));
+      // Keep the shared Analytics/Claude cache fresh without a network
+      // round-trip — we already have the just-saved data right here.
+      setAllDaysCache(prev=>{
+        if(!prev) return prev;
+        const exists=prev.some(d=>d.date===selectedDate);
+        const entry={date:selectedDate,data:dayData};
+        return exists ? prev.map(d=>d.date===selectedDate?entry:d) : [...prev,entry];
+      });
       setSaveStatus('saved');
       setTimeout(()=>setSaveStatus('idle'),3000);
     },1000);
@@ -4642,6 +4742,27 @@ export default function App(){
         ::-webkit-scrollbar-thumb{background:${C.border};border-radius:4px;}
         textarea::placeholder,input::placeholder{color:${C.textDim};}
         textarea,input{transition:border-color 0.15s;}
+
+        /* ── Visual-only motion system — no logic here, just feel ── */
+        @keyframes fadeSlideIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
+        @keyframes popIn{from{opacity:0;transform:scale(0.92);}to{opacity:1;transform:scale(1);}}
+        @keyframes softGlowPulse{0%,100%{box-shadow:0 0 0 0 rgba(74,222,128,0);}50%{box-shadow:0 0 18px 2px rgba(74,222,128,0.18);}}
+        @keyframes softGlowPulseRed{0%,100%{box-shadow:0 0 0 0 rgba(248,113,113,0);}50%{box-shadow:0 0 18px 2px rgba(248,113,113,0.18);}}
+        @keyframes shimmer{0%{background-position:-200% 0;}100%{background-position:200% 0;}}
+
+        .tj-fade-in{animation:fadeSlideIn 0.35s cubic-bezier(0.16,1,0.3,1) both;}
+        .tj-pop-in{animation:popIn 0.28s cubic-bezier(0.34,1.56,0.64,1) both;}
+        .tj-glow-win{animation:softGlowPulse 2.6s ease-in-out infinite;}
+        .tj-glow-loss{animation:softGlowPulseRed 2.6s ease-in-out infinite;}
+
+        .tj-card-hover{transition:transform 0.18s cubic-bezier(0.16,1,0.3,1), box-shadow 0.18s ease, border-color 0.18s ease;}
+        .tj-card-hover:hover{transform:translateY(-2px);border-color:${C.border2};box-shadow:0 8px 24px rgba(0,0,0,0.18);}
+
+        .tj-btn{transition:transform 0.12s ease, filter 0.12s ease, box-shadow 0.12s ease;}
+        .tj-btn:hover{filter:brightness(1.08);}
+        .tj-btn:active{transform:scale(0.97);}
+
+        .tj-tab-content{animation:fadeSlideIn 0.28s cubic-bezier(0.16,1,0.3,1) both;}
       `}</style>
 
       <div style={{maxWidth:'100%',margin:'0 auto',display:isMobile?'block':'flex',minHeight:'100vh'}}>
@@ -4680,7 +4801,7 @@ export default function App(){
               <div style={{fontSize:10,color:C.textMut,letterSpacing:'0.1em',textTransform:'uppercase',marginBottom:10}}>Section</div>
               <div style={{display:'flex',flexDirection:'column',gap:4}}>
                 {TABS.map((t,i)=>(
-                  <button key={t} onClick={()=>setTab(i)} style={{padding:'10px 14px',borderRadius:9,textAlign:'left',background:tab===i?C.surface2:'transparent',border:tab===i?`1px solid ${C.border}`:'1px solid transparent',color:tab===i?C.text:C.textMut,fontSize:13,fontFamily:'inherit',cursor:'pointer',fontWeight:tab===i?700:400,transition:'all 0.15s'}}>
+                  <button key={t} onClick={()=>setTab(i)} className="tj-btn" style={{padding:'10px 14px',borderRadius:9,textAlign:'left',background:tab===i?C.surface2:'transparent',border:tab===i?`1px solid ${C.border}`:'1px solid transparent',color:tab===i?C.text:C.textMut,fontSize:13,fontFamily:'inherit',cursor:'pointer',fontWeight:tab===i?700:400,transition:'all 0.15s'}}>
                     {i===0?'📊 ':i===1?'📈 ':i===2?'🤖 ':'📅 '}{i===2?aiName:t}
                   </button>
                 ))}
@@ -4720,7 +4841,7 @@ export default function App(){
               </div>
               <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:4,background:C.surface,borderRadius:12,padding:4,border:`1px solid ${C.border}`}}>
                 {TABS.map((t,i)=>(
-                  <button key={t} onClick={()=>setTab(i)} style={{padding:'10px 4px',borderRadius:9,background:tab===i?C.surface2:'transparent',border:'none',color:tab===i?C.text:C.textMut,fontSize:11,fontFamily:'inherit',cursor:'pointer',fontWeight:tab===i?700:400,letterSpacing:'0.03em',transition:'all 0.15s'}}>{t}</button>
+                  <button key={t} onClick={()=>setTab(i)} className="tj-btn" style={{padding:'10px 4px',borderRadius:9,background:tab===i?C.surface2:'transparent',border:'none',color:tab===i?C.text:C.textMut,fontSize:11,fontFamily:'inherit',cursor:'pointer',fontWeight:tab===i?700:400,letterSpacing:'0.03em',transition:'all 0.15s'}}>{t}</button>
                 ))}
               </div>
             </div>
@@ -4738,12 +4859,12 @@ export default function App(){
           {loading?(
             <div style={{textAlign:'center',color:C.textMut,fontSize:13,padding:'60px 0'}}>Loading...</div>
           ):(
-            <>
+            <div className="tj-tab-content" key={tab}>
               {tab===0&&<TradesTab trades={dayData.trades} onChange={updateTrades} eod={dayData.eod} onEodChange={updateEod} date={selectedDate} isMobile={isMobile} userId={user?.id} onJumpToDate={d=>setSelectedDate(d)}/>}
-              {tab===1&&<AnalyticsTab userId={user?.id} isMobile={isMobile} onJumpToDate={d=>{setSelectedDate(d);setTab(0);}}/>}
-              {tab===2&&<ClaudeTab userId={user?.id} isMobile={isMobile}/>}
+              {tab===1&&<AnalyticsTab userId={user?.id} isMobile={isMobile} onJumpToDate={d=>{setSelectedDate(d);setTab(0);}} days={allDaysCache} onRefreshDays={refreshAllDaysCache}/>}
+              {tab===2&&<ClaudeTab userId={user?.id} isMobile={isMobile} days={allDaysCache} onRefreshDays={refreshAllDaysCache}/>}
               {tab===3&&<SwingTab userId={user?.id} isMobile={isMobile}/>}
-            </>
+            </div>
           )}
         </div>
       </div>

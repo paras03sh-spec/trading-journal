@@ -94,8 +94,11 @@ export async function fetchQuotes(apiServer, accessToken, symbolIds) {
   }
 }
 
-// Fetches real industry sector classification for a batch of symbol IDs —
-// separate endpoint from quotes (symbols/:id vs markets/quotes/:id).
+// Fetches industry sector AND dividend info (per-share amount + next ex-date)
+// for a batch of symbol IDs, all from ONE call to symbols?ids=... — Questrade
+// already includes dividend/exDate in this same response, so no separate
+// request or new permission scope is needed beyond what sector-fetching
+// already uses.
 export async function fetchSectors(apiServer, accessToken, symbolIds) {
   if (symbolIds.length === 0) return {};
   try {
@@ -104,7 +107,13 @@ export async function fetchSectors(apiServer, accessToken, symbolIds) {
     });
     const sData = await sRes.json();
     const byId = {};
-    (sData.symbols || []).forEach(s => { if (s.industrySector) byId[String(s.symbolId)] = s.industrySector; });
+    (sData.symbols || []).forEach(s => {
+      byId[String(s.symbolId)] = {
+        sector: s.industrySector || null,
+        dividend: s.dividend || null,   // per-share amount, company-declared
+        exDate: s.exDate || null,       // next/last ex-dividend date
+      };
+    });
     return byId;
   } catch (_) {
     return {};
