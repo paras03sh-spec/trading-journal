@@ -4,7 +4,7 @@ import { supabase, loadDay, saveDay, loadIndex, saveIndex, loadAllDays, getCurre
 const POINT_VALUES = { ES: 50, NQ: 20, MES: 5, MNQ: 2 };
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const DAYS_HDR = ["Su","Mo","Tu","We","Th","Fr","Sa"];
-const TABS = ["Trades", "Analytics", "Ask Claude", "Swing"];
+const TABS = ["Trades", "Analytics", "Swing"];
 
 const THEMES = {
   dark:{
@@ -1534,7 +1534,7 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId,onJumpT
     });
 
     if (!fillsText && cashEntries.length === 0 && !intradayData) {
-      window.alert("Couldn't recognize any of the selected file(s). Expected a Fills/Sierra Chart export, a Cash History export, and/or an intraday bar chart export. Send it to Claude in your project chat if this keeps happening.");
+      window.alert("Couldn't recognize any of the selected file(s). Expected a Fills/Sierra Chart export, a Cash History export, and/or an intraday bar chart export.");
       return;
     }
 
@@ -3034,179 +3034,6 @@ function InsightsCard({insights}){
   );
 }
 
-// ═══ Chat markdown + chart rendering ═════════════════════════════════════════
-function MiniChart({spec}){
-  try{
-    if(spec.type==='bar'&&Array.isArray(spec.series)){
-      const rows=spec.series.map(s=>({label:s.label,val:parseFloat(s.value)||0}));
-      const max=Math.max(...rows.map(r=>Math.abs(r.val)),1);
-      return(
-        <div style={{margin:'10px 0',padding:'12px 14px',background:C.bg,borderRadius:10,border:`1px solid ${C.border}`}}>
-          {spec.title&&<div style={{fontSize:11,fontWeight:700,color:C.textSub,marginBottom:10}}>{spec.title}</div>}
-          <div style={{display:'flex',flexDirection:'column',gap:7}}>
-            {rows.map((r,i)=>(
-              <div key={i} style={{display:'flex',alignItems:'center',gap:8}}>
-                <div style={{width:120,fontSize:10.5,color:C.textSub,textAlign:'right',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.label}</div>
-                <div style={{flex:1,height:12,background:C.surface2,borderRadius:4,overflow:'hidden'}}>
-                  <div style={{width:Math.abs(r.val)/max*100+'%',height:'100%',background:r.val>=0?C.green:C.red,borderRadius:4}}/>
-                </div>
-                <div style={{width:56,fontSize:10.5,fontWeight:700,color:r.val>=0?C.green:C.red}}>{spec.unit==='$'?(r.val>=0?'+':'')+'$'+r.val.toFixed(0):r.val.toFixed(spec.unit==='%'?0:2)+(spec.unit==='%'?'%':'')}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      );
-    }
-    if(spec.type==='line'&&Array.isArray(spec.points)){
-      const series=spec.points.map((p,i)=>({date:String(p.label??i+1),val:parseFloat(p.value)||0}));
-      return(
-        <div style={{margin:'10px 0',padding:'12px 14px',background:C.bg,borderRadius:10,border:`1px solid ${C.border}`}}>
-          {spec.title&&<div style={{fontSize:11,fontWeight:700,color:C.textSub,marginBottom:10}}>{spec.title}</div>}
-          <SvgLineChart series={series} color={C.blue} height={140} fill={false}/>
-        </div>
-      );
-    }
-  }catch(_){}
-  return null;
-}
-
-function mdInline(text,key){
-  const parts=text.split(/\*\*(.+?)\*\*/g);
-  return <span key={key}>{parts.map((p,i)=>i%2===1?<b key={i} style={{color:C.text}}>{p}</b>:p)}</span>;
-}
-
-// Confirmation card for a position Big Daddy parsed from a chat message.
-// Editable, not a blind-trust auto-save — natural language is ambiguous
-// (currency, account, exact date) and this is real financial data, so the
-// person reviews/corrects before anything gets written.
-function LogPositionConfirmCard({spec, userId}){
-  const [form, setForm] = useState({
-    symbol: (spec.symbol||'').toUpperCase(),
-    direction: spec.direction==='short'?'short':'long',
-    qty: spec.qty!=null?String(spec.qty):'',
-    price: spec.price!=null?String(spec.price):'',
-    date: spec.date || new Date().toISOString().slice(0,10),
-    account: spec.account || 'Manual',
-    currency: spec.currency || 'CAD',
-  });
-  const [status, setStatus] = useState('pending'); // 'pending' | 'saving' | 'saved' | 'error'
-  const set = (field) => (val) => setForm({...form, [field]: val});
-
-  const handleConfirm = async () => {
-    if (!form.symbol || !form.qty || !form.price) { window.alert('Symbol, quantity, and price are required.'); return; }
-    setStatus('saving');
-    const position = {
-      ...emptySwingPosition(),
-      symbol: form.symbol, direction: form.direction, account: form.account, currency: form.currency,
-      opened_date: form.date,
-      entries: [{ date: form.date, qty: parseFloat(form.qty), price: parseFloat(form.price) }],
-    };
-    const derived = computeSwingDerived(position);
-    const saved = await saveSwingPosition(derived, userId);
-    setStatus(saved ? 'saved' : 'error');
-  };
-
-  if (status === 'saved') {
-    return (
-      <div style={{padding:'12px 14px',borderRadius:12,background:C.green+'15',border:`1px solid ${C.green}40`,margin:'10px 0',fontSize:13,color:C.green,fontWeight:600}}>
-        ✓ Added to Swing Journal — {form.symbol}, {form.qty} @ ${form.price}
-      </div>
-    );
-  }
-
-  return (
-    <div style={{padding:14,borderRadius:12,background:C.surface,border:`1px solid ${C.border}`,margin:'10px 0'}}>
-      <div style={{fontSize:11,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.08em',fontWeight:700,marginBottom:10}}>New Swing Position — review before saving</div>
-      <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:10}}>
-        <Input label="Symbol" value={form.symbol} onChange={v=>set('symbol')(v.toUpperCase())}/>
-        <div>
-          <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Direction</div>
-          <Pills options={[{label:'Long',value:'long'},{label:'Short',value:'short'}]} value={form.direction} onChange={set('direction')} colors={{long:C.green,short:C.red}}/>
-        </div>
-        <Input label="Quantity" type="number" value={form.qty} onChange={set('qty')}/>
-        <Input label="Price" type="number" value={form.price} onChange={set('price')}/>
-        <div>
-          <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Date</div>
-          <input type="date" value={form.date} onChange={e=>set('date')(e.target.value)} style={{width:'100%',padding:'9px 12px',borderRadius:10,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:13,fontFamily:'inherit'}}/>
-        </div>
-        <div>
-          <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Currency</div>
-          <Pills options={[{label:'CAD',value:'CAD'},{label:'USD',value:'USD'}]} value={form.currency} onChange={set('currency')} colors={{CAD:C.red,USD:C.green}}/>
-        </div>
-      </div>
-      <div style={{display:'flex',gap:8}}>
-        <button onClick={handleConfirm} disabled={status==='saving'} style={{flex:1,padding:'9px',borderRadius:10,border:`1.5px solid ${C.teal}`,background:C.teal+'15',color:C.teal,fontFamily:'inherit',fontSize:13,fontWeight:700,cursor:status==='saving'?'not-allowed':'pointer'}}>
-          {status==='saving'?'Saving...':status==='error'?'Failed — try again':'✓ Confirm & Save'}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function MDMessage({content, userId}){
-  const segments=[];
-  const re=/```(chart|log_position)\s*\n?([\s\S]*?)```/g;
-  let last=0,m;
-  while((m=re.exec(content))!==null){
-    if(m.index>last)segments.push({t:'text',v:content.slice(last,m.index)});
-    segments.push({t:m[1],v:m[2]});
-    last=m.index+m[0].length;
-  }
-  if(last<content.length)segments.push({t:'text',v:content.slice(last)});
-
-  const render=[];
-  segments.forEach((seg,si)=>{
-    if(seg.t==='chart'){
-      try{render.push(<MiniChart key={'c'+si} spec={JSON.parse(seg.v.trim())}/>);}catch(_){render.push(<pre key={'c'+si} style={{fontSize:11,color:C.textMut}}>{seg.v}</pre>);}
-      return;
-    }
-    if(seg.t==='log_position'){
-      try{render.push(<LogPositionConfirmCard key={'lp'+si} spec={JSON.parse(seg.v.trim())} userId={userId}/>);}catch(_){render.push(<pre key={'lp'+si} style={{fontSize:11,color:C.textMut}}>{seg.v}</pre>);}
-      return;
-    }
-    const lines=seg.v.split('\n');
-    let i=0;
-    while(i<lines.length){
-      const line=lines[i];
-      if(line.trim().startsWith('|')){
-        const tbl=[];
-        while(i<lines.length&&lines[i].trim().startsWith('|')){tbl.push(lines[i]);i++;}
-        const rows=tbl.filter(l=>!/^\s*\|[\s\-:|]+\|\s*$/.test(l)).map(l=>l.split('|').slice(1,-1).map(c=>c.trim()));
-        if(rows.length){
-          render.push(
-            <div key={'t'+si+'_'+i} style={{overflowX:'auto',margin:'10px 0'}}>
-              <table style={{borderCollapse:'collapse',fontSize:12,minWidth:280}}>
-                <thead><tr>{rows[0].map((c,ci)=><th key={ci} style={{textAlign:ci===0?'left':'right',padding:'6px 10px',color:C.textMut,fontSize:10,textTransform:'uppercase',letterSpacing:'0.05em',borderBottom:`1px solid ${C.border}`,whiteSpace:'nowrap'}}>{c}</th>)}</tr></thead>
-                <tbody>{rows.slice(1).map((r,ri)=>(
-                  <tr key={ri}>{r.map((c,ci)=>{
-                    const neg=/^-\$|^-\d/.test(c), pos=/^\+/.test(c);
-                    return <td key={ci} style={{textAlign:ci===0?'left':'right',padding:'6px 10px',borderBottom:`0.5px solid ${C.border}`,whiteSpace:'nowrap',color:neg?C.red:pos?C.green:C.text,fontVariantNumeric:'tabular-nums'}}>{c}</td>;
-                  })}</tr>
-                ))}</tbody>
-              </table>
-            </div>
-          );
-        }
-        continue;
-      }
-      if(/^#{1,3}\s/.test(line.trim())){
-        render.push(<div key={'h'+si+'_'+i} style={{fontSize:13,fontWeight:800,color:C.text,margin:'12px 0 4px'}}>{line.replace(/^#{1,3}\s/,'')}</div>);
-        i++;continue;
-      }
-      // accumulate plain lines until next special
-      const buf=[];
-      while(i<lines.length&&!lines[i].trim().startsWith('|')&&!/^#{1,3}\s/.test(lines[i].trim())){buf.push(lines[i]);i++;}
-      const txt=buf.join('\n');
-      if(txt.trim())render.push(<div key={'p'+si+'_'+i} style={{whiteSpace:'pre-wrap'}}>{mdInline(txt,'m'+si+'_'+i)}</div>);
-    }
-  });
-  return <div style={{fontSize:13,color:C.text,lineHeight:1.7}}>{render}</div>;
-}
-
-// ─── Ask Claude Tab ───────────────────────────────────────────────────────────
-function weekId(d){const y=d.getFullYear();const start=new Date(y,0,1);return y+'-W'+Math.ceil(((d-start)/864e5+1)/7);}
-function monthId(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');}
-
 // ─── Swing Positions ────────────────────────────────────────────────────────
 // Stock/ETF swing trading — separate from the intraday futures journal above.
 // Positions span days/weeks/months, can be scaled into over time, and may
@@ -3691,6 +3518,62 @@ function SwingPositionCard({position, onChange, onDelete, onSave, isMobile, user
   );
 }
 
+
+// A CDR (CAD-hedged, e.g. COST.TO) and the US-listed shares of the same company
+// are one idea held two ways. Strip the exchange suffix to find the underlying.
+function underlyingOf(symbol){ return String(symbol||'').toUpperCase().trim().replace(/\.(TO|NE|CN|V|TSX)$/,''); }
+
+// One combined card for every holding of the same company (CAD-hedged CDR + US
+// shares). Everything is converted to CAD at the live rate so P&L, dividends
+// and cost add up to one number; each leg keeps its own card underneath.
+function SwingGroupCard({underlying, legs, rate, onUnmerge, isMobile, children}){
+  const cad = (v, cur) => (parseFloat(v)||0) * (cur==='USD' ? (rate||1) : 1);
+  const hasUsd = legs.some(p=>p.currency==='USD');
+  const needRate = hasUsd && !rate;
+  let value=0, cost=0, unreal=0, real=0, divs=0, costEver=0, usdValue=0, priced=true;
+  legs.forEach(p=>{
+    const remaining=(parseFloat(p.total_qty_entered)||0)-(parseFloat(p.total_qty_exited)||0);
+    const px=parseFloat(p.current_price);
+    const basis=parseFloat(p.cost_basis_remaining)||0;
+    const mv = px>0 ? px*remaining : basis;
+    if(!(px>0)) priced=false;
+    value+=cad(mv,p.currency); cost+=cad(basis,p.currency);
+    unreal+=cad(p.unrealized_pnl,p.currency); real+=cad(p.realized_pnl,p.currency);
+    divs+=cad(p.total_dividends,p.currency); costEver+=cad(p.cost_basis_total,p.currency);
+    if(p.currency==='USD') usdValue+=cad(mv,p.currency);
+  });
+  const total=unreal+real+divs;
+  const pct=costEver>0?total/costEver*100:null;
+  const money=v=>`${v<0?'-':''}$${Math.abs(v).toLocaleString('en-CA',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+  const signed=v=>`${v>=0?'+':'-'}$${Math.abs(v).toLocaleString('en-CA',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+  const col=v=>v>0?C.green:v<0?C.red:C.textSub;
+  return(
+    <div style={{border:`1px solid ${C.border}`,borderRadius:14,background:C.surface,padding:isMobile?12:16,marginBottom:14}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:10,flexWrap:'wrap',marginBottom:10}}>
+        <div>
+          <span style={{fontSize:16,fontWeight:800,color:C.text}}>{underlying}</span>
+          <span style={{fontSize:12,color:C.textMut,marginLeft:8}}>combined · {legs.map(p=>`${p.symbol} (${p.currency||'CAD'})`).join(' + ')}</span>
+        </div>
+        <button onClick={onUnmerge} style={{background:'none',border:'none',color:C.textMut,fontSize:11,cursor:'pointer',fontFamily:'inherit',textDecoration:'underline'}}>Show separately</button>
+      </div>
+      <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(6,1fr)',gap:8,marginBottom:10}}>
+        <SwingStat label="Market value" val={money(value)} sub={priced?'CAD':'CAD · some legs at cost'}/>
+        <SwingStat label="Book cost" val={money(cost)} sub="CAD"/>
+        <SwingStat label="Unrealized" val={signed(unreal)} col={col(unreal)}/>
+        <SwingStat label="Realized" val={signed(real)} col={col(real)}/>
+        <SwingStat label="Dividends" val={signed(divs)} col={divs>0?C.teal:C.textSub}/>
+        <SwingStat label="Total return" val={pct!=null?`${pct>=0?'+':''}${pct.toFixed(2)}%`:'—'} col={col(total)} sub={signed(total)}/>
+      </div>
+      <div style={{fontSize:11,color:needRate?C.orange:C.textMut,marginBottom:10,lineHeight:1.5}}>
+        {needRate ? 'No live USD/CAD rate yet, so the US leg is counted 1:1. Refresh prices to fix the totals.'
+          : hasUsd ? `US leg converted at 1 USD = ${rate.toFixed(4)} CAD (today's rate for both cost and value, so the currency gain or loss since you bought is not split out). ${value>0?(usdValue/value*100).toFixed(0):0}% of this holding moves with the US dollar; the rest is CAD-hedged.`
+          : 'All legs are in CAD.'}
+      </div>
+      <div style={{borderLeft:`3px solid ${C.border}`,paddingLeft:isMobile?8:12}}>{children}</div>
+    </div>
+  );
+}
+
 function SwingTab({userId, isMobile}){
   const [positions, setPositions] = useState(null);
   const [newPosition, setNewPosition] = useState(null);
@@ -3716,6 +3599,38 @@ function SwingTab({userId, isMobile}){
     try{localStorage.setItem(cashKey, val);}catch(_){}
   };
   const [view, setView] = useState('positions'); // 'positions' | 'allocation' | 'insights'
+  const [unmerged, setUnmerged] = useState(()=>{ try{return JSON.parse(localStorage.getItem('swing_unmerged')||'[]');}catch(_){return [];} });
+  const setUnmergedSaved = list => { setUnmerged(list); try{localStorage.setItem('swing_unmerged',JSON.stringify(list));}catch(_){} };
+  const [snapshots, setSnapshots] = useState([]);
+  const snapRef = useRef({t:0,v:null});
+  // One row per day of total holdings value (CAD) so value-over-time can be charted.
+  // Best effort: if the table is missing or the write fails the tab still works.
+  useEffect(()=>{
+    if(!userId || !positions || !positions.length) return;
+    const usd = positions.some(p=>p.status==='open'&&p.currency==='USD');
+    if(usd && !fxRate?.rate) return;
+    const r = fxRate?.rate||1;
+    let value=0, cost=0;
+    positions.filter(p=>p.status==='open').forEach(p=>{
+      const k = p.currency==='USD'?r:1;
+      const remaining=(parseFloat(p.total_qty_entered)||0)-(parseFloat(p.total_qty_exited)||0);
+      const px=parseFloat(p.current_price); const basis=parseFloat(p.cost_basis_remaining)||0;
+      value += (px>0?px*remaining:basis)*k; cost += basis*k;
+    });
+    let live=true;
+    (async()=>{
+      try{
+        const today=new Date().toLocaleDateString('en-CA');
+        const v=+value.toFixed(0), now=Date.now();
+        if(snapRef.current.v===v || now-snapRef.current.t<60000 && snapRef.current.v!==null) return;   // not on every keystroke
+        snapRef.current={t:now,v};
+        if(value>0) await supabase.from('swing_snapshots').upsert({user_id:userId,date:today,value_cad:+value.toFixed(2),cost_cad:+cost.toFixed(2),fx:r},{onConflict:'user_id,date'});
+        const {data} = await supabase.from('swing_snapshots').select('date,value_cad,cost_cad').eq('user_id',userId).order('date');
+        if(live && data) setSnapshots(data);
+      }catch(_){}
+    })();
+    return()=>{live=false;};
+  },[userId,positions,fxRate]);
   const [showConnect, setShowConnect] = useState(false);
   const [connectToken, setConnectToken] = useState('');
   const [connecting, setConnecting] = useState(false);
@@ -3872,10 +3787,11 @@ function SwingTab({userId, isMobile}){
   // exposure reflects your REAL diversification, not just the invested slice
   const bySector = {}, bySymbol = {};
   openPositions.forEach(p=>{
-    const basis = parseFloat(p.cost_basis_remaining)||0;
+    const basis = toCAD(parseFloat(p.cost_basis_remaining)||0, p.currency);
     const sec = p.sector || 'Unspecified';
     bySector[sec] = (bySector[sec]||0) + basis;
-    bySymbol[p.symbol] = (bySymbol[p.symbol]||0) + basis;
+    const symKey = unmerged.includes(underlyingOf(p.symbol)) ? p.symbol : underlyingOf(p.symbol);
+    bySymbol[symKey] = (bySymbol[symKey]||0) + basis;
   });
   if (cashNum > 0) bySector['Cash'] = cashNum;
   const sectorRows = Object.entries(bySector).sort((a,b)=>b[1]-a[1]);
@@ -4149,6 +4065,17 @@ function SwingTab({userId, isMobile}){
       ) : null}
       {view==='allocation' && (
         <>
+        <ChartCard title="Holdings value over time" sub={snapshots.length>=2?`CAD, one point per day you open this tab or prices refresh · since ${snapshots[0].date}`:'Starts today: one point is saved each day, so the line fills in from here'}>
+          {snapshots.length>=2
+            ? <SvgLineChart series={snapshots.map(r=>({date:r.date,val:parseFloat(r.value_cad)}))} color={C.teal}/>
+            : <div style={{color:C.textDim,fontSize:12,textAlign:'center',padding:'20px 0'}}>Not enough history yet</div>}
+          {snapshots.length>=2 && (()=>{
+            const a=snapshots[0], b=snapshots[snapshots.length-1];
+            const plA=parseFloat(a.value_cad)-parseFloat(a.cost_cad), plB=parseFloat(b.value_cad)-parseFloat(b.cost_cad);
+            const d=plB-plA;
+            return <div style={{fontSize:12,color:C.textMut,marginTop:8}}>Open profit changed by <span style={{color:d>=0?C.green:C.red,fontWeight:700}}>{d>=0?'+':'-'}${Math.abs(d).toFixed(2)}</span> since {a.date} (value minus book cost, so new purchases don't count as gains).</div>;
+          })()}
+        </ChartCard>
         <ChartCard title="Cumulative Realized P&L" sub="Closed positions only — the swing-trading equity curve">
           <SvgLineChart series={realizedCurve} color={cumRealized>=0?C.green:C.red}/>
         </ChartCard>
@@ -4290,17 +4217,40 @@ function SwingTab({userId, isMobile}){
         </div>
       )}
 
-      {sortedOpenPositions.map(p=>(
-        <SwingPositionCard
-          key={p.id}
-          position={p}
-          onChange={updated=>setPositions(prev=>prev.map(x=>x.id===p.id?updated:x))}
-          onSave={handleSave}
-          onDelete={handleDelete}
-          isMobile={isMobile}
-          userId={userId}
-        />
-      ))}
+      {(()=>{
+        const card = p => (
+          <SwingPositionCard
+            key={p.id}
+            position={p}
+            onChange={updated=>setPositions(prev=>prev.map(x=>x.id===p.id?updated:x))}
+            onSave={handleSave}
+            onDelete={handleDelete}
+            isMobile={isMobile}
+            userId={userId}
+          />
+        );
+        const groups = {};
+        sortedOpenPositions.forEach(p=>{ const u=underlyingOf(p.symbol); (groups[u]=groups[u]||[]).push(p); });
+        const done = new Set();
+        return sortedOpenPositions.map(p=>{
+          const u = underlyingOf(p.symbol);
+          const legs = groups[u];
+          if (legs.length<2 || unmerged.includes(u)) return card(p);
+          if (done.has(u)) return null;
+          done.add(u);
+          return (
+            <SwingGroupCard key={'grp_'+u} underlying={u} legs={legs} rate={fxRate?.rate} isMobile={isMobile}
+              onUnmerge={()=>setUnmergedSaved([...unmerged,u])}>
+              {legs.map(card)}
+            </SwingGroupCard>
+          );
+        });
+      })()}
+      {unmerged.length>0 && (
+        <div style={{fontSize:11,color:C.textMut,margin:'4px 0 12px'}}>
+          Shown separately: {unmerged.join(', ')} · <button onClick={()=>setUnmergedSaved([])} style={{background:'none',border:'none',color:C.teal,fontSize:11,cursor:'pointer',fontFamily:'inherit',padding:0,textDecoration:'underline'}}>combine again</button>
+        </div>
+      )}
 
       {closedCount>0 && (
         <div style={{marginTop:24}}>
@@ -4325,401 +4275,6 @@ function SwingTab({userId, isMobile}){
       )}
       </>
       )}
-    </div>
-  );
-}
-
-function ClaudeTab({userId,isMobile,days,onRefreshDays}){
-  const chatKey='journal_chat_'+(userId||'anon');
-  const nameKey='journal_ai_name_'+(userId||'anon');
-  const[assistantName,setAssistantName]=useState(()=>{
-    try{return localStorage.getItem(nameKey)||'Claude';}catch(_){return 'Claude';}
-  });
-  const[editingName,setEditingName]=useState(false);
-  const[nameDraft,setNameDraft]=useState(assistantName);
-  const saveName=()=>{
-    const n=(nameDraft||'Claude').trim().slice(0,24)||'Claude';
-    setAssistantName(n);
-    try{
-      localStorage.setItem(nameKey,n);
-      window.dispatchEvent(new CustomEvent('ai-name-changed',{detail:n}));
-    }catch(_){}
-    setEditingName(false);
-  };
-
-  // ── Usage tracking (rough local estimate, not exact billing) ──
-  const usageKey='journal_usage_'+(userId||'anon');
-  const curMonth=monthId(new Date());
-  const[usage,setUsage]=useState(()=>{
-    try{
-      const saved=JSON.parse(localStorage.getItem(usageKey));
-      if(saved&&saved.month===curMonth)return saved;
-    }catch(_){}
-    return{month:curMonth,messages:0,tokensIn:0,tokensOut:0,cacheWrite:0,cacheRead:0};
-  });
-  const recordUsage=(tokensIn,tokensOut,cacheWrite,cacheRead)=>{
-    setUsage(prev=>{
-      const base=prev.month===curMonth?prev:{month:curMonth,messages:0,tokensIn:0,tokensOut:0,cacheWrite:0,cacheRead:0};
-      const next={
-        month:curMonth,
-        messages:base.messages+1,
-        tokensIn:base.tokensIn+(tokensIn||0),
-        tokensOut:base.tokensOut+(tokensOut||0),
-        cacheWrite:(base.cacheWrite||0)+(cacheWrite||0),
-        cacheRead:(base.cacheRead||0)+(cacheRead||0),
-      };
-      try{localStorage.setItem(usageKey,JSON.stringify(next));}catch(_){}
-      return next;
-    });
-  };
-  // Sonnet 5 pricing: $3/M input, $10/M output, $3.75/M cache write, $0.30/M
-  // cache read. Once caching kicks in (2nd+ message in a session), most of
-  // the big context block bills at the cache-read rate instead of full
-  // input price — this is where the real savings from caching show up.
-  const estCost=(usage.tokensIn/1e6*3)+(usage.tokensOut/1e6*10)+((usage.cacheWrite||0)/1e6*3.75)+((usage.cacheRead||0)/1e6*0.30);
-  const cacheSavings=(usage.cacheRead||0)/1e6*(3-0.30); // rough $ saved vs paying full input rate for those tokens
-  const[swingPositions,setSwingPositions]=useState(null);
-  const[messages,setMessages]=useState(()=>{
-    try{const saved=JSON.parse(localStorage.getItem(chatKey));return Array.isArray(saved)?saved:[];}catch(_){return[];}
-  });
-  const[input,setInput]=useState('');
-  const[thinking,setThinking]=useState(false);
-  const scrollRef=useRef();
-
-  useEffect(()=>{
-    let live = true;
-    loadSwingPositions(userId).then(d=>{ if(live) setSwingPositions(d); });
-    return ()=>{live=false;};
-  },[userId]);
-
-  useEffect(()=>{
-    try{localStorage.setItem(chatKey,JSON.stringify(messages));}catch(_){}
-  },[messages,chatKey]);
-
-  useEffect(()=>{
-    if(scrollRef.current)scrollRef.current.scrollTop=scrollRef.current.scrollHeight;
-  },[messages,thinking]);
-
-  // ── Conversation history (multiple saved threads, browsable) ──
-  const historyKey='journal_chat_history_'+(userId||'anon');
-  const[history,setHistory]=useState(()=>{
-    try{const saved=JSON.parse(localStorage.getItem(historyKey));return Array.isArray(saved)?saved:[];}catch(_){return[];}
-  });
-  const[showHistory,setShowHistory]=useState(false);
-  const saveHistoryList=(list)=>{
-    setHistory(list);
-    try{localStorage.setItem(historyKey,JSON.stringify(list));}catch(_){}
-  };
-  const deriveTitle=(msgs)=>{
-    const firstUser=msgs.find(m=>m.role==='user');
-    if(!firstUser)return 'Conversation';
-    const t=firstUser.content.trim().replace(/\s+/g,' ');
-    return t.length>44?t.slice(0,44)+'…':t;
-  };
-  const archiveCurrent=()=>{
-    if(messages.length===0)return;
-    const entry={id:Date.now().toString(),title:deriveTitle(messages),updatedAt:Date.now(),messages};
-    saveHistoryList([entry,...history].slice(0,50)); // keep last 50 threads
-  };
-  const clearChat=()=>{
-    if(messages.length&&!window.confirm('Start a new conversation? This one will be saved to History.'))return;
-    archiveCurrent();
-    setMessages([]);
-    try{localStorage.removeItem(chatKey);}catch(_){}
-  };
-  const openHistoryItem=(item)=>{
-    archiveCurrent();
-    setMessages(item.messages);
-    setShowHistory(false);
-  };
-  const deleteHistoryItem=(id,e)=>{
-    e.stopPropagation();
-    saveHistoryList(history.filter(h=>h.id!==id));
-  };
-
-  const now=new Date();
-  const weeklyDue=now.getDay()>=5&&localStorage.getItem('wk_review')!==weekId(now);
-  const dom=now.getDate();
-  const moTarget=dom<=2?monthId(new Date(now.getFullYear(),now.getMonth()-1,15)):monthId(now);
-  const monthlyDue=(dom>=28||dom<=2)&&localStorage.getItem('mo_review')!==moTarget;
-
-  const buildContext=()=>{
-    if(!days)return '';
-    const trades=extractAllTrades(days);
-    const s=computeStats(trades);
-    // Pre-computed aggregates (ground truth)
-    const agg={};
-    Object.keys(DIMENSIONS).forEach(k=>{
-      agg[k]=groupByDims(trades,[k],1).map(g=>({tag:g.label,n:g.count,pnl:Math.round(g.totalPnl),wr:Math.round(g.winRate),pf:g.pf>=99?'inf':+g.pf.toFixed(2),exp:Math.round(g.expectancy),avgR:g.rN?+g.avgR.toFixed(2):null,missedR:g.missedRN?+g.avgMissedR.toFixed(2):null}));
-    });
-    const topPivots=[];
-    const dims=['setup','trigger','htfContext','stContext','attempt','direction','session'];
-    for(let i=0;i<dims.length;i++)for(let j=i+1;j<dims.length;j++){
-      groupByDims(trades,[dims[i],dims[j]],8).slice(0,3).forEach(g=>topPivots.push({combo:g.label,n:g.count,pnl:Math.round(g.totalPnl),wr:Math.round(g.winRate),pf:g.pf>=99?'inf':+g.pf.toFixed(2),exp:Math.round(g.expectancy)}));
-    }
-    topPivots.sort((a,b)=>b.exp-a.exp);
-    const insights=insightsFor(trades).map(i=>i.text);
-
-    // Raw trade lines are the one part of this context that grows unbounded
-    // with history — cap to the most recent MAX_RAW trades so cost doesn't
-    // keep climbing forever. Aggregates/stats above still cover the FULL
-    // account regardless of this cap.
-    const sortedTrades = [...trades].sort((a,b)=>(a.date+a.entryTime).localeCompare(b.date+b.entryTime));
-    const MAX_RAW = 150;
-    const rawSubset = sortedTrades.length > MAX_RAW ? sortedTrades.slice(-MAX_RAW) : sortedTrades;
-    const tradeLines=rawSubset.map(t=>
-      `${t.date}|${t.ticker}|${t.direction}|${t.setup}|${t.result}|${t.contracts}c|SL:${t.sl}|Pts:${t.points}|NetP&L:$${t.pnl.toFixed(0)}|Commission:$${(t.commission||0).toFixed(2)}|RR:${t.rawRR.toFixed(2)}|Entry:${t.entryTime}(${t.session}/${session3(t.entryTime)})|Attempt:${t.attempt}|Triggers:${t.triggers.join(',')}|ST:${t.stContext}|HTF:${t.htfContext}|Open:${t.openingType}|BalExt:${(t.compositeBalanceExtreme||[]).join(',')}|MDevBand:${(t.mExtremeDevBand||[]).join(',')}|WDevBand:${(t.wExtremeDevBand||[]).join(',')}|MFE:${t.mfe||0}|MAE:${t.mae||0}|Notes:${t.notes.slice(0,100)}`
-    ).join('\n');
-    const trimmedNote = sortedTrades.length > MAX_RAW
-      ? `\n(Showing the most recent ${MAX_RAW} of ${sortedTrades.length} total trades. The aggregates and lifetime stats above cover the FULL account regardless. If asked about older trades specifically, say only the most recent ${MAX_RAW} are loaded here.)`
-      : '';
-    const reviews=days.filter(d=>d.data?.eod?.review).map(d=>`${d.date}: ${d.data.eod.review.slice(0,300)}`).join('\n');
-
-    return `TRADER PROFILE: Futures day trader, ES only, 1 contract, 50K prop account, Sierra Chart + Rithmic. System: Auction Market Theory, volume/TPO profile, order flow. Top-down: daily regime and state, then 4H/1H zones, then confluence (prior-day and naked value levels, weekly profile, balance edges, single prints, excess; VWAP deviation bands are context only). Trades the whole RTH session at pre-planned zones. Entry: Trigger 1 (first Heikin-Ashi flip at the zone) is a paper trade; the live entry is Trigger 2 after the sweep of that pivot, confirmed by absorption or exhaustion on the footprint. Stop about 6 points beyond the sweep, single exit at 2R, no partials. One idea a day, max 2 trades. Trades flagged paper are excluded from results. Setups: BPB (break from value pullback), RPB (return to value pullback), ROT (rotational, on hold), Fade (reversal at extremes). Targeting Tradeify Select 50K eval ($3000 target, $2000 max DD, 40% consistency). Point values: ES=$50 NQ=$20 MES=$5 MNQ=$2. Points are TOTAL across contracts; SL/MFE/MAE are per contract.
-
-LIFETIME STATS: ${s.totalTrades} closed | ${s.winRate.toFixed(1)}% WR | Net $${s.totalPnl.toFixed(0)} | PF ${s.profitFactor>=99?'inf':s.profitFactor.toFixed(2)} | Exp $${s.expectancy.toFixed(0)}/trade | MaxDD $${s.maxDD.toFixed(0)}
-
-PRE-COMPUTED AGGREGATES (ground truth — use these numbers):
-${JSON.stringify(agg)}
-
-TOP PIVOT COMBOS (N>=8):
-${JSON.stringify(topPivots.slice(0,12))}
-
-
-CURRENT INSIGHTS:
-${insights.join('\n')}
-
-RAW TRADES (for custom filters/aggregations you compute yourself):
-${tradeLines}${trimmedNote}
-
-EOD REVIEWS:
-${reviews}
-
-═══════════════════════════════════════════════════════════════
-SWING/LONG-TERM POSITIONS — COMPLETELY SEPARATE FROM DAY TRADING ABOVE
-═══════════════════════════════════════════════════════════════
-CRITICAL: everything above this line is intraday futures day-trading (R-multiples, win rate, PF, session windows). Everything below is stock/ETF swing and long-term investing — a different account, different timeframe, different metrics entirely. NEVER combine them: don't compute a blended "win rate" across both, don't apply R-multiples to swing positions (they don't have them), don't apply swing % returns to day trades. If asked about "overall" performance without specifying which, ask which one they mean rather than silently blending.
-
-${swingPositions === null ? 'Swing data still loading.' : swingPositions.length === 0 ? 'No swing positions logged yet.' : (() => {
-  const open = swingPositions.filter(p=>p.status==='open');
-  const closed = swingPositions.filter(p=>p.status==='closed');
-  const totalRealized = closed.reduce((s,p)=>s+(parseFloat(p.realized_pnl)||0),0);
-  const totalDiv = swingPositions.reduce((s,p)=>s+(parseFloat(p.total_dividends)||0),0);
-  const lines = swingPositions.slice(0,100).map(p=>
-    `${p.symbol}|${p.currency||'CAD'}|${p.direction}|${p.status}|${p.account}|opened:${p.opened_date}${p.closed_date?`|closed:${p.closed_date}`:''}|avgEntry:${(parseFloat(p.avg_entry)||0).toFixed(2)}|qty:${p.total_qty_entered}|realized:${p.realized_pnl!=null?'$'+parseFloat(p.realized_pnl).toFixed(2):'—'}|unrealized:${p.unrealized_pnl!=null?'$'+parseFloat(p.unrealized_pnl).toFixed(2):'—'}|dividends:$${(parseFloat(p.total_dividends)||0).toFixed(2)}|sector:${p.sector||'—'}|setup:${p.setup||'—'}`
-  ).join('\n');
-  return `SUMMARY: ${open.length} open, ${closed.length} closed. Total realized P&L: $${totalRealized.toFixed(2)}. Total dividends: $${totalDiv.toFixed(2)}.\n\nPOSITIONS:\n${lines}`;
-})()}`;
-  };
-
-  const callClaude=async(newMessages)=>{
-    setThinking(true);
-    try{
-      const res=await fetch('/api/claude',{
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({
-          max_tokens:1400,
-          system:`You are ${assistantName}, a ruthless-efficiency trading journal analytics engine. If asked your name, answer ${assistantName}.
-
-NON-NEGOTIABLE (never break these, no matter how terse the response):
-1. GROUNDING: Every number comes from PRE-COMPUTED AGGREGATES or is computed from RAW TRADES below. Never estimate or invent. Insufficient data → say "Insufficient data" + what's missing. Nothing more.
-2. SAMPLE SIZE: State N for every stat. N<8 → append "⚠N=X" (compressed, not a sentence). Never drop this to save words.
-3. SCOPE: If filters/refinements are active ("now only shorts", "last 30 days"), state them in one short line at the top — not the same as repeating the question, this prevents ambiguity about what the numbers cover. Never drop this either.
-
-EFFICIENCY (apply everywhere else):
-- Max token efficiency. Every word earns its place. Default: as short as possible while still answering.
-- Never repeat the question. Never greet, close, encourage, or pad.
-- Never narrate what you're about to do — just answer.
-- Structured output (table/bullets/numbered) over paragraphs, always.
-- Abbreviate freely once context is clear: RR, PnL, BE, SL, TP, R, WR, PF.
-- One sentence or one table beats a paragraph, every time.
-- Round aggressively (2.47R → 2.5R) unless the person asks for precision.
-- Only answer what's asked — no volunteered extra analysis unless requested.
-- Order: (1) direct answer, (2) key numbers as table/bullets, (3) one-line insight only if it adds real value, (4) stop.
-
-CHARTS: when a visual genuinely helps, emit exactly one fenced block: \u0060\u0060\u0060chart\n{"type":"bar","title":"...","unit":"$","series":[{"label":"...","value":123}]}\n\u0060\u0060\u0060 (or {"type":"line","title":"...","points":[{"label":"...","value":123}]}). Valid JSON only, max 8 bars / 30 points.
-
-LOG_POSITION: if the person describes a swing/long-term trade they made (e.g. "I bought 50 shares of Shopify at $85 today"), reply with a short confirmation sentence, then emit exactly one fenced block: \u0060\u0060\u0060log_position\n{"symbol":"SHOP","direction":"long","qty":50,"price":85,"date":"2026-09-10","account":"Manual","currency":"CAD"}\n\u0060\u0060\u0060 — infer date as today if not stated, account/currency only if stated (otherwise omit those two keys and let the person set them in the card). This renders an editable confirmation card — nothing is saved until the person reviews and clicks Confirm, so don't ask permission first, just emit the block. Only for NEW positions, never for editing/closing an existing one (say so and point them to the Swing tab instead).
-
-REVIEWS: weekly/monthly review → NUMBERS ONLY: "## The Numbers" (table: Trades, W-L-BE, WR, Net PnL, PF, Expectancy, Best day, Worst day, Max DD), "## Strongest Tags" (top 3 by expectancy, with N), "## Weakest Tags" (bottom 3, with N). No psychology, no advice paragraphs.
-
-HAND-OFF: if the question is genuinely open-ended strategic/conceptual discussion, or needs deep multi-angle reasoning that can't honestly compress into a table or a few lines (not just "has multiple parts" — most multi-part data questions still fit the efficient format above) — don't force it into a short answer. Instead reply with ONLY: "This needs more depth than fits here — ask Claude directly in your claude.ai chat for the full breakdown." One line, nothing else. Reserve this for real cases, not as a way to dodge normal analysis.
-
-DAY TRADING vs SWING: two completely separate datasets below (see the SWING/LONG-TERM section header). Never blend their metrics — no combined win rate, no applying R-multiples to swing positions, no applying % returns to day trades. Ask which one is meant if ambiguous.
-
-All trades are legitimate — analyze performance, not behavior.
-
-${buildContext()}`,
-          messages:newMessages,
-        })
-      });
-      const json=await res.json();
-      if(!res.ok){
-        setMessages([...newMessages,{role:'assistant',content:'Error: '+(json.error||'Claude request failed ('+res.status+')')}]);
-        setThinking(false);
-        return;
-      }
-      const text=json.content?.filter(b=>b.type==='text').map(b=>b.text).join('\n');
-      setMessages([...newMessages,{role:'assistant',content:text||'Claude returned an empty response — try rephrasing the question.'}]);
-      if(json.usage)recordUsage(json.usage.input_tokens,json.usage.output_tokens,json.usage.cache_creation_input_tokens,json.usage.cache_read_input_tokens);
-    }catch(e){
-      setMessages([...newMessages,{role:'assistant',content:'Error: could not reach the server — '+e.message}]);
-    }
-    setThinking(false);
-  };
-
-  const send=async()=>{
-    if(!input.trim()||thinking)return;
-    const nm=[...messages,{role:'user',content:input.trim()}];
-    setMessages(nm);setInput('');
-    await callClaude(nm);
-  };
-
-  const genReview=async(period)=>{
-    if(thinking)return;
-    const today=new Date();
-    let from,to,label;
-    if(period==='week'){
-      const d=new Date(today);d.setDate(d.getDate()-d.getDay()+1);
-      from=d.toLocaleDateString('en-CA');to=today.toLocaleDateString('en-CA');
-      label=`weekly review (${from} → ${to})`;
-      localStorage.setItem('wk_review',weekId(today));
-    }else{
-      const base=today.getDate()<=2?new Date(today.getFullYear(),today.getMonth()-1,15):today;
-      from=new Date(base.getFullYear(),base.getMonth(),1).toLocaleDateString('en-CA');
-      to=new Date(base.getFullYear(),base.getMonth()+1,0).toLocaleDateString('en-CA');
-      label=`monthly review (${from} → ${to})`;
-      localStorage.setItem('mo_review',monthId(base));
-    }
-    const nm=[...messages,{role:'user',content:`Generate my ${label}. Only use trades and EOD reviews dated within that range.`}];
-    setMessages(nm);
-    await callClaude(nm);
-  };
-
-  const suggestions=[
-    'Profit factor of Absorption + Bearish HTF + Entry 3 last 60 days',
-    'Strongest combinations with at least 10 trades',
-    'ROT last 40 trades vs overall',
-    'Equity curve if I exclude Entry 1 on Balanced Short Term',
-    'Chart my P&L by entry trigger',
-  ];
-
-  return(
-    <div style={{display:'flex',flexDirection:'column',height:isMobile?'calc(100vh - 220px)':'calc(100vh - 160px)'}}>
-      {(weeklyDue||monthlyDue)&&(
-        <div style={{background:C.teal+'10',border:`1px solid ${C.teal}40`,borderRadius:12,padding:'10px 14px',marginBottom:12,display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,flexWrap:'wrap'}}>
-          <span style={{fontSize:12,color:C.text}}>📬 Your {weeklyDue?'weekly':'monthly'} review is ready to generate</span>
-          <button onClick={()=>genReview(weeklyDue?'week':'month')} style={{padding:'7px 14px',borderRadius:9,border:'none',background:C.teal,color:'#fff',fontSize:12,fontFamily:'inherit',fontWeight:700,cursor:'pointer'}}>Generate now</button>
-        </div>
-      )}
-      <div style={{display:'flex',gap:8,marginBottom:12,position:'relative'}}>
-        <button onClick={()=>genReview('week')} disabled={thinking} style={{flex:1,padding:'9px',borderRadius:10,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textSub,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600}}>📅 Weekly Review</button>
-        <button onClick={()=>genReview('month')} disabled={thinking} style={{flex:1,padding:'9px',borderRadius:10,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textSub,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600}}>🗓 Monthly Review</button>
-        <button onClick={()=>setShowHistory(!showHistory)} title="Browse past conversations" style={{padding:'9px 14px',borderRadius:10,border:`1.5px solid ${showHistory?C.teal:C.border}`,background:showHistory?C.teal+'15':'transparent',color:showHistory?C.teal:C.textMut,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600}}>🕐 History{history.length>0?` (${history.length})`:''}</button>
-        <button onClick={onRefreshDays} title="Reload your trade data — it's cached across tabs now for speed, so use this if you just edited trades elsewhere and want Big Daddy to see the latest" style={{padding:'9px 10px',borderRadius:10,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textMut,fontSize:12,fontFamily:'inherit',cursor:'pointer'}}>🔄</button>
-        {messages.length>0&&<button onClick={clearChat} disabled={thinking} title="Start a new conversation" style={{padding:'9px 14px',borderRadius:10,border:`1.5px solid ${C.border}`,background:'transparent',color:C.textMut,fontSize:12,fontFamily:'inherit',cursor:'pointer',fontWeight:600}}>🗑 New</button>}
-        {showHistory&&(
-          <div style={{position:'absolute',top:'110%',right:0,left:isMobile?0:'auto',width:isMobile?'100%':380,maxHeight:400,overflowY:'auto',background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,boxShadow:'0 8px 24px rgba(0,0,0,0.25)',zIndex:20,padding:8}}>
-            {history.length===0?(
-              <div style={{padding:'20px 14px',textAlign:'center',fontSize:12,color:C.textMut}}>No past conversations yet. Hit "New" after chatting to save this one and start fresh.</div>
-            ):history.map(h=>(
-              <div key={h.id} onClick={()=>openHistoryItem(h)} style={{
-                padding:'10px 12px',borderRadius:9,cursor:'pointer',marginBottom:4,
-                display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,
-              }}
-                onMouseEnter={e=>e.currentTarget.style.background=C.surface2}
-                onMouseLeave={e=>e.currentTarget.style.background='transparent'}
-              >
-                <div style={{minWidth:0}}>
-                  <div style={{fontSize:12,color:C.text,fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{h.title}</div>
-                  <div style={{fontSize:10,color:C.textMut,marginTop:2}}>{new Date(h.updatedAt).toLocaleDateString('en-US',{month:'short',day:'numeric'})} · {h.messages.length} messages</div>
-                </div>
-                <span onClick={e=>deleteHistoryItem(h.id,e)} title="Delete" style={{color:C.textMut,fontSize:14,cursor:'pointer',flexShrink:0,padding:'2px 6px'}}>×</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-      {usage.messages>0&&(
-        <div style={{fontSize:11,color:C.textMut,marginBottom:12,display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
-          <span>📊 This month: <b style={{color:C.textSub}}>{usage.messages}</b> message{usage.messages!==1?'s':''} · ~<b style={{color:C.textSub}}>{(usage.tokensIn+usage.tokensOut).toLocaleString()}</b> tokens · ~<b style={{color:estCost>1?C.yellow:C.textSub}}>${estCost.toFixed(3)}</b>{cacheSavings>0.001&&<span style={{color:C.green}}> · saved ~${cacheSavings.toFixed(3)} via caching</span>}</span>
-          <span style={{color:C.textDim}}>· estimate — exact billing at console.anthropic.com</span>
-        </div>
-      )}
-      <div ref={scrollRef} style={{flex:1,overflowY:'auto',paddingBottom:16}}>
-        {messages.length===0&&(
-          <div style={{textAlign:'center',padding:'30px 20px'}}>
-            <div style={{fontSize:32,marginBottom:12}}>🤖</div>
-            {editingName?(
-              <div style={{display:'flex',gap:6,justifyContent:'center',marginBottom:6}}>
-                <input autoFocus value={nameDraft} onChange={e=>setNameDraft(e.target.value)}
-                  onKeyDown={e=>{if(e.key==='Enter')saveName();if(e.key==='Escape'){setNameDraft(assistantName);setEditingName(false);}}}
-                  style={{padding:'6px 10px',borderRadius:8,border:`1.5px solid ${C.teal}`,background:C.bg,color:C.text,fontSize:14,fontFamily:'inherit',outline:'none',textAlign:'center',width:160}}/>
-                <button onClick={saveName} style={{padding:'6px 12px',borderRadius:8,border:'none',background:C.teal,color:'#fff',fontSize:12,fontFamily:'inherit',fontWeight:700,cursor:'pointer'}}>Save</button>
-              </div>
-            ):(
-              <div style={{fontSize:15,fontWeight:700,color:C.text,marginBottom:6}}>
-                Ask {assistantName} anything about your data
-                <span onClick={()=>{setNameDraft(assistantName);setEditingName(true);}} title="Rename" style={{marginLeft:8,fontSize:11,color:C.textMut,cursor:'pointer',fontWeight:400,textDecoration:'underline'}}>rename</span>
-              </div>
-            )}
-            <div style={{fontSize:12,color:C.textMut,marginBottom:24,lineHeight:1.6}}>Grounded in your real Supabase trades — with tables, charts,<br/>sample-size warnings, and follow-up refinement.</div>
-            <div style={{display:'flex',flexDirection:'column',gap:8,maxWidth:420,margin:'0 auto'}}>
-              {suggestions.map((sg,i)=>(
-                <button key={i} onClick={()=>setInput(sg)} style={{
-                  padding:'10px 16px',borderRadius:12,border:`1px solid ${C.border}`,
-                  background:C.surface,color:C.textSub,fontSize:12,fontFamily:'inherit',
-                  cursor:'pointer',textAlign:'left',
-                }}>{sg}</button>
-              ))}
-            </div>
-          </div>
-        )}
-        {messages.map((m,i)=>{
-          const isHandoff = m.role==='assistant' && /ask Claude directly in your claude\.ai chat/i.test(m.content);
-          const originalQuestion = isHandoff && i>0 ? messages[i-1].content : null;
-          return(
-          <div key={i} style={{display:'flex',justifyContent:m.role==='user'?'flex-end':'flex-start',marginBottom:12}}>
-            <div style={{
-              maxWidth:'90%',padding:'12px 16px',borderRadius:14,
-              background:m.role==='user'?C.teal+'20':C.surface,
-              border:`1px solid ${m.role==='user'?C.teal+'40':C.border}`,
-            }}>
-              {m.role==='user'?<div style={{fontSize:13,color:C.text,lineHeight:1.7,whiteSpace:'pre-wrap'}}>{m.content}</div>:<MDMessage content={m.content} userId={userId}/>}
-              {isHandoff && originalQuestion && (
-                <button onClick={()=>{
-                  try{navigator.clipboard.writeText(originalQuestion);}catch(_){}
-                  window.open('https://claude.ai/new?q='+encodeURIComponent(originalQuestion), '_blank');
-                }} style={{
-                  marginTop:10,padding:'8px 14px',borderRadius:9,border:`1.5px solid ${C.teal}`,
-                  background:C.teal+'15',color:C.teal,fontFamily:'inherit',fontSize:12,fontWeight:700,cursor:'pointer',
-                }}>↗ Open in Claude (question copied — paste if it's not already there)</button>
-              )}
-            </div>
-          </div>
-          );
-        })}
-        {thinking&&(
-          <div style={{display:'flex',justifyContent:'flex-start',marginBottom:12}}>
-            <div style={{padding:'12px 16px',borderRadius:14,background:C.surface,border:`1px solid ${C.border}`,fontSize:13,color:C.textMut}}>Computing from your data...</div>
-          </div>
-        )}
-      </div>
-      <div style={{display:'flex',gap:8,paddingTop:12,borderTop:`1px solid ${C.border}`}}>
-        <textarea value={input} onChange={e=>setInput(e.target.value)}
-          onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}}}
-          placeholder='Ask, then refine: "now only shorts", "last 30 days", "exclude Entry 1"...'
-          rows={1}
-          style={{flex:1,padding:'12px 16px',borderRadius:12,border:`1.5px solid ${C.border}`,
-            background:C.surface,color:C.text,fontSize:13,fontFamily:'inherit',outline:'none',resize:'none'}}/>
-        <button onClick={send} disabled={thinking||!input.trim()} style={{
-          padding:'0 20px',borderRadius:12,border:'none',
-          background:thinking||!input.trim()?C.surface:C.teal,
-          color:thinking||!input.trim()?C.textMut:'#fff',
-          fontFamily:'inherit',fontSize:13,fontWeight:700,cursor:thinking||!input.trim()?'not-allowed':'pointer',
-        }}>Send</button>
-      </div>
     </div>
   );
 }
@@ -4856,16 +4411,6 @@ export default function App(){
   const [theme,setTheme]=useState(initialTheme());
   applyTheme(theme);
   useEffect(()=>{applyTheme(theme);try{localStorage.setItem('journal_theme_v2',theme);}catch(_){}},[theme]);
-  const [aiName,setAiName]=useState('Claude');
-  useEffect(()=>{
-    const key='journal_ai_name_'+(user?.id||'anon');
-    try{setAiName(localStorage.getItem(key)||'Claude');}catch(_){setAiName('Claude');}
-  },[user,tab]);
-  useEffect(()=>{
-    const onRename=e=>setAiName(e.detail||'Claude');
-    window.addEventListener('ai-name-changed',onRename);
-    return()=>window.removeEventListener('ai-name-changed',onRename);
-  },[]);
   const[showCal,setShowCal]=useState(false);
   const saveTimer=useRef(null);
 
@@ -4886,7 +4431,7 @@ export default function App(){
   },[selectedDate,user]);
 
   // Shared full-history cache — loaded ONCE here instead of separately inside
-  // both AnalyticsTab and ClaudeTab, which previously each re-fetched every
+  // both AnalyticsTab and other tabs, which previously each re-fetched every
   // single day's data from scratch on every tab switch (since React
   // unmounts/remounts a tab's component when you navigate away and back).
   // refreshAllDaysCache lets a save flow (e.g. after adding a trade) pull a
@@ -4914,7 +4459,7 @@ export default function App(){
       };
       await saveIndex(selectedDate,summary,user.id);
       setIndex(prev=>({...prev,[selectedDate]:summary}));
-      // Keep the shared Analytics/Claude cache fresh without a network
+      // Keep the shared Analytics cache fresh without a network
       // round-trip — we already have the just-saved data right here.
       setAllDaysCache(prev=>{
         if(!prev) return prev;
@@ -5022,7 +4567,7 @@ export default function App(){
               <div style={{display:'flex',flexDirection:'column',gap:4}}>
                 {TABS.map((t,i)=>(
                   <button key={t} onClick={()=>setTab(i)} className="tj-btn" style={{padding:'10px 14px',borderRadius:9,textAlign:'left',background:tab===i?C.surface2:'transparent',border:tab===i?`1px solid ${C.border}`:'1px solid transparent',color:tab===i?C.text:C.textMut,fontSize:13,fontFamily:'inherit',cursor:'pointer',fontWeight:tab===i?700:400,transition:'all 0.15s'}}>
-                    {i===0?'📊 ':i===1?'📈 ':i===2?'🤖 ':'📅 '}{i===2?aiName:t}
+                    {t}
                   </button>
                 ))}
               </div>
@@ -5059,7 +4604,7 @@ export default function App(){
                 <button onClick={()=>goDay(1)} disabled={selectedDate>=today} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,color:selectedDate>=today?C.textDim:C.textSub,width:36,height:36,cursor:selectedDate>=today?'default':'pointer',fontSize:16,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>›</button>
                 {!isToday&&<button onClick={()=>{setSelectedDate(today);setTab(0);}} style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,color:C.textSub,padding:'0 10px',height:36,cursor:'pointer',fontSize:12,fontFamily:'inherit',flexShrink:0}}>Today</button>}
               </div>
-              <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:4,background:C.surface,borderRadius:12,padding:4,border:`1px solid ${C.border}`}}>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:4,background:C.surface,borderRadius:12,padding:4,border:`1px solid ${C.border}`}}>
                 {TABS.map((t,i)=>(
                   <button key={t} onClick={()=>setTab(i)} className="tj-btn" style={{padding:'10px 4px',borderRadius:9,background:tab===i?C.surface2:'transparent',border:'none',color:tab===i?C.text:C.textMut,fontSize:11,fontFamily:'inherit',cursor:'pointer',fontWeight:tab===i?700:400,letterSpacing:'0.03em',transition:'all 0.15s'}}>{t}</button>
                 ))}
@@ -5070,7 +4615,7 @@ export default function App(){
           {!isMobile&&(
             <div style={{marginBottom:28}}>
               <div style={{fontSize:22,fontWeight:800,color:C.text,marginBottom:4}}>
-                {tab===0?'📊 Trades':tab===1?'📈 Analytics':tab===2?'🤖 Ask Claude':'📅 Swing Positions'}
+                {tab===0?'Trades':tab===1?'Analytics':'Swing positions'}
               </div>
               <div style={{fontSize:14,color:C.textMut}}>{fmtDate(selectedDate)}{isToday?' · Today':''}</div>
             </div>
@@ -5082,8 +4627,7 @@ export default function App(){
             <div className="tj-tab-content" key={tab}>
               {tab===0&&<TradesTab trades={dayData.trades} onChange={updateTrades} eod={dayData.eod} onEodChange={updateEod} date={selectedDate} isMobile={isMobile} userId={user?.id} onJumpToDate={d=>setSelectedDate(d)}/>}
               {tab===1&&<AnalyticsTab userId={user?.id} isMobile={isMobile} onJumpToDate={d=>{setSelectedDate(d);setTab(0);}} days={allDaysCache} onRefreshDays={refreshAllDaysCache}/>}
-              {tab===2&&<ClaudeTab userId={user?.id} isMobile={isMobile} days={allDaysCache} onRefreshDays={refreshAllDaysCache}/>}
-              {tab===3&&<SwingTab userId={user?.id} isMobile={isMobile}/>}
+              {tab===2&&<SwingTab userId={user?.id} isMobile={isMobile}/>}
             </div>
           )}
         </div>
