@@ -69,7 +69,7 @@ const TRIGGER_OPTIONS = [
   {label:'Volume Spike', value:'volume_spike'}, {label:'Initiative Participants', value:'initiative_participants'},
 ];
 const ATTEMPT_OPTIONS = [
-  {label:'Entry 1', value:'entry_1'}, {label:'Entry 2', value:'entry_2'}, {label:'Entry 3', value:'entry_3'},
+  {label:'Trigger 1', value:'entry_1'}, {label:'Trigger 2 (post-sweep)', value:'entry_2'}, {label:'Trigger 3', value:'entry_3'},
 ];
 const ST_OPTIONS = [
   {label:'Bullish Short Term', value:'bullish_st'}, {label:'Bearish Short Term', value:'bearish_st'}, {label:'Balanced Short Term', value:'balanced_st'},
@@ -94,8 +94,35 @@ const M_EXTREME_DEV_BAND = [
 const W_EXTREME_DEV_BAND = [
   {label:'PDVAH', value:'pdvah'}, {label:'PDVAL', value:'pdval'},
 ];
+// Level confluence, tiered. A = auction structure (objective profile levels),
+// B = supporting. A trade needs at least one A-level. The three value-area
+// groups above (monthly / weekly / prior-day VAH-VAL) also count as A-levels.
+const CONFLUENCE_A = [
+  {label:'Balance Edge (any TF)', value:'balance_edge'}, {label:'Naked VAH/VAL', value:'naked_va'},
+  {label:'Weekly VP Level', value:'weekly_vp_level'}, {label:'Single Prints', value:'single_prints'},
+  {label:'Excess', value:'excess'},
+];
+const CONFLUENCE_B = [
+  {label:'1H/4H Zone', value:'htf_zone'}, {label:'VWAP Dev Band', value:'vwap_band'},
+  {label:'Fib', value:'fib'}, {label:'ADR Extreme', value:'adr_extreme'},
+];
+const CONFLUENCE_OPTIONS = [...CONFLUENCE_A, ...CONFLUENCE_B];
+const aLevelCount = t =>
+  (t.confluences||[]).filter(v=>CONFLUENCE_A.some(o=>o.value===v)).length
+  + (t.compositeBalanceExtreme||[]).length + (t.mExtremeDevBand||[]).length + (t.wExtremeDevBand||[]).length;
+// Non-blocking reminders of the current trade plan, shown on the trade card.
+function ruleChecks(t){
+  const out=[];
+  if(!t.ticker&&!t.plan)return out;
+  if(aLevelCount(t)===0)out.push('No A-level tagged — a trade needs at least one A-level confluence.');
+  if(t.attempt==='entry_1'&&!t.paper)out.push('Trigger 1 is paper-only — the live entry is Trigger 2, after the sweep of the first pivot.');
+  if(t.attempt==='entry_3')out.push('No third trigger — if Trigger 2 fails, the level is broken.');
+  if(t.plan==='ROT'&&!t.paper)out.push('ROT is on hold (0 for 6) — paper-trade it until it is redefined.');
+  if(!(t.triggers||[]).length)out.push('No footprint trigger tagged (absorption / exhaustion).');
+  return out;
+}
 
-function newTrade(){return{ticker:'',direction:'',contracts:'',sl:'',plan:'',confluences:[],triggers:[],attempt:'',stContext:'',htfContext:'',openingType:'',compositeBalanceExtreme:[],mExtremeDevBand:[],wExtremeDevBand:[],mfe:'',mae:'',commission:'',result:'',points:'',entryTime:'',exitTime:'',emotions:'',notes:'',img1:'',img15:'',partials:[],avgEntry:'',multiEntry:false,open:true};}
+function newTrade(){return{ticker:'',direction:'',contracts:'',sl:'',plan:'',confluences:[],triggers:[],attempt:'',stContext:'',htfContext:'',openingType:'',compositeBalanceExtreme:[],mExtremeDevBand:[],wExtremeDevBand:[],mfe:'',mae:'',commission:'',result:'',points:'',entryTime:'',exitTime:'',emotions:'',notes:'',img1:'',img15:'',partials:[],avgEntry:'',multiEntry:false,paper:false,open:true};}
 
 // Generate 5-min interval time options for 10:30am - 4:00pm EST
 function timeOptions(){
@@ -459,6 +486,7 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
           {trade.ticker&&<span style={{fontSize:12,color:C.blue,background:C.surface,padding:'2px 8px',borderRadius:5,border:`1px solid ${C.border}`}}>{trade.ticker}</span>}
           {trade.direction&&<span style={{fontSize:11,color:trade.direction==='long'?C.green:C.red,fontWeight:700}}>{trade.direction==='long'?'⬆ L':'⬇ S'}</span>}
           {trade.plan&&<span style={{fontSize:11,color:C.textMut}}>{({balance:'balance',failedexp:'failed exp',reclaim:'reclaim',breakout:'breakout'})[trade.plan]||trade.plan}</span>}
+          {trade.paper&&<span title="Paper trade — not counted in P&L or analytics" style={{fontSize:10,color:C.purple,background:C.purple+'18',padding:'2px 7px',borderRadius:10,fontWeight:700}}>PAPER</span>}
         </div>
         <div style={{display:'flex',alignItems:'center',gap:12}}>
           {!trade.sl && trade.ticker && <span title="No SL entered — R-multiples and MFE capture can't compute without it" style={{fontSize:10,color:C.red,background:C.red+'15',padding:'2px 7px',borderRadius:10,fontWeight:700}}>⚠ NO SL</span>}
@@ -531,12 +559,21 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
           <div style={{marginBottom:16}}>
             <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Entry Attempt</div>
             <Pills options={[
-              {label:'Entry 1',value:'entry_1'},
-              {label:'Entry 2',value:'entry_2'},
-              {label:'Entry 3',value:'entry_3'},
+              {label:'Trigger 1',value:'entry_1'},
+              {label:'Trigger 2 (post-sweep)',value:'entry_2'},
+              {label:'Trigger 3',value:'entry_3'},
             ]} value={trade.attempt} onChange={set('attempt')} colors={{
-              entry_1:C.green,entry_2:C.yellow,entry_3:C.orange,
+              entry_1:C.yellow,entry_2:C.green,entry_3:C.red,
             }}/>
+            <div style={{marginTop:10}}>
+              <button onClick={()=>set('paper')(!trade.paper)} style={{
+                padding:'5px 11px',borderRadius:20,fontSize:11,fontFamily:'inherit',cursor:'pointer',
+                border:trade.paper?`1.5px solid ${C.purple}`:`1.5px solid ${C.border}`,
+                background:trade.paper?C.purple+'22':'transparent',
+                color:trade.paper?C.purple:C.textMut,fontWeight:trade.paper?700:400,transition:'all 0.15s',
+              }}>{trade.paper?'✓ ':''}Paper trade (not taken)</button>
+              <span style={{fontSize:10,color:C.textMut,marginLeft:8}}>Log the first trigger here with its outcome. Excluded from P&L and analytics.</span>
+            </div>
           </div>
           <div style={{marginBottom:16}}>
             <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Short-Term Context</div>
@@ -593,6 +630,39 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
               </div>
             </div>
           ))}
+          {[
+            ['Level Confluence — A (structure)', CONFLUENCE_A, C.green],
+            ['Level Confluence — B (supporting)', CONFLUENCE_B, C.blue],
+          ].map(([label, opts, col])=>(
+            <div key={label} style={{marginBottom:16}}>
+              <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>{label}</div>
+              <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+                {opts.map(o=>{
+                  const active=(trade.confluences||[]).includes(o.value);
+                  const toggle=()=>{
+                    const cur=trade.confluences||[];
+                    set('confluences')(active?cur.filter(x=>x!==o.value):[...cur,o.value]);
+                  };
+                  return(
+                    <button key={o.value} onClick={toggle} style={{
+                      padding:'5px 11px',borderRadius:20,fontSize:11,fontFamily:'inherit',cursor:'pointer',
+                      border:active?`1.5px solid ${col}`:`1.5px solid ${C.border}`,
+                      background:active?col+'18':'transparent',
+                      color:active?col:C.textMut,fontWeight:active?700:400,transition:'all 0.15s',
+                    }}>{o.label}</button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+          {ruleChecks(trade).length>0&&(
+            <div style={{marginBottom:16,padding:'10px 12px',borderRadius:8,border:`1px solid ${C.yellow}55`,background:C.yellow+'10'}}>
+              <div style={{fontSize:11,color:C.yellow,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:700}}>Plan check</div>
+              {ruleChecks(trade).map(m=>(
+                <div key={m} style={{fontSize:12,color:C.textSub,lineHeight:1.5}}>• {m}</div>
+              ))}
+            </div>
+          )}
           <Divider label="Result"/>
           <div style={{marginBottom:16}}>
             <div style={{fontSize:11,color:C.textSub,marginBottom:8,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Result</div>
@@ -706,7 +776,8 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
   );
 }
 
-function SummaryBar({trades}){
+function SummaryBar({trades:allTrades}){
+  const trades=allTrades.filter(t=>!t.paper); // paper trades never count toward the day's P&L
   const total=trades.reduce((s,t)=>s+calcPnL(t.ticker,t.contracts,t.points)-(parseFloat(t.commission)||0),0);
   const totalComm=trades.reduce((s,t)=>s+(parseFloat(t.commission)||0),0);
   const wins=trades.filter(t=>t.result==='W').length;
@@ -1709,6 +1780,7 @@ function extractAllTrades(days){
     const trades=row.data?.trades||[];
     trades.forEach(t=>{
       if(!t.ticker||!t.result||!t.points)return;
+      if(t.paper)return; // paper trades are excluded from all analytics
       const contracts=parseFloat(t.contracts)||1;
       const points=parseFloat(t.points)||0;
       const sl=parseFloat(t.sl)||0;
@@ -2210,7 +2282,9 @@ function BigStat({label,val,col,sub}){
 const PRETTY = {
   b_shape_FP:'b shape FP', P_shape_FP:'P shape FP', exhaustion:'Exhaustion', absorption:'Absorption',
   volume_spike:'Volume Spike', initiative_participants:'Initiative Participants',
-  entry_1:'Entry 1', entry_2:'Entry 2', entry_3:'Entry 3',
+  entry_1:'Trigger 1', entry_2:'Trigger 2 (post-sweep)', entry_3:'Trigger 3',
+  balance_edge:'Balance Edge', naked_va:'Naked VAH/VAL', weekly_vp_level:'Weekly VP Level', single_prints:'Single Prints', excess:'Excess',
+  htf_zone:'1H/4H Zone', vwap_band:'VWAP Dev Band', fib:'Fib', adr_extreme:'ADR Extreme',
   bullish_st:'Bullish ST', bearish_st:'Bearish ST', balanced_st:'Balanced ST',
   bullish_htf:'Bullish HTF', bearish_htf:'Bearish HTF',
   ir_iv:'In Range In Value', ir_ov:'In Range Out of Value', or_ov:'Out of Range Out of Value',
@@ -2228,6 +2302,7 @@ const DIMENSIONS = {
   setup:{label:'Setup', get:t=>t.setup, options:SETUP_OPTIONS},
   trigger:{label:'Entry Trigger', get:t=>t.triggers, multi:true, options:TRIGGER_OPTIONS},
   attempt:{label:'Entry Attempt', get:t=>t.attempt, options:ATTEMPT_OPTIONS},
+  confluence:{label:'Level Confluence', get:t=>t.confluences, multi:true, options:CONFLUENCE_OPTIONS},
   stContext:{label:'Short-Term Context', get:t=>t.stContext, options:ST_OPTIONS},
   htfContext:{label:'HTF Context', get:t=>t.htfContext, options:HTF_OPTIONS},
   openingType:{label:'Opening Type', get:t=>t.openingType, options:OPENING_OPTIONS},
@@ -2537,12 +2612,12 @@ function AnalyticsTab({userId,isMobile,onJumpToDate,days,onRefreshDays}){
 
   const SECTIONS=[
     ['equity','Equity & Drawdown'],
-    ['setup','Setup'],['trigger','Entry Trigger'],['attempt','Entry Attempt'],
+    ['setup','Setup'],['trigger','Entry Trigger'],['attempt','Entry Attempt'],['confluence','Level Confluence'],
     ['stContext','Short-Term Context'],['htfContext','HTF Context'],['openingType','Opening Type'],['compositeBalanceExtreme','Balance Extreme'],['mExtremeDevBand','M Dev Band'],['wExtremeDevBand','W Dev Band'],['direction','Direction'],
     ['pivot','Cross / Pivot'],['time','Time & Session'],['rolling','Rolling Windows'],['mfemae','MFE / MAE'],['whatif','What-If'],['log','Trade Log'],
   ];
 
-  const dimSectionKeys=['setup','trigger','attempt','stContext','htfContext','openingType','compositeBalanceExtreme','mExtremeDevBand','wExtremeDevBand','direction'];
+  const dimSectionKeys=['setup','trigger','attempt','confluence','stContext','htfContext','openingType','compositeBalanceExtreme','mExtremeDevBand','wExtremeDevBand','direction'];
 
   return(
     <div>
@@ -2753,7 +2828,7 @@ function AnalyticsTab({userId,isMobile,onJumpToDate,days,onRefreshDays}){
             <BigStat label={`PF (last ${rollWin})`} val={cur.count?(cur.pf>=99?'∞':cur.pf.toFixed(2)):'—'} col={cur.pf>=1.5?C.green:cur.pf>=1?C.yellow:C.red} sub={`lifetime: ${all.pf>=99?'∞':all.pf.toFixed(2)}`}/>
             <BigStat label="Trend" val={cur.count?(cur.expectancy>=all.expectancy?'Improving ↗':'Decaying ↘'):'—'} col={cur.expectancy>=all.expectancy?C.green:C.red}/>
           </div>
-          {['setup','trigger','attempt','stContext','htfContext','openingType','compositeBalanceExtreme','mExtremeDevBand','wExtremeDevBand','direction'].map(dk=>{
+          {['setup','trigger','attempt','confluence','stContext','htfContext','openingType','compositeBalanceExtreme','mExtremeDevBand','wExtremeDevBand','direction'].map(dk=>{
             const rows=groupByDims(windowTrades,[dk],1).map(r=>{
               const lifetime=groupByDims(seqAll,[dk],1).find(x=>x.label===r.label);
               return{...r,lifeExp:lifetime?lifetime.expectancy:0,delta:r.expectancy-(lifetime?lifetime.expectancy:0)};
@@ -2887,7 +2962,7 @@ function AnalyticsTab({userId,isMobile,onJumpToDate,days,onRefreshDays}){
             {key:'direction',label:'Dir',align:'left',fmt:v=>pretty(v)},
             {key:'setup',label:'Setup',align:'left',fmt:v=>pretty(v)},
             {key:'triggersStr',label:'Triggers',align:'left'},
-            {key:'attempt',label:'Att.',fmt:v=>v==='—'?'—':pretty(v).replace('Entry ','E')},
+            {key:'attempt',label:'Att.',fmt:v=>v==='—'?'—':({entry_1:'T1',entry_2:'T2',entry_3:'T3'})[v]||pretty(v)},
             {key:'stContext',label:'ST',fmt:v=>v==='—'?'—':pretty(v).replace(' ST','')},
             {key:'htfContext',label:'HTF',fmt:v=>v==='—'?'—':pretty(v).replace(' HTF','')},
             {key:'openingType',label:'Open',fmt:v=>v==='—'?'—':v==='ir_iv'?'IR-IV':v==='ir_ov'?'IR-OV':'OR-OV'},
@@ -4683,7 +4758,7 @@ export default function App(){
     clearTimeout(saveTimer.current);
     saveTimer.current=setTimeout(async()=>{
       await saveDay(selectedDate,dayData,user.id);
-      const trades=dayData.trades||[];
+      const trades=(dayData.trades||[]).filter(t=>!t.paper);
       const total=trades.reduce((s,t)=>s+calcPnL(t.ticker,t.contracts,t.points)-(parseFloat(t.commission)||0),0);
       const esPts=trades.filter(t=>['ES','MES'].includes(t.ticker)).reduce((s,t)=>s+(parseFloat(t.points)||0),0);
       const nqPts=trades.filter(t=>['NQ','MNQ'].includes(t.ticker)).reduce((s,t)=>s+(parseFloat(t.points)||0),0);
