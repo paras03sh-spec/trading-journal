@@ -486,7 +486,7 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
           {trade.ticker&&<span style={{fontSize:12,color:C.blue,background:C.surface,padding:'2px 8px',borderRadius:5,border:`1px solid ${C.border}`}}>{trade.ticker}</span>}
           {trade.direction&&<span style={{fontSize:11,color:trade.direction==='long'?C.green:C.red,fontWeight:700}}>{trade.direction==='long'?'⬆ L':'⬇ S'}</span>}
           {trade.plan&&<span style={{fontSize:11,color:C.textMut}}>{({balance:'balance',failedexp:'failed exp',reclaim:'reclaim',breakout:'breakout'})[trade.plan]||trade.plan}</span>}
-          {trade.paper&&<span title="Paper trade — not counted in P&L or analytics" style={{fontSize:10,color:C.purple,background:C.purple+'18',padding:'2px 7px',borderRadius:10,fontWeight:700}}>PAPER</span>}
+          {trade.paper&&<span title="Paper trade — not counted in P&L; analysed separately under Analytics → Paper trades" style={{fontSize:10,color:C.purple,background:C.purple+'18',padding:'2px 7px',borderRadius:10,fontWeight:700}}>PAPER</span>}
         </div>
         <div style={{display:'flex',alignItems:'center',gap:12}}>
           {!trade.sl && trade.ticker && <span title="No SL entered — R-multiples and MFE capture can't compute without it" style={{fontSize:10,color:C.red,background:C.red+'15',padding:'2px 7px',borderRadius:10,fontWeight:700}}>⚠ NO SL</span>}
@@ -806,6 +806,15 @@ function SummaryBar({trades:allTrades}){
       <StatBox label="Avg R" val={avgR!=null?`${avgR>=0?'+':''}${avgR.toFixed(2)}R`:'—'} color={avgR==null?C.textMut:avgR>=0?C.green:C.red}/>
       <StatBox label="Trades" val={`${wins}W ${losses}L`} color={C.textSub}/>
       <StatBox label="Commission" val={totalComm?`-$${totalComm.toFixed(2)}`:'—'} color={C.textMut}/>
+      {(()=>{
+        const paper=allTrades.filter(t=>t.paper&&t.ticker&&t.result);
+        if(!paper.length)return null;
+        const pts=paper.reduce((a,t)=>a+(parseFloat(t.points)||0),0);
+        const pw=paper.filter(t=>t.result==='W').length, pl=paper.filter(t=>t.result==='L').length;
+        return <div style={{gridColumn:'1 / -1',fontSize:12,color:C.purple,background:C.purple+'12',border:`1px solid ${C.purple}40`,borderRadius:8,padding:'6px 10px'}}>
+          Paper: {pw}W {pl}L · {pts>=0?'+':''}{pts.toFixed(2)} pts · not counted in the totals above
+        </div>;
+      })()}
     </div>
   );
 }
@@ -1774,13 +1783,14 @@ function SvgDualLine({a,b,colA,colB,labelA,labelB,height=180,fmtY=v=>'$'+v.toFix
 // ANALYTICS ENGINE
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function extractAllTrades(days){
+// book: 'live' = real trades only, 'paper' = paper trades only. The two never mix.
+function extractAllTrades(days,book='live'){
   const out=[];
   days.forEach(row=>{
     const trades=row.data?.trades||[];
     trades.forEach(t=>{
       if(!t.ticker||!t.result||!t.points)return;
-      if(t.paper)return; // paper trades are excluded from all analytics
+      if(book==='paper'?!t.paper:!!t.paper)return;
       const contracts=parseFloat(t.contracts)||1;
       const points=parseFloat(t.points)||0;
       const sl=parseFloat(t.sl)||0;
@@ -2603,10 +2613,12 @@ function AnalyticsTab({userId,isMobile,onJumpToDate,days,onRefreshDays}){
   const[timeMetric,setTimeMetric]=useState('pnl');
   const[exFilters,setExFilters]=useState({});
   const[mfeDim,setMfeDim]=useState('setup');
+  const[book,setBook]=useState('live'); // 'live' | 'paper'
 
   if(days===null)return <div style={{textAlign:'center',color:C.textMut,padding:'60px 0',fontSize:13}}>Loading your data...</div>;
 
-  const allTrades=extractAllTrades(days);
+  const allTrades=extractAllTrades(days,book);
+  const paperCount=book==='paper'?allTrades.length:extractAllTrades(days,'paper').length;
   const trades=applyFilters(allTrades,filters);
   const s=computeStats(trades);
 
@@ -2621,6 +2633,14 @@ function AnalyticsTab({userId,isMobile,onJumpToDate,days,onRefreshDays}){
 
   return(
     <div>
+      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12,flexWrap:'wrap'}}>
+        {[['live','Live trades'],['paper',`Paper trades (${paperCount})`]].map(([k,l])=>(
+          <button key={k} onClick={()=>setBook(k)} style={{padding:'7px 16px',borderRadius:18,fontSize:12,fontFamily:'inherit',cursor:'pointer',
+            border:`1.5px solid ${book===k?(k==='paper'?C.purple:C.teal):C.border}`,background:book===k?(k==='paper'?C.purple:C.teal)+'18':'transparent',
+            color:book===k?(k==='paper'?C.purple:C.teal):C.textMut,fontWeight:book===k?700:400}}>{l}</button>
+        ))}
+        <span style={{fontSize:11,color:C.textMut}}>{book==='paper'?'Hypothetical results only. Nothing on this page touched the account.':'Real account trades only. Paper trades are kept on their own page.'}</span>
+      </div>
       <div style={{display:'flex',gap:5,marginBottom:12,overflowX:'auto',paddingBottom:2,flexWrap:isMobile?'nowrap':'wrap',maxWidth:900}}>
         {SECTIONS.map(([k,l])=>(
           <button key={k} onClick={()=>setSection(k)} style={{
