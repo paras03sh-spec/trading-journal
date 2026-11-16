@@ -8,18 +8,18 @@ const TABS = ["Trades", "Analytics", "Ask Claude", "Swing"];
 
 const THEMES = {
   dark:{
-    bg:'#0a0a0f', surface:'#131318', surface2:'#1a1a21',
-    border:'#26262e', border2:'#38383f',
-    text:'#e8e8e8', textSub:'#999', textMut:'#555', textDim:'#333',
+    bg:'#0e0e11', surface:'#17171b', surface2:'#1f1f24',
+    border:'#2a2a31', border2:'#3a3a42',
+    text:'#ededf0', textSub:'#a1a1aa', textMut:'#71717a', textDim:'#52525b',
     green:'#4ade80', red:'#f87171', yellow:'#fbbf24',
     blue:'#60a5fa', purple:'#a78bfa', teal:'#34d399', orange:'#fb923c',
   },
   light:{
-    bg:'#f5f6f8', surface:'#ffffff', surface2:'#edeff2',
-    border:'#dfe2e7', border2:'#c9cdd4',
-    text:'#17181a', textSub:'#565b63', textMut:'#9aa0a8', textDim:'#c9cdd3',
-    green:'#15803d', red:'#dc2626', yellow:'#b45309',
-    blue:'#2563eb', purple:'#7c3aed', teal:'#0f766e', orange:'#ea580c',
+    bg:'#fafafa', surface:'#ffffff', surface2:'#f4f4f5',
+    border:'#e4e4e7', border2:'#d4d4d8',
+    text:'#18181b', textSub:'#52525b', textMut:'#71717a', textDim:'#a1a1aa',
+    green:'#16a34a', red:'#dc2626', yellow:'#b45309',
+    blue:'#2563eb', purple:'#7c3aed', teal:'#0d9488', orange:'#ea580c',
   },
 };
 const C = {...THEMES.dark};
@@ -29,11 +29,11 @@ function applyTheme(mode){
 }
 function initialTheme(){
   try{
-    const saved=localStorage.getItem('journal_theme');
+    // v2: the clean light look is the default; a choice made with the toggle is remembered.
+    const saved=localStorage.getItem('journal_theme_v2');
     if(saved==='light'||saved==='dark')return saved;
-    if(window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches)return 'light';
   }catch(_){}
-  return 'dark';
+  return 'light';
 }
 
 function calcPnL(ticker,contracts,points){return(parseFloat(points)||0)*(POINT_VALUES[ticker]||0);}
@@ -3217,7 +3217,47 @@ function emptySwingPosition(){
     account:'Manual', symbol:'', direction:'long', status:'open', currency:'CAD',
     entries:[], exits:[], dividends:[], setup:'', sector:'', notes:'', commission:'0',
     current_price:'', opened_date: new Date().toISOString().slice(0,10),
+    plan:{}, // {stop, target, entry, thesis, account, riskPct, watch}
   };
+}
+
+// Plan-based numbers for one swing position: risk to the stop, reward to the
+// target, R earned so far. Everything is per the position's own currency.
+// `d` is the output of computeSwingDerived(pos).
+function swingPlanMetrics(pos, d){
+  const plan = pos.plan||{};
+  const sign = pos.direction==='long'?1:-1;
+  const num = v => { const n=parseFloat(v); return isNaN(n)||n<=0?null:n; };
+  const stop=num(plan.stop), target=num(plan.target), cur=num(pos.current_price);
+  const avg = d.avg_entry>0?d.avg_entry:null;
+  const ref = avg ?? num(plan.entry) ?? cur;              // entry reference
+  const remaining = (d.total_qty_entered||0)-(d.total_qty_exited||0);
+  const riskPerShare = ref&&stop ? sign*(ref-stop) : null;  // >0 when the stop is on the losing side
+  const initialRisk = riskPerShare>0&&d.total_qty_entered>0 ? riskPerShare*d.total_qty_entered : null;
+  // What is still at stake from the current price down to the stop (negative = profit locked in)
+  const openRisk = stop&&remaining>0 ? sign*((cur??ref)-stop)*remaining : null;
+  const plannedRR = riskPerShare>0&&target ? sign*(target-ref)/riskPerShare : null;
+  const pnl = (d.realized_pnl||0)+(d.unrealized_pnl||0);
+  const rNow = initialRisk ? pnl/initialRisk : null;
+  const toStopPct = stop&&cur ? sign*(cur-stop)/cur*100 : null;
+  const toTargetPct = target&&cur ? sign*(target-cur)/cur*100 : null;
+  // Position size for a fixed % of account at risk
+  const account=num(plan.account), riskPct=num(plan.riskPct);
+  const sizeRef = num(plan.entry) ?? cur ?? avg;
+  const sizeRisk = sizeRef&&stop ? sign*(sizeRef-stop) : null;
+  const sizeShares = account&&riskPct&&sizeRisk>0 ? Math.floor(account*riskPct/100/sizeRisk) : null;
+  return {stop,target,cur,ref,remaining,riskPerShare,initialRisk,openRisk,plannedRR,rNow,toStopPct,toTargetPct,
+    sizeShares, sizeValue: sizeShares!=null&&sizeRef?sizeShares*sizeRef:null, sizeRef, account, riskPct};
+}
+
+function SwingStat({label,val,col,sub}){
+  return(
+    <div style={{padding:'10px 12px',background:C.bg,border:`1px solid ${C.border}`,borderRadius:10,minWidth:0}}>
+      <div style={{fontSize:10,color:C.textMut,textTransform:'uppercase',letterSpacing:'0.06em',marginBottom:4}}>{label}</div>
+      <div style={{fontSize:15,fontWeight:700,color:col||C.text,fontVariantNumeric:'tabular-nums',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{val}</div>
+      {sub&&<div style={{fontSize:10,color:C.textMut,marginTop:2}}>{sub}</div>}
+    </div>
+  );
 }
 
 // Recomputes avg_entry, quantities, status, realized P&L, unrealized P&L
@@ -3236,7 +3276,9 @@ function computeSwingDerived(pos){
     const qty=parseFloat(e.qty)||0, price=parseFloat(e.price)||0;
     return s + sign*(price-avgEntry)*qty;
   },0) - commission;
-  const status = totalQtyExited>=totalQtyEntered && totalQtyEntered>0 ? 'closed' : 'open';
+  // 'watch' = an idea with a plan but no shares bought yet (the watchlist)
+  const status = totalQtyExited>=totalQtyEntered && totalQtyEntered>0 ? 'closed'
+    : (totalQtyEntered===0 && pos.plan && pos.plan.watch) ? 'watch' : 'open';
   const closedDate = status==='closed' && pos.exits.length
     ? pos.exits.reduce((latest,e)=>e.date>latest?e.date:latest, pos.exits[0].date)
     : null;
@@ -3375,7 +3417,7 @@ function SwingPositionCard({position, onChange, onDelete, onSave, isMobile, user
           <span style={{fontSize:11,padding:'2px 8px',borderRadius:10,background:position.direction==='long'?C.green+'20':C.red+'20',color:position.direction==='long'?C.green:C.red,fontWeight:700}}>
             {position.direction==='long'?'LONG':'SHORT'}
           </span>
-          <span style={{fontSize:11,color:C.textMut}}>{derived.status==='open'?`${remaining} open`:'closed'}</span>
+          <span style={{fontSize:11,color:C.textMut}}>{derived.status==='open'?`${remaining} open`:derived.status==='watch'?'watchlist':'closed'}</span>
         </div>
         <div style={{display:'flex',alignItems:'center',gap:10,flexShrink:0}}>
           {derived.total_return_pct!=null && (
@@ -3393,6 +3435,36 @@ function SwingPositionCard({position, onChange, onDelete, onSave, isMobile, user
       </div>
       {open && (
         <div style={{padding:16}}>
+          {(()=>{
+            // Position summary — the numbers a broker shows, plus plan-based risk.
+            const m = swingPlanMetrics(position, derived);
+            const money = (v,signed) => v==null?'—':`${signed&&v>=0?'+':''}${v<0?'-':''}$${Math.abs(v).toLocaleString('en-CA',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+            const pct = (v,signed) => v==null?'—':`${signed&&v>=0?'+':''}${v.toFixed(1)}%`;
+            const col = v => v==null?C.text:v>=0?C.green:C.red;
+            const marketValue = m.cur&&remaining>0 ? m.cur*remaining : null;
+            const book = derived.cost_basis_remaining||0;
+            const unrealPct = derived.unrealized_pnl!=null&&book>0 ? derived.unrealized_pnl/book*100 : null;
+            const totalPnl = (derived.realized_pnl||0)+(derived.unrealized_pnl||0)+(derived.total_dividends||0);
+            const hasAny = derived.total_qty_entered>0;
+            const end = derived.closed_date||new Date().toISOString().slice(0,10);
+            const days = position.opened_date ? Math.max(0,Math.round((new Date(end)-new Date(position.opened_date))/864e5)) : null;
+            const yoc = derived.total_dividends>0&&derived.cost_basis_total>0 ? derived.total_dividends/derived.cost_basis_total*100 : null;
+            if(!hasAny && !m.stop && !m.target) return null;
+            return(
+              <div style={{display:'grid',gridTemplateColumns:isMobile?'repeat(2,1fr)':'repeat(4,1fr)',gap:8,marginBottom:16}}>
+                {hasAny&&<SwingStat label="Market value" val={money(marketValue)} sub={remaining>0?`${remaining} sh${m.cur?` @ ${m.cur.toFixed(2)}`:''}`:'closed'}/>}
+                {hasAny&&<SwingStat label="Book cost" val={money(book)} sub={`avg ${derived.avg_entry.toFixed(2)}`}/>}
+                {hasAny&&<SwingStat label="Unrealized" val={money(derived.unrealized_pnl,true)} col={col(derived.unrealized_pnl)} sub={pct(unrealPct,true)}/>}
+                {hasAny&&<SwingStat label="Total return" val={money(totalPnl,true)} col={col(totalPnl)} sub={`${pct(derived.total_return_pct,true)} incl. dividends`}/>}
+                {hasAny&&<SwingStat label="Realized" val={money(derived.realized_pnl,true)} col={col(derived.realized_pnl)}/>}
+                {hasAny&&<SwingStat label="Dividends" val={money(derived.total_dividends||0)} col={derived.total_dividends>0?C.teal:C.text} sub={yoc!=null?`${yoc.toFixed(1)}% yield on cost`:undefined}/>}
+                {hasAny&&<SwingStat label="Days held" val={days??'—'} sub={`since ${position.opened_date||'—'}`}/>}
+                <SwingStat label="R so far" val={m.rNow==null?'—':`${m.rNow>=0?'+':''}${m.rNow.toFixed(2)}R`} col={col(m.rNow)} sub={m.initialRisk?`1R = ${money(m.initialRisk)}`:'set a stop to see R'}/>
+                <SwingStat label="Risk to stop" val={money(m.openRisk)} col={m.openRisk==null?C.text:m.openRisk>0?C.red:C.green} sub={m.toStopPct!=null?`${m.toStopPct.toFixed(1)}% away`:m.stop?undefined:'no stop set'}/>
+                <SwingStat label="Planned R:R" val={m.plannedRR==null?'—':`${m.plannedRR.toFixed(1)} : 1`} col={m.plannedRR==null?C.text:m.plannedRR>=2?C.green:C.yellow} sub={m.toTargetPct!=null?`target ${m.toTargetPct.toFixed(1)}% away`:undefined}/>
+              </div>
+            );
+          })()}
           <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'1fr 1fr 1fr',gap:12,marginBottom:10}}>
             <div style={{position:'relative'}}>
               <div style={{fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600}}>Symbol</div>
@@ -3550,6 +3622,53 @@ function SwingPositionCard({position, onChange, onDelete, onSave, isMobile, user
               {derived.status==='closed' && <span style={{fontSize:11,color:C.textMut}}>closed {derived.closed_date}</span>}
             </div>
           )}
+
+          {(()=>{
+            // Trade plan: stop, target, thesis and a position-size calculator.
+            const plan = position.plan||{};
+            const setPlan = (k)=>(v)=>onChange({...position, plan:{...plan,[k]:v}});
+            const m = swingPlanMetrics(position, derived);
+            const inp = {width:'100%',padding:'9px 12px',borderRadius:10,border:`1px solid ${C.border}`,background:C.bg,color:C.text,fontSize:13,fontFamily:'inherit',boxSizing:'border-box'};
+            const lab = {fontSize:11,color:C.textSub,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:600};
+            const field = (label,key,ph) => (
+              <div>
+                <div style={lab}>{label}</div>
+                <input type="number" value={plan[key]??''} placeholder={ph} onChange={e=>setPlan(key)(e.target.value)} style={inp}/>
+              </div>
+            );
+            return(
+              <div style={{marginBottom:16,padding:14,border:`1px solid ${C.border}`,borderRadius:12,background:C.surface2}}>
+                <div style={{fontSize:12,fontWeight:700,color:C.text,marginBottom:12}}>Trade plan</div>
+                <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'repeat(3,1fr)',gap:12,marginBottom:12}}>
+                  {field('Planned entry','entry','price')}
+                  {field('Stop','stop','price')}
+                  {field('Target','target','price')}
+                </div>
+                <div style={{marginBottom:12}}>
+                  <div style={lab}>Thesis and invalidation</div>
+                  <textarea value={plan.thesis||''} onChange={e=>setPlan('thesis')(e.target.value)} rows={2}
+                    placeholder="Why this trade, what must happen, and what proves it wrong"
+                    style={{...inp,resize:'vertical',lineHeight:1.5}}/>
+                </div>
+                <div style={{display:'grid',gridTemplateColumns:isMobile?'1fr 1fr':'repeat(3,1fr)',gap:12,alignItems:'end'}}>
+                  {field('Account size','account','$')}
+                  {field('Risk per trade %','riskPct','e.g. 1')}
+                  <div style={{fontSize:12,color:C.textSub,paddingBottom:8,lineHeight:1.5}}>
+                    {m.sizeShares!=null
+                      ? <>Size: <b style={{color:C.text}}>{m.sizeShares} shares</b> (≈${Math.round(m.sizeValue).toLocaleString('en-CA')}, {(m.sizeValue/m.account*100).toFixed(0)}% of account) at {m.sizeRef.toFixed(2)}</>
+                      : 'Enter stop, account size and risk % to get a share count.'}
+                  </div>
+                </div>
+                {derived.total_qty_entered===0 && (
+                  <button onClick={()=>setPlan('watch')(!plan.watch)} style={{
+                    marginTop:12,padding:'6px 12px',borderRadius:20,fontSize:12,fontFamily:'inherit',cursor:'pointer',
+                    border:plan.watch?`1.5px solid ${C.blue}`:`1.5px solid ${C.border}`,
+                    background:plan.watch?C.blue+'18':'transparent',color:plan.watch?C.blue:C.textMut,fontWeight:plan.watch?700:400,
+                  }}>{plan.watch?'✓ ':''}Watchlist idea (not bought yet)</button>
+                )}
+              </div>
+            );
+          })()}
 
           <div style={{display:'flex',gap:8,alignItems:'center'}}>
             <button onClick={()=>onSave(position)} style={{flex:1,padding:'10px',borderRadius:10,border:`1.5px solid ${C.teal}`,background:C.teal+'15',color:C.teal,fontFamily:'inherit',fontSize:13,fontWeight:700,cursor:'pointer'}}>
@@ -3734,6 +3853,11 @@ function SwingTab({userId, isMobile}){
     date_asc: (a,b) => a.opened_date.localeCompare(b.opened_date),
   };
   const sortedOpenPositions = [...openPositions].sort(sortFns[sortBy] || sortFns.return_desc);
+  const watchPositions = statsPositions.filter(p=>p.status==='watch');
+  // Portfolio heat: what is at stake if every open position hits its stop
+  const riskRows = openPositions.map(p=>({p, m:swingPlanMetrics(p,p)}));
+  const totalOpenRisk = riskRows.reduce((s,{p,m})=>s+(m.openRisk>0?toCAD(m.openRisk,p.currency):0),0);
+  const noStopCount = riskRows.filter(({m})=>!m.stop).length;
   const totalInvested = openPositions.reduce((s,p)=>s+toCAD(parseFloat(p.cost_basis_remaining||0),p.currency),0);
   const cashNum = parseFloat(cashBalance)||0;
   const totalAccountValue = totalInvested + cashNum; // for TRUE exposure % — invested capital alone understates how diversified you actually are
@@ -3961,6 +4085,10 @@ function SwingTab({userId, isMobile}){
         <BigStat label="Unrealized P&L" val={totalUnrealized||openPositions.some(p=>p.unrealized_pnl!=null)?`${totalUnrealized>=0?'+':''}$${totalUnrealized.toFixed(2)}`:'—'} col={totalUnrealized>=0?C.green:C.red} sub="needs current price set"/>
         <BigStat label="Dividends" val={`+$${totalDividends.toFixed(2)}`} col={C.teal}/>
         <BigStat label="Total Invested" val={`$${totalInvested.toFixed(0)}`} col={C.textSub} sub="open positions, cost basis"/>
+        <BigStat label="Realized P&L" val={`${totalRealized>=0?'+':'-'}$${Math.abs(totalRealized).toFixed(2)}`} col={totalRealized>=0?C.green:C.red} sub={`${closedCount} closed`}/>
+        <BigStat label="Risk to stops" val={`$${totalOpenRisk.toFixed(0)}`} col={totalOpenRisk>0?C.red:C.textSub}
+          sub={totalAccountValue>0?`${(totalOpenRisk/totalAccountValue*100).toFixed(1)}% of account${noStopCount?` · ${noStopCount} without a stop`:''}`:noStopCount?`${noStopCount} without a stop`:'all open positions'}/>
+        <BigStat label="Watchlist" val={watchPositions.length} col={C.blue} sub="ideas with a plan"/>
       </div>
 
       <div style={{display:'flex',gap:6,marginBottom:16}}>
@@ -4137,6 +4265,23 @@ function SwingTab({userId, isMobile}){
           isMobile={isMobile}
           userId={userId}
         />
+      )}
+
+      {watchPositions.length>0 && (
+        <div style={{marginBottom:20}}>
+          <div style={{fontSize:13,fontWeight:700,color:C.textSub,padding:'8px 0'}}>Watchlist ({watchPositions.length})</div>
+          {watchPositions.map(p=>(
+            <SwingPositionCard
+              key={p.id}
+              position={p}
+              onChange={updated=>setPositions(prev=>prev.map(x=>x.id===p.id?computeSwingDerived(updated):x))}
+              onSave={handleSave}
+              onDelete={handleDelete}
+              isMobile={isMobile}
+              userId={userId}
+            />
+          ))}
+        </div>
       )}
 
       {openPositions.length===0 && !newPosition && (
@@ -4330,7 +4475,7 @@ function ClaudeTab({userId,isMobile,days,onRefreshDays}){
       : '';
     const reviews=days.filter(d=>d.data?.eod?.review).map(d=>`${d.date}: ${d.data.eod.review.slice(0,300)}`).join('\n');
 
-    return `TRADER PROFILE: Futures day trader (ES/NQ via MES/MNQ micros on sim). System: Auction Market Theory, Market Profile, order flow. Trades 10:30-4pm EST after IB forms. Setups: BPB (break from value pullback), RPB (return to value pullback), ROT (rotational), Fade (reversal at extremes). Risk: $200/trade full, $100 half. Targeting Tradeify Select 50K eval ($3000 target, $2000 max DD, 40% consistency). Point values: ES=$50 NQ=$20 MES=$5 MNQ=$2. Points are TOTAL across contracts; SL/MFE/MAE are per contract.
+    return `TRADER PROFILE: Futures day trader, ES only, 1 contract, 50K prop account, Sierra Chart + Rithmic. System: Auction Market Theory, volume/TPO profile, order flow. Top-down: daily regime and state, then 4H/1H zones, then confluence (prior-day and naked value levels, weekly profile, balance edges, single prints, excess; VWAP deviation bands are context only). Trades the whole RTH session at pre-planned zones. Entry: Trigger 1 (first Heikin-Ashi flip at the zone) is a paper trade; the live entry is Trigger 2 after the sweep of that pivot, confirmed by absorption or exhaustion on the footprint. Stop about 6 points beyond the sweep, single exit at 2R, no partials. One idea a day, max 2 trades. Trades flagged paper are excluded from results. Setups: BPB (break from value pullback), RPB (return to value pullback), ROT (rotational, on hold), Fade (reversal at extremes). Targeting Tradeify Select 50K eval ($3000 target, $2000 max DD, 40% consistency). Point values: ES=$50 NQ=$20 MES=$5 MNQ=$2. Points are TOTAL across contracts; SL/MFE/MAE are per contract.
 
 LIFETIME STATS: ${s.totalTrades} closed | ${s.winRate.toFixed(1)}% WR | Net $${s.totalPnl.toFixed(0)} | PF ${s.profitFactor>=99?'inf':s.profitFactor.toFixed(2)} | Exp $${s.expectancy.toFixed(0)}/trade | MaxDD $${s.maxDD.toFixed(0)}
 
@@ -4710,7 +4855,7 @@ export default function App(){
   const[saveStatus,setSaveStatus]=useState('idle');
   const [theme,setTheme]=useState(initialTheme());
   applyTheme(theme);
-  useEffect(()=>{applyTheme(theme);try{localStorage.setItem('journal_theme',theme);}catch(_){}},[theme]);
+  useEffect(()=>{applyTheme(theme);try{localStorage.setItem('journal_theme_v2',theme);}catch(_){}},[theme]);
   const [aiName,setAiName]=useState('Claude');
   useEffect(()=>{
     const key='journal_ai_name_'+(user?.id||'anon');
