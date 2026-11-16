@@ -42,3 +42,26 @@ alter table journal_index enable row level security;
 -- Allow all operations (since this is a personal app with anon key)
 create policy "Allow all" on journal_days for all using (true) with check (true);
 create policy "Allow all" on journal_index for all using (true) with check (true);
+
+-- Daily total of swing holdings (CAD) for the value-over-time chart
+create table if not exists public.swing_snapshots (
+  user_id uuid not null references auth.users(id) on delete cascade,
+  date date not null,
+  value_cad numeric not null,
+  cost_cad numeric not null,
+  fx numeric,
+  created_at timestamptz not null default now(),
+  primary key (user_id, date)
+);
+alter table public.swing_snapshots enable row level security;
+create policy "own snapshots select" on public.swing_snapshots for select using (auth.uid() = user_id);
+create policy "own snapshots insert" on public.swing_snapshots for insert with check (auth.uid() = user_id);
+create policy "own snapshots update" on public.swing_snapshots for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+-- 16 Nov 2026: journal tables are own-rows-only (the old "Allow all" policies were removed)
+drop policy if exists "Allow all" on public.journal_days;
+drop policy if exists "Allow all" on public.journal_index;
+drop policy if exists "Users see own days" on public.journal_days;
+drop policy if exists "Users see own index" on public.journal_index;
+create policy "Users see own days" on public.journal_days for all to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id);
+create policy "Users see own index" on public.journal_index for all to authenticated using (auth.uid() = user_id) with check (auth.uid() = user_id);
