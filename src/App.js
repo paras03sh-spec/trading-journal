@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { mergeDay, syncedAt, TradePlanBlock, DayDataPanel, PlanAnalytics } from './planData';
 import { supabase, loadDay, saveDay, loadIndex, saveIndex, loadAllDays, getCurrentUser, signIn, signUp, signOut, loadSwingPositions, saveSwingPosition, deleteSwingPosition, loadFxRate } from './supabase';
 
 const POINT_VALUES = { ES: 50, NQ: 20, MES: 5, MNQ: 2 };
@@ -110,15 +111,17 @@ const CONFLUENCE_OPTIONS = [...CONFLUENCE_A, ...CONFLUENCE_B];
 const aLevelCount = t =>
   (t.confluences||[]).filter(v=>CONFLUENCE_A.some(o=>o.value===v)).length
   + (t.compositeBalanceExtreme||[]).length + (t.mExtremeDevBand||[]).length + (t.wExtremeDevBand||[]).length;
-// Non-blocking reminders of the current trade plan, shown on the trade card.
+// Non-blocking reminders of the current trade plan (claude/playbook.md, 18 Nov 2026), shown on the trade card.
 function ruleChecks(t){
   const out=[];
   if(!t.ticker&&!t.plan)return out;
-  if(aLevelCount(t)===0)out.push('No A-level tagged — a trade needs at least one A-level confluence.');
-  if(t.attempt==='entry_1'&&!t.paper)out.push('Trigger 1 is paper-only — the live entry is Trigger 2, after the sweep of the first pivot.');
-  if(t.attempt==='entry_3')out.push('No third trigger — if Trigger 2 fails, the level is broken.');
-  if(t.plan==='ROT'&&!t.paper)out.push('ROT is on hold (0 for 6) — paper-trade it until it is redefined.');
-  if(!(t.triggers||[]).length)out.push('No footprint trigger tagged (absorption / exhaustion).');
+  if(!t.plan)out.push('Pick the setup type (BPB / RPB / ROT / Fade) from the day\'s setup table.');
+  if(!t.grade)out.push('Grade it A+ / A- / B. Not A or B = not a trade.');
+  if(t.grade==='C')out.push('No C trades: this one is not plan-valid.');
+  if(!t.triggerType)out.push('Mark the entry type: first trigger + clear print, second trigger, or early print (experiment).');
+  if(t.triggerType==='first+print'&&!(t.triggers||[]).length)out.push('A first-trigger entry needs a clear print at the zone (absorption, exhaustion, P/b or volume spike): tag it.');
+  if(!t.sl)out.push('Add the stop (points per contract) so R and the go-live count work.');
+  if(t.valid===false)out.push('Invalid trade: it resets the go-live count'+(t.invalidReason?` (${t.invalidReason}).`:'.'));
   return out;
 }
 
@@ -655,6 +658,8 @@ function TradeCard({index,trade,onChange,onRemove,isMobile,userId}){
               </div>
             </div>
           ))}
+          <Divider label="Plan"/>
+          <TradePlanBlock trade={trade} set={set} C={C}/>
           {ruleChecks(trade).length>0&&(
             <div style={{marginBottom:16,padding:'10px 12px',borderRadius:8,border:`1px solid ${C.yellow}55`,background:C.yellow+'10'}}>
               <div style={{fontSize:11,color:C.yellow,marginBottom:6,letterSpacing:'0.08em',textTransform:'uppercase',fontWeight:700}}>Plan check</div>
@@ -1443,7 +1448,7 @@ function TradovateImportModal({onClose, onImport}) {
   );
 }
 
-function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId,onJumpToDate}){
+function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId,onJumpToDate,pre}){
   const update=(i,t)=>{
     let newTrades = trades.map((x,j)=>j===i?t:x);
     // HTF/Short-Term context and Opening Type describe the whole session, not
@@ -1728,6 +1733,7 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId,onJumpT
       </div>
 
       <SummaryBar trades={trades}/>
+      <DayDataPanel pre={pre} C={C}/>
       {trades.map((t,i)=>(
         <TradeCard key={i} index={i} trade={t} onChange={nt=>update(i,nt)} onRemove={()=>remove(i)} isMobile={isMobile} userId={userId}/>
       ))}
@@ -2623,6 +2629,7 @@ function AnalyticsTab({userId,isMobile,onJumpToDate,days,onRefreshDays}){
   const s=computeStats(trades);
 
   const SECTIONS=[
+    ['plan','Plan & Data'],
     ['equity','Equity & Drawdown'],
     ['setup','Setup'],['trigger','Entry Trigger'],['attempt','Entry Attempt'],['confluence','Level Confluence'],
     ['stContext','Short-Term Context'],['htfContext','HTF Context'],['openingType','Opening Type'],['compositeBalanceExtreme','Balance Extreme'],['mExtremeDevBand','M Dev Band'],['wExtremeDevBand','W Dev Band'],['direction','Direction'],
@@ -2672,6 +2679,7 @@ function AnalyticsTab({userId,isMobile,onJumpToDate,days,onRefreshDays}){
       ):(<>
 
       {/* ══ EQUITY & DRAWDOWN ══ */}
+      {section==='plan'&&<PlanAnalytics days={days} C={C}/>}
       {section==='equity'&&(<>
         <InsightsCard insights={insightsFor(trades)}/>
         <div className={`tj-fade-in ${s.totalPnl>=0?'tj-glow-win':'tj-glow-loss'}`} style={{
@@ -4433,6 +4441,7 @@ export default function App(){
   useEffect(()=>{applyTheme(theme);try{localStorage.setItem('journal_theme_v2',theme);}catch(_){}},[theme]);
   const[showCal,setShowCal]=useState(false);
   const saveTimer=useRef(null);
+  const skipSave=useRef(false);   // set when the day is replaced by a server copy, so that is not saved straight back
 
   // Auth state listener
   useEffect(()=>{
@@ -4447,8 +4456,28 @@ export default function App(){
   useEffect(()=>{
     if(!user)return;
     setLoading(true);
-    loadDay(selectedDate,user.id).then(d=>{setDayData(d||emptyDay());setLoading(false);});
+    loadDay(selectedDate,user.id).then(d=>{skipSave.current=true;setDayData(d||emptyDay());setLoading(false);});
   },[selectedDate,user]);
+
+  // Coming back to the tab (e.g. after the 4:20 pm ET sync): pull the day again if the server has newer sync data.
+  useEffect(()=>{
+    if(!user)return;
+    const onVisible=()=>{
+      if(document.visibilityState!=='visible')return;
+      loadDay(selectedDate,user.id).then(d=>{
+        if(!d)return;
+        setDayData(cur=>{
+          if(!cur||syncedAt(d)<=syncedAt(cur))return cur;
+          skipSave.current=true;
+          return mergeDay(d,cur);
+        });
+      });
+      loadAllDays(user.id).then(setAllDaysCache);
+    };
+    document.addEventListener('visibilitychange',onVisible);
+    window.addEventListener('focus',onVisible);
+    return()=>{document.removeEventListener('visibilitychange',onVisible);window.removeEventListener('focus',onVisible);};
+  },[user,selectedDate]);
 
   // Shared full-history cache — loaded ONCE here instead of separately inside
   // both AnalyticsTab and other tabs, which previously each re-fetched every
@@ -4466,16 +4495,24 @@ export default function App(){
     if(!dayData||loading||!user)return;
     setSaveStatus('saving');
     clearTimeout(saveTimer.current);
+    if(skipSave.current){skipSave.current=false;setSaveStatus('idle');return;}
     saveTimer.current=setTimeout(async()=>{
-      await saveDay(selectedDate,dayData,user.id);
-      const trades=(dayData.trades||[]).filter(t=>!t.paper);
+      // Merge with the server copy first: the after-close sync may have written to this day after this tab
+      // loaded it. Paras's edits win; newer sync data and trades the sync added are kept.
+      const server=await loadDay(selectedDate,user.id);
+      const merged=mergeDay(server,dayData);
+      await saveDay(selectedDate,merged,user.id);
+      if(server&&(syncedAt(server)>syncedAt(dayData)||(merged.trades||[]).length!==(dayData.trades||[]).length)){
+        skipSave.current=true; setDayData(merged);
+      }
+      const trades=(merged.trades||[]).filter(t=>!t.paper);
       const total=trades.reduce((s,t)=>s+calcPnL(t.ticker,t.contracts,t.points)-(parseFloat(t.commission)||0),0);
       const esPts=trades.filter(t=>['ES','MES'].includes(t.ticker)).reduce((s,t)=>s+(parseFloat(t.points)||0),0);
       const nqPts=trades.filter(t=>['NQ','MNQ'].includes(t.ticker)).reduce((s,t)=>s+(parseFloat(t.points)||0),0);
       const wins=trades.filter(t=>t.result==='W').length;
       const summary={
         pnl:total,esPts,nqPts,wins,trades:trades.length,
-        bias:dayData.pre?.dailyBias||'',
+        bias:merged.pre?.dailyBias||'',
       };
       await saveIndex(selectedDate,summary,user.id);
       setIndex(prev=>({...prev,[selectedDate]:summary}));
@@ -4484,7 +4521,7 @@ export default function App(){
       setAllDaysCache(prev=>{
         if(!prev) return prev;
         const exists=prev.some(d=>d.date===selectedDate);
-        const entry={date:selectedDate,data:dayData};
+        const entry={date:selectedDate,data:merged};
         return exists ? prev.map(d=>d.date===selectedDate?entry:d) : [...prev,entry];
       });
       setSaveStatus('saved');
@@ -4493,7 +4530,11 @@ export default function App(){
     return()=>clearTimeout(saveTimer.current);
   },[dayData]);
 
-  const updateTrades=trades=>setDayData(d=>({...d,trades}));
+  const updateTrades=trades=>setDayData(d=>{
+    const now=new Set(trades.map(t=>t._syncKey).filter(Boolean));
+    const gone=(d.trades||[]).map(t=>t._syncKey).filter(k=>k&&!now.has(k));
+    return gone.length?{...d,trades,deletedSyncKeys:[...new Set([...(d.deletedSyncKeys||[]),...gone])]}:{...d,trades};
+  });
   const updateEod=eod=>setDayData(d=>({...d,eod}));
 
   const goDay=(offset)=>{
@@ -4645,7 +4686,7 @@ export default function App(){
             <div style={{textAlign:'center',color:C.textMut,fontSize:13,padding:'60px 0'}}>Loading...</div>
           ):(
             <div className="tj-tab-content" key={tab}>
-              {tab===0&&<TradesTab trades={dayData.trades} onChange={updateTrades} eod={dayData.eod} onEodChange={updateEod} date={selectedDate} isMobile={isMobile} userId={user?.id} onJumpToDate={d=>setSelectedDate(d)}/>}
+              {tab===0&&<TradesTab pre={dayData.pre} trades={dayData.trades} onChange={updateTrades} eod={dayData.eod} onEodChange={updateEod} date={selectedDate} isMobile={isMobile} userId={user?.id} onJumpToDate={d=>setSelectedDate(d)}/>}
               {tab===1&&<AnalyticsTab userId={user?.id} isMobile={isMobile} onJumpToDate={d=>{setSelectedDate(d);setTab(0);}} days={allDaysCache} onRefreshDays={refreshAllDaysCache}/>}
               {tab===2&&<SwingTab userId={user?.id} isMobile={isMobile}/>}
             </div>
