@@ -111,7 +111,7 @@ const CONFLUENCE_OPTIONS = [...CONFLUENCE_A, ...CONFLUENCE_B];
 const aLevelCount = t =>
   (t.confluences||[]).filter(v=>CONFLUENCE_A.some(o=>o.value===v)).length
   + (t.compositeBalanceExtreme||[]).length + (t.mExtremeDevBand||[]).length + (t.wExtremeDevBand||[]).length;
-// Non-blocking reminders of the current trade plan (claude/playbook.md, 18 Nov 2026), shown on the trade card.
+// Non-blocking reminders of the current trade plan (claude/playbook.md, 19 Nov 2026), shown on the trade card.
 function ruleChecks(t){
   const out=[];
   if(!t.ticker&&!t.plan)return out;
@@ -121,7 +121,8 @@ function ruleChecks(t){
   if(!t.triggerType)out.push('Mark the entry type: first trigger + clear print, second trigger, or early print (experiment).');
   if(t.triggerType==='first+print'&&!(t.triggers||[]).length)out.push('A first-trigger entry needs a clear print at the zone (absorption, exhaustion, P/b or volume spike): tag it.');
   if(!t.sl)out.push('Add the stop (points per contract) so R and the go-live count work.');
-  if(t.valid===false)out.push('Invalid trade: it resets the go-live count'+(t.invalidReason?` (${t.invalidReason}).`:'.'));
+  if(t.valid===false)out.push('Invalid trade: it resets the go-live count'+(t.invalidReason?` (${t.invalidReason}).`:'.')+' Daily stop rule: 1 invalid trade = done for the day.');
+  if(t.rStats&&(t.rStats.flags||[]).some(f=>f.startsWith('round trip')))out.push('Round trip: this trade was +1R or more and closed at the stop. T1 = the first level in the way, placed as a bracket at entry.');
   return out;
 }
 
@@ -1733,7 +1734,7 @@ function TradesTab({trades,onChange,eod,onEodChange,date,isMobile,userId,onJumpT
       </div>
 
       <SummaryBar trades={trades}/>
-      <DayDataPanel pre={pre} C={C}/>
+      <DayDataPanel pre={pre} trades={trades} C={C}/>
       {trades.map((t,i)=>(
         <TradeCard key={i} index={i} trade={t} onChange={nt=>update(i,nt)} onRemove={()=>remove(i)} isMobile={isMobile} userId={userId}/>
       ))}

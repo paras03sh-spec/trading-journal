@@ -7,7 +7,7 @@ import React, { useState } from 'react';
 // Fields the sync owns on a trade. When the server copy of the day has newer sync data than the tab,
 // these come from the server; everything Paras types stays his.
 const SYNC_FIELDS = ['mfe', 'mae', 'exitEfficiency', 'afterExit', 'exitMap', 'exitMapSummary', 'partials', 'avgEntry',
-  'entryTime', 'exitTime', 'points', 'result', 'paper', '_syncKey'];
+  'entryTime', 'exitTime', 'points', 'result', 'paper', '_syncKey', 'rStats'];
 
 const isBlankTrade = t => !t.ticker && !t.notes && !t.plan && !t.points && !t.entryTime;
 
@@ -88,6 +88,30 @@ function MiniTable({ C, cols, rows }) {
   );
 }
 const pct = (a, b) => (b ? Math.round(100 * a / b) + '%' : '—');
+const num = v => { const x = parseFloat(v); return isNaN(x) ? null : x; };
+const avg = xs => { const v = xs.filter(x => x != null); return v.length ? Math.round(100 * v.reduce((a, b) => a + b, 0) / v.length) / 100 : '—'; };
+// R for a trade: the sync's rStats, else points per contract / sl
+export const tradeR = t => (t.rStats && t.rStats.R != null) ? t.rStats.R
+  : (num(t.sl) ? Math.round(100 * (num(t.points) || 0) / Math.max(1, num(t.contracts) || 1) / num(t.sl)) / 100 : null);
+const bestR = t => (t.rStats && t.rStats.mfe_R != null) ? t.rStats.mfe_R : (num(t.sl) && num(t.mfe) != null ? Math.round(100 * num(t.mfe) / num(t.sl)) / 100 : null);
+const isRoundTrip = t => { const b = bestR(t), r = tradeR(t); return b != null && r != null && b >= 1 && r <= -0.8; };
+
+// Daily stop rules (playbook section 8, 19 Nov): done at 3 losing trades, -3R on the day, or 1 invalid trade.
+export function dailyStop(trades) {
+  const ts = (trades || []).filter(t => t.ticker && t.result).sort((a, b) => (a.entryTime || '') < (b.entryTime || '') ? -1 : 1);
+  let losses = 0, r = 0, hit = null;
+  const after = [];
+  ts.forEach(t => {
+    if (hit) after.push(t.entryTime);
+    if (t.result === 'L') losses++;
+    r += tradeR(t) || 0;
+    if (hit) return;
+    if (t.valid === false) hit = `1 invalid trade (${t.entryTime})`;
+    else if (losses >= 3) hit = `3 losing trades (${t.entryTime})`;
+    else if (r <= -3) hit = `-3R on the day (${t.entryTime})`;
+  });
+  return { trades: ts.length, losses, R: Math.round(r * 100) / 100, hit, after };
+}
 const good = xs => xs.filter(x => x.grade === 'good').length;
 
 // ── Trade card: plan grading + exit map ───────────────────────────────────────
@@ -126,6 +150,16 @@ export function TradePlanBlock({ trade, set, C }) {
           {trade.afterExit ? <>after exit: <b>{trade.afterExit}</b></> : null}
         </div>
       )}
+      {trade.rStats && (
+        <div style={{ marginTop: 12, fontSize: 12, color: C.textSub, lineHeight: 1.7 }}>
+          <b>In R</b>{trade.rStats.R_pts ? ` (1R = ${trade.rStats.R_pts} pts)` : ''}: result <b>{trade.rStats.R ?? '—'}R</b> ({trade.rStats.points} pts) ·
+          best <b>{trade.rStats.mfe_R ?? '—'}R</b> ({trade.rStats.mfe_pts} pts{trade.rStats.mfe_time ? ` at ${trade.rStats.mfe_time}` : ''}) ·
+          worst <b>{trade.rStats.mae_R ?? '—'}R</b> ({trade.rStats.mae_pts} pts) · {trade.rStats.minutes} min in the trade
+          {(trade.rStats.flags || []).length > 0 && (
+            <div style={{ color: C.red }}>Patterns: {trade.rStats.flags.join(' · ')}</div>
+          )}
+        </div>
+      )}
       {em.length > 0 && (
         <div style={{ marginTop: 12, padding: '10px 12px', border: `1px solid ${C.border}`, borderRadius: 10 }}>
           <div onClick={() => setShowMap(!showMap)} style={{ cursor: 'pointer', fontSize: 12, color: C.text }}>
@@ -146,7 +180,7 @@ export function TradePlanBlock({ trade, set, C }) {
 }
 
 // ── Day view: the sync's data for this day ────────────────────────────────────
-export function DayDataPanel({ pre, C }) {
+export function DayDataPanel({ pre, trades, C }) {
   const [open, setOpen] = useState(false);
   const c = pre && pre.claude;
   if (!c) return null;
@@ -156,11 +190,14 @@ export function DayDataPanel({ pre, C }) {
   const tests = c.level_tests || [];
   const offHeld = tests.filter(r => !r.on_table && !(r.kinds || []).includes('table') && r.outcome === 'held');
   const gex = tests.filter(r => (r.kinds || []).includes('gex'));
+  const ds = dailyStop(trades);
+  const ar = c.gex && c.gex.ar_mfc;
   return (
     <div style={{ marginBottom: 16 }}>
       <button onClick={() => setOpen(!open)} style={{ width: '100%', textAlign: 'left', padding: '12px 14px', borderRadius: 12, border: `1px solid ${C.border}`, background: C.surface, color: C.text, fontFamily: 'inherit', fontSize: 13, cursor: 'pointer' }}>
         <b>Plan &amp; data</b>
         <span style={{ color: C.textMut }}> · go-live {g.valid_in_run ?? 0} valid in run{g.window ? `, last ${g.window}: ${Math.round((g.win_rate || 0) * 100)}% / ${g.avg_winner_R ?? '—'}R` : ''}{g.gate_met ? ' · GATE MET' : ''}
+          {ds.trades ? ` · day ${ds.R}R, ${ds.losses} loss${ds.losses === 1 ? '' : 'es'}${ds.hit ? ' · DAILY STOP HIT' : ''}` : ''}
           {fm.length ? ` · prints ${good(fm)}/${fm.length} good` : ''}{(c.setup_table || []).length ? ` · ${(c.setup_table || []).length} table rows` : ''}</span>
         <span style={{ float: 'right', color: C.textMut }}>{open ? '▲' : '▼'}</span>
       </button>
@@ -173,6 +210,14 @@ export function DayDataPanel({ pre, C }) {
               {g.early_print_experiment ? <span style={{ color: C.textMut }}> · early-print experiment: {g.early_print_experiment.wins}/{g.early_print_experiment.trades} wins</span> : null}
             </div>
           </Box>
+          {ds.trades > 0 && (
+            <Box C={C} title="Daily stop rules" sub="Done for the day at 3 losing trades, -3R, or 1 invalid trade (playbook section 8, 19 Nov).">
+              <div style={{ fontSize: 13, color: ds.hit ? C.red : C.text }}>
+                {ds.trades} trades · {ds.losses} losing · {ds.R}R on the day · {ds.hit ? <b>stop hit: {ds.hit}</b> : 'no stop rule hit'}
+                {ds.after.length > 0 && <> · trades after the stop: <b>{ds.after.join(', ')}</b></>}
+              </div>
+            </Box>
+          )}
           {(c.setup_table || []).length > 0 && (
             <Box C={C} title="Setup table">
               <MiniTable C={C} cols={['#', 'Setup', 'Dir', 'Location', 'Grade', 'Trigger', 'Stop', 'Target', 'Status']}
@@ -207,6 +252,17 @@ export function DayDataPanel({ pre, C }) {
               <div style={{ fontSize: 12, color: C.textSub }}>{c.gex.levels.map(l => `${l.label} ≈ ${l.price}`).join(' · ')}</div>
             </Box>
           )}
+          {ar && (
+            <Box C={C} title="AR [MFC] options pivot (converted to ES)" sub={`${ar.source || ''} · basis ${ar.basis ?? '—'} · context only`}>
+              <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.7 }}>
+                Pivot SPX {ar.spx_pivot} ≈ ES <b>{ar.es_pivot}</b> ({ar.lean}){ar.upside_poi_es ? <> · upside {ar.upside_poi_es}</> : null}
+                {ar.notes ? <div>{ar.notes}</div> : null}
+                {ar.score_after_close && ar.score_after_close.pivot_respected != null ? (
+                  <div>Score: pivot respected <b>{String(ar.score_after_close.pivot_respected)}</b> · first break {ar.score_after_close.first_break_dir || '—'} · held {String(ar.score_after_close.held_break ?? '—')}{ar.score_after_close.range_note ? ` · ${ar.score_after_close.range_note}` : ''}</div>
+                ) : null}
+              </div>
+            </Box>
+          )}
         </div>
       )}
     </div>
@@ -223,7 +279,7 @@ export function PlanAnalytics({ days, C }) {
   (days || []).forEach(d => (d.data && d.data.trades || []).forEach(t => { if (t.ticker && t.result) trades.push({ ...t, _date: d.date }); }));
   const byType = ['first+print', 'second', 'early-print'].map(k => {
     const xs = trades.filter(t => t.triggerType === k);
-    return [k, xs.length, xs.filter(t => t.result === 'W').length, pct(xs.filter(t => t.result === 'W').length, xs.length)];
+    return [k, xs.length, xs.filter(t => t.result === 'W').length, pct(xs.filter(t => t.result === 'W').length, xs.length), avg(xs.map(tradeR)), avg(xs.map(bestR))];
   });
   const prints = [];
   list.forEach(d => (d.data.pre.claude.flow_marks || []).forEach(x => prints.push(x)));
@@ -251,8 +307,42 @@ export function PlanAnalytics({ days, C }) {
     const kept = parseFloat(t.points) / Math.max(1, parseFloat(t.contracts) || 1);
     return [t._date, t.entryTime, t.direction, isNaN(kept) ? '—' : kept, t.exitMapSummary.furthest, f ? `${f.price} (${f.points} pts, ${f.phase})` : '—', f ? (f.labels || []).slice(0, 2).join(', ') : '—'];
   });
+  const rRow = (name, xs) => {
+    const effs = xs.map(t => num(t.exitEfficiency));
+    return [name, xs.length, pct(xs.filter(t => t.result === 'W').length, xs.length), avg(xs.map(tradeR)),
+      avg(xs.map(bestR)), xs.filter(isRoundTrip).length, avg(effs)];
+  };
+  const graded = trades.filter(t => t.valid !== undefined || t.grade);
+  const rRows = [
+    rRow('All graded', graded), rRow('Valid', graded.filter(t => t.valid === true)), rRow('Invalid', graded.filter(t => t.valid === false)),
+    ...['A+', 'A-', 'B', 'C'].map(g2 => rRow(`Grade ${g2}`, graded.filter(t => t.grade === g2))),
+    rRow('Long', graded.filter(t => t.direction === 'long')), rRow('Short', graded.filter(t => t.direction === 'short')),
+    rRow('Before 10:30 ET', graded.filter(t => (t.entryTime || '') < '10:30')), rRow('10:30 ET and later', graded.filter(t => (t.entryTime || '') >= '10:30')),
+  ].filter(r => r[1] > 0);
+  const flagCount = {};
+  trades.forEach(t => ((t.rStats && t.rStats.flags) || []).forEach(f => { const k = f.split(':')[0]; flagCount[k] = (flagCount[k] || []).concat(`${t._date} ${t.entryTime}`); }));
+  trades.filter(t => !(t.rStats && t.rStats.flags) && isRoundTrip(t)).forEach(t => { flagCount['round trip'] = (flagCount['round trip'] || []).concat(`${t._date} ${t.entryTime}`); });
+  const flagRows = Object.entries(flagCount).map(([k, v]) => [k, v.length, v.slice(-4).join(', ')]);
+  const dayStops = (days || []).map(d => ({ date: d.date, ds: dailyStop((d.data && d.data.trades) || []) })).filter(x => x.ds.trades > 0);
+  const stopRows = dayStops.sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 10)
+    .map(x => [x.date, x.ds.trades, x.ds.losses, x.ds.R, x.ds.hit || '—', x.ds.after.join(', ') || '—']);
   return (
     <div style={{ marginBottom: 20 }}>
+      {rRows.length > 0 && (
+        <Box C={C} title="Results in R" sub="R = points per contract ÷ stop. Best R = furthest the trade went (MFE). Round trip = was +1R or more, closed at the stop. Exit eff. = points kept ÷ MFE.">
+          <MiniTable C={C} cols={['Group', 'Trades', 'Win %', 'Avg R', 'Avg best R', 'Round trips', 'Exit eff.']} rows={rRows} />
+        </Box>
+      )}
+      {flagRows.length > 0 && (
+        <Box C={C} title="Patterns to fix" sub="Flags set by the after-close sync on each trade; the full tracker is claude/patterns.md in the project.">
+          <MiniTable C={C} cols={['Pattern', 'Count', 'Latest']} rows={flagRows} />
+        </Box>
+      )}
+      {stopRows.length > 0 && (
+        <Box C={C} title="Daily stop rules" sub="3 losing trades, -3R or 1 invalid trade = done for the day. Trades after the stop are the ones to cut.">
+          <MiniTable C={C} cols={['Date', 'Trades', 'Losses', 'Day R', 'Stop hit', 'Trades after the stop']} rows={stopRows} />
+        </Box>
+      )}
       <Box C={C} title="Go-live gate (paper)" sub={`As of ${latest.date}. Rolling last 10 plan-valid trades: ≥ 50% wins and average winner ≥ 2R; an invalid trade resets the count.`}>
         <div style={{ fontSize: 15, color: C.text, fontWeight: 700 }}>
           {g.valid_in_run ?? 0} valid in the current run · last {g.window || 0}: {g.win_rate != null ? Math.round(g.win_rate * 100) + '%' : '—'} wins, {g.avg_winner_R ?? '—'}R average winner ·{' '}
@@ -260,7 +350,7 @@ export function PlanAnalytics({ days, C }) {
         </div>
       </Box>
       <Box C={C} title="Entry type" sub="Playbook section 8: first trigger only with a clear print, otherwise the second trigger; early print is an experiment.">
-        <MiniTable C={C} cols={['Entry type', 'Trades', 'Wins', 'Win rate']} rows={byType} />
+        <MiniTable C={C} cols={['Entry type', 'Trades', 'Wins', 'Win rate', 'Avg R', 'Avg best R']} rows={byType} />
       </Box>
       {prints.length > 0 && (
         <Box C={C} title="Footprint print accuracy" sub="Next 10 bars after each final print; good = 6+ pts and 2x the heat">

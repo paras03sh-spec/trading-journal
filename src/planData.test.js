@@ -19,3 +19,16 @@ test('local edits win, deleted synced trades stay deleted', () => {
   expect(m.trades[0].mfe).toBe('5');
   expect(m.deletedSyncKeys).toEqual(['k2']);
 });
+
+test('daily stop: 1 invalid trade stops the day and lists later trades', () => {
+  const { dailyStop } = require('./planData');
+  const ds = dailyStop([
+    { ticker: 'ES', result: 'L', entryTime: '09:57', valid: true, sl: '8', points: '-7.75', contracts: '1' },
+    { ticker: 'ES', result: 'L', entryTime: '10:43', valid: false, sl: '7', points: '-7', contracts: '1' },
+    { ticker: 'ES', result: 'L', entryTime: '10:45', valid: false, sl: '10.75', points: '-10', contracts: '1' },
+  ]);
+  expect(ds.hit).toBe('1 invalid trade (10:43)');
+  expect(ds.after).toEqual(['10:45']);
+  expect(ds.losses).toBe(3);
+  expect(ds.R).toBeCloseTo(-2.9, 1);
+});
