@@ -32,3 +32,12 @@ test('daily stop: 1 invalid trade stops the day and lists later trades', () => {
   expect(ds.losses).toBe(3);
   expect(ds.R).toBeCloseTo(-2.9, 1);
 });
+
+test('options observations rows', () => {
+  const { obsRows } = require('./planData');
+  const rows = obsRows({ ar_mfc: { es_pivot: 7419.5, spx_pivot: 7400, score_after_close: { pivot_respected: true, first_break_dir: 'down' } },
+    observations: { premarket_drift: { call: 'bearish', outcome: 'down', match: true }, vix: { level: 24.6, key_level: null, outcome: 'not scored', match: null } } });
+  expect(rows.map(r => r[0])).toEqual(['AR pivot', 'Pre-market drift', 'VIX']);
+  expect(rows[0][3]).toBe(true);
+  expect(rows[2][3]).toBe(null);
+});
