@@ -96,6 +96,18 @@ export const tradeR = t => (t.rStats && t.rStats.R != null) ? t.rStats.R
 const bestR = t => (t.rStats && t.rStats.mfe_R != null) ? t.rStats.mfe_R : (num(t.sl) && num(t.mfe) != null ? Math.round(100 * num(t.mfe) / num(t.sl)) / 100 : null);
 const isRoundTrip = t => { const b = bestR(t), r = tradeR(t); return b != null && r != null && b >= 1 && r <= -0.8; };
 
+// Pre-market options observations (playbook 14b): [name, pre-market call, outcome, matched?]
+export function obsRows(gex) {
+  const o = (gex && gex.observations) || {};
+  const rows = [];
+  const ar = gex && gex.ar_mfc && gex.ar_mfc.score_after_close;
+  if (ar && ar.pivot_respected != null) rows.push(['AR pivot', `${gex.ar_mfc.es_pivot} (${gex.ar_mfc.spx_pivot} SPX)`, `first break ${ar.first_break_dir || '—'}`, ar.pivot_respected]);
+  if (o.premarket_drift) rows.push(['Pre-market drift', `${o.premarket_drift.call || '—'}${o.premarket_drift.size ? ' · ' + o.premarket_drift.size : ''}`, `day ${o.premarket_drift.outcome || '—'}`, o.premarket_drift.match ?? null]);
+  if (o.vix) rows.push(['VIX', o.vix.key_level != null ? `key level ${o.vix.key_level} (VIX ${o.vix.level})` : (o.vix.call || `VIX ${o.vix.level ?? '—'}`), o.vix.outcome || '—', o.vix.match ?? null]);
+  if (o.gamma_regime) rows.push(['Gamma regime', o.gamma_regime.call || '—', `${o.gamma_regime.day_type || '—'}${o.gamma_regime.better_exit ? ', better exit ' + o.gamma_regime.better_exit : ''}`, o.gamma_regime.match_ar ?? o.gamma_regime.match ?? null]);
+  return rows;
+}
+
 // Daily stop rules (playbook section 8, 19 Nov): done at 3 losing trades, -3R on the day, or 1 invalid trade.
 export function dailyStop(trades) {
   const ts = (trades || []).filter(t => t.ticker && t.result).sort((a, b) => (a.entryTime || '') < (b.entryTime || '') ? -1 : 1);
@@ -252,6 +264,16 @@ export function DayDataPanel({ pre, trades, C }) {
               <div style={{ fontSize: 12, color: C.textSub }}>{c.gex.levels.map(l => `${l.label} ≈ ${l.price}`).join(' · ')}</div>
             </Box>
           )}
+          {c.gex && (c.gex.observations || c.gex.score_gexlevels) && (
+            <Box C={C} title="Options observations (pre-market call vs what happened)" sub="Scored after the close. Context only: no live options data is used in the session.">
+              <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.7 }}>
+                {obsRows(c.gex).map(([k, call, out, m]) => (
+                  <div key={k}><b>{k}</b>: {call} → {out} {m === true ? <span style={{ color: C.green }}>✓</span> : m === false ? <span style={{ color: C.red }}>✗</span> : <span style={{ color: C.textMut }}>(not scored)</span>}</div>
+                ))}
+                {c.gex.score_gexlevels ? <div><b>GexLevels</b>: {c.gex.score_gexlevels}</div> : null}
+              </div>
+            </Box>
+          )}
           {ar && (
             <Box C={C} title="AR [MFC] options pivot (converted to ES)" sub={`${ar.source || ''} · basis ${ar.basis ?? '—'} · context only`}>
               <div style={{ fontSize: 12, color: C.textSub, lineHeight: 1.7 }}>
@@ -323,6 +345,14 @@ export function PlanAnalytics({ days, C }) {
   trades.forEach(t => ((t.rStats && t.rStats.flags) || []).forEach(f => { const k = f.split(':')[0]; flagCount[k] = (flagCount[k] || []).concat(`${t._date} ${t.entryTime}`); }));
   trades.filter(t => !(t.rStats && t.rStats.flags) && isRoundTrip(t)).forEach(t => { flagCount['round trip'] = (flagCount['round trip'] || []).concat(`${t._date} ${t.entryTime}`); });
   const flagRows = Object.entries(flagCount).map(([k, v]) => [k, v.length, v.slice(-4).join(', ')]);
+  const opt = {};
+  list.forEach(d => obsRows(d.data.pre.claude.gex).forEach(([k, , , m]) => {
+    if (m === null || m === undefined) return;
+    opt[k] = opt[k] || { n: 0, ok: 0 }; opt[k].n++; if (m) opt[k].ok++;
+  }));
+  list.forEach(d => { const g2 = d.data.pre.claude.gex, o = g2 && g2.observations && g2.observations.gamma_regime;
+    if (o && o.match_gexlevels != null) { opt['GexLevels regime'] = opt['GexLevels regime'] || { n: 0, ok: 0 }; opt['GexLevels regime'].n++; if (o.match_gexlevels) opt['GexLevels regime'].ok++; } });
+  const optRows = Object.entries(opt).map(([k, v]) => [k, v.n, v.ok, pct(v.ok, v.n)]);
   const dayStops = (days || []).map(d => ({ date: d.date, ds: dailyStop((d.data && d.data.trades) || []) })).filter(x => x.ds.trades > 0);
   const stopRows = dayStops.sort((a, b) => (a.date < b.date ? 1 : -1)).slice(0, 10)
     .map(x => [x.date, x.ds.trades, x.ds.losses, x.ds.R, x.ds.hit || '—', x.ds.after.join(', ') || '—']);
@@ -336,6 +366,11 @@ export function PlanAnalytics({ days, C }) {
       {flagRows.length > 0 && (
         <Box C={C} title="Patterns to fix" sub="Flags set by the after-close sync on each trade; the full tracker is claude/patterns.md in the project.">
           <MiniTable C={C} cols={['Pattern', 'Count', 'Latest']} rows={flagRows} />
+        </Box>
+      )}
+      {optRows.length > 0 && (
+        <Box C={C} title="Options scorecard (pre-market calls)" sub="How often each pre-market options read matched the session. Review after about 20 sessions; only then can one become a rule.">
+          <MiniTable C={C} cols={['Read', 'Days scored', 'Matched', 'Match %']} rows={optRows} />
         </Box>
       )}
       {stopRows.length > 0 && (
