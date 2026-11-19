@@ -7,7 +7,7 @@ import React, { useState } from 'react';
 // Fields the sync owns on a trade. When the server copy of the day has newer sync data than the tab,
 // these come from the server; everything Paras types stays his.
 const SYNC_FIELDS = ['mfe', 'mae', 'exitEfficiency', 'afterExit', 'exitMap', 'exitMapSummary', 'partials', 'avgEntry',
-  'entryTime', 'exitTime', 'points', 'result', 'paper', '_syncKey'];
+  'entryTime', 'exitTime', 'points', 'result', 'paper', '_syncKey', 'rStats'];
 
 const isBlankTrade = t => !t.ticker && !t.notes && !t.plan && !t.points && !t.entryTime;
 
@@ -124,6 +124,16 @@ export function TradePlanBlock({ trade, set, C }) {
           {trade.exitReason ? <>exit: <b>{trade.exitReason}</b> · </> : null}
           {trade.exitEfficiency !== undefined && trade.exitEfficiency !== '' ? <>exit efficiency <b>{trade.exitEfficiency}</b> (points kept ÷ MFE) · </> : null}
           {trade.afterExit ? <>after exit: <b>{trade.afterExit}</b></> : null}
+        </div>
+      )}
+      {trade.rStats && (
+        <div style={{ marginTop: 12, fontSize: 12, color: C.textSub, lineHeight: 1.7 }}>
+          <b>In R</b>{trade.rStats.R_pts ? ` (1R = ${trade.rStats.R_pts} pts)` : ''}: result <b>{trade.rStats.R ?? '—'}R</b> ({trade.rStats.points} pts) ·
+          best <b>{trade.rStats.mfe_R ?? '—'}R</b> ({trade.rStats.mfe_pts} pts{trade.rStats.mfe_time ? ` at ${trade.rStats.mfe_time}` : ''}) ·
+          worst <b>{trade.rStats.mae_R ?? '—'}R</b> ({trade.rStats.mae_pts} pts) · {trade.rStats.minutes} min in the trade
+          {(trade.rStats.flags || []).length > 0 && (
+            <div style={{ color: C.red }}>Patterns: {trade.rStats.flags.join(' · ')}</div>
+          )}
         </div>
       )}
       {em.length > 0 && (
